@@ -54,3 +54,45 @@ def test_scalar_path_fast_path_does_not_trigger_for_general_paths():
         internal_compute_dtype=torch.float64,
     )
     assert not tp._use_scalar_direct_fast_path
+
+
+def test_scalar_identity_projector_fast_path_matches_matmul_path_float32():
+    torch.manual_seed(17)
+    allowed_paths = [(0, l, l) for l in range(4)]
+    fast = EdgeWeightedPathPreservingTensorProduct(
+        channels=8,
+        lmax=3,
+        allowed_paths=allowed_paths,
+        internal_compute_dtype=torch.float32,
+    )
+    matmul = EdgeWeightedPathPreservingTensorProduct(
+        channels=8,
+        lmax=3,
+        allowed_paths=allowed_paths,
+        internal_compute_dtype=torch.float32,
+    )
+    matmul.load_state_dict(fast.state_dict())
+    matmul._use_scalar_identity_projector_fast_path = False
+
+    assert fast._use_scalar_identity_projector_fast_path
+    assert fast._scalar_direct_group_scales == [1.0, 1.0, 1.0, 1.0]
+
+    x1 = {0: torch.randn(19, 8, 1, dtype=torch.float32, requires_grad=True)}
+    x2 = {
+        l: torch.randn(19, 1, 2 * l + 1, dtype=torch.float32, requires_grad=True)
+        for l in range(4)
+    }
+    gates = torch.randn(19, fast.num_paths * fast.channels, dtype=torch.float32, requires_grad=True)
+
+    out_fast = fast(x1, x2, gates)
+    out_matmul = matmul(x1, x2, gates)
+    for l in range(4):
+        assert torch.allclose(out_fast[l], out_matmul[l], rtol=1e-6, atol=1e-6)
+
+    loss_fast = sum(v.sum() for v in out_fast.values())
+    loss_matmul = sum(v.sum() for v in out_matmul.values())
+    inputs = [x1[0], *(x2[l] for l in range(4)), gates]
+    grads_fast = torch.autograd.grad(loss_fast, inputs, retain_graph=True)
+    grads_matmul = torch.autograd.grad(loss_matmul, inputs)
+    for grad_fast, grad_matmul in zip(grads_fast, grads_matmul):
+        assert torch.allclose(grad_fast, grad_matmul, rtol=1e-6, atol=1e-6)

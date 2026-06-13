@@ -2480,6 +2480,9 @@ class EdgeWeightedPathPreservingTensorProduct(EdgeWeightedPathTensorProduct):
         self._use_scalar_direct_fast_path = (
             _USE_SCALAR_PATH_TP and self._can_use_scalar_direct_fast_path()
         )
+        self._scalar_direct_group_scales: List[float] = []
+        self._use_scalar_identity_projector_fast_path = False
+        self._refresh_scalar_identity_projector_fast_path()
 
     def _can_use_scalar_direct_fast_path(self) -> bool:
         if any(int(self.path_counts_by_l.get(l, 0)) > 1 for l in range(self.lmax + 1)):
@@ -2495,6 +2498,31 @@ class EdgeWeightedPathPreservingTensorProduct(EdgeWeightedPathTensorProduct):
             if int(e) - int(s) != 2 * l3 + 1:
                 return False
         return True
+
+    def _refresh_scalar_identity_projector_fast_path(self) -> None:
+        self._scalar_direct_group_scales = []
+        self._use_scalar_identity_projector_fast_path = False
+        if not self._use_scalar_direct_fast_path:
+            return
+        self._get_cg_list(device=torch.device("cpu"), dtype=torch.float64)
+        scales: List[float] = []
+        for group in self._groups:
+            p_idx, l3, _s, _e = group["segments"][0]
+            l3 = int(l3)
+            mat = self._cg_cpu_f64[int(p_idx)][0].to(torch.float64)
+            eye = torch.eye(2 * l3 + 1, dtype=mat.dtype, device=mat.device)
+            diag = torch.diagonal(mat)
+            scale = diag[0] if diag.numel() else mat.new_tensor(1.0)
+            if not torch.allclose(mat, eye * scale, rtol=0.0, atol=1e-12):
+                return
+            scales.append(float(scale.item()))
+        self._scalar_direct_group_scales = scales
+        self._use_scalar_identity_projector_fast_path = True
+
+    @torch.no_grad()
+    def fold_cg_to_e3nn(self, q_blocks: List[torch.Tensor]) -> None:
+        super().fold_cg_to_e3nn(q_blocks)
+        self._refresh_scalar_identity_projector_fast_path()
 
     def _forward_scalar_direct(
         self,
@@ -2533,7 +2561,14 @@ class EdgeWeightedPathPreservingTensorProduct(EdgeWeightedPathTensorProduct):
             return out
 
         a_comp = a.to(dtype=compute_dtype) if a.dtype != compute_dtype else a
-        proj_list = self._get_proj_group_list(device=device, dtype=dtype)
+        use_identity_projector = (
+            self._use_scalar_identity_projector_fast_path and dtype == torch.float32
+        )
+        proj_list = (
+            None
+            if use_identity_projector
+            else self._get_proj_group_list(device=device, dtype=dtype)
+        )
         w = self.weight.to(device=device, dtype=compute_dtype)
 
         for g_idx, group in enumerate(self._groups):
@@ -2543,15 +2578,20 @@ class EdgeWeightedPathPreservingTensorProduct(EdgeWeightedPathTensorProduct):
                 continue
 
             b_comp = b.to(dtype=compute_dtype) if b.dtype != compute_dtype else b
-            pair = (a_comp.unsqueeze(-1) * b_comp.unsqueeze(-2)).reshape(
-                *batch_shape, self.channels, 2 * l2 + 1
-            )
-            y = torch.matmul(pair, proj_list[g_idx])
-
             p_idx, l3, s, e = group["segments"][0]
             p_idx = int(p_idx)
             l3 = int(l3)
-            seg = y[..., int(s) : int(e)]
+            if use_identity_projector:
+                seg = a_comp * b_comp
+                scale = float(self._scalar_direct_group_scales[g_idx])
+                if scale != 1.0:
+                    seg = seg * scale
+            else:
+                pair = (a_comp.unsqueeze(-1) * b_comp.unsqueeze(-2)).reshape(
+                    *batch_shape, self.channels, 2 * l2 + 1
+                )
+                y = torch.matmul(pair, proj_list[g_idx])
+                seg = y[..., int(s) : int(e)]
             seg = seg * w[p_idx].view(*([1] * len(batch_shape)), self.channels, 1)
             if gates is not None:
                 seg = seg * gates[..., p_idx, :].unsqueeze(-1)
