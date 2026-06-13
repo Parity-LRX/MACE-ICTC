@@ -232,6 +232,30 @@ class _Contraction(torch.nn.Module):
             and self.internal_weights
             and self.shared_weights
         )
+        if self._use_scalar_corr3_fast:
+            self.refresh_scalar_corr3_fast_buffers()
+
+    def refresh_scalar_corr3_fast_buffers(self) -> None:
+        """Cache contiguous transposed U matrices used by the scalar corr=3 fast path."""
+        u3 = self.U_tensors(3)
+        u2 = self.U_tensors(2)
+        u1 = self.U_tensors(1)
+        num_ell = int(u3.shape[0])
+        buffers = {
+            "U_matrix_3_fast_t": u3.reshape(num_ell * num_ell, num_ell * u3.shape[-1]).t().contiguous(),
+            "U_matrix_2_fast_t": u2.reshape(num_ell * num_ell, u2.shape[-1]).t().contiguous(),
+            "U_matrix_1_fast_t": u1.reshape(num_ell, u1.shape[-1]).t().contiguous(),
+        }
+        for name, value in buffers.items():
+            if name in self._buffers:
+                setattr(self, name, value)
+            else:
+                self.register_buffer(name, value, persistent=False)
+
+    def _load_from_state_dict(self, *args, **kwargs):
+        super()._load_from_state_dict(*args, **kwargs)
+        if getattr(self, "_use_scalar_corr3_fast", False):
+            self.refresh_scalar_corr3_fast_buffers()
 
     def _forward_scalar_corr3(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         batch = x.shape[0]
@@ -255,18 +279,18 @@ class _Contraction(torch.nn.Module):
         )
         out2 = torch.matmul(
             z3,
-            u3.reshape(num_ell * num_ell, num_ell * u3.shape[-1]).t(),
+            self.U_matrix_3_fast_t,
         ).view(batch, channels, num_ell, num_ell)
 
         c2 = torch.matmul(
             w2.reshape(batch * channels, u2.shape[-1]),
-            u2.reshape(num_ell * num_ell, u2.shape[-1]).t(),
+            self.U_matrix_2_fast_t,
         ).view(batch, channels, num_ell, num_ell)
         out1 = torch.sum((out2 + c2) * x.unsqueeze(-2), dim=-1)
 
         c1 = torch.matmul(
             w1.reshape(batch * channels, u1.shape[-1]),
-            u1.reshape(num_ell, u1.shape[-1]).t(),
+            self.U_matrix_1_fast_t,
         ).view(batch, channels, num_ell)
         out = torch.sum((out1 + c1) * x, dim=-1)
         return out.reshape(batch, -1)

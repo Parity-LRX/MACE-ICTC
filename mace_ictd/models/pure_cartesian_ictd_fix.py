@@ -846,6 +846,10 @@ class ICTDBridgeUSymmetricContractionSO3(nn.Module):
                     old = getattr(contraction, name)
                     new = self._transform_u_tensor(old, output_l)
                     old.copy_(new.to(dtype=old.dtype, device=old.device))
+                if getattr(contraction, "_use_scalar_corr3_fast", False) and hasattr(
+                    contraction, "refresh_scalar_corr3_fast_buffers"
+                ):
+                    contraction.refresh_scalar_corr3_fast_buffers()
 
     def forward(self, node_feats: torch.Tensor, node_attrs: torch.Tensor) -> torch.Tensor:
         x = _so3_flat_to_mace_features(node_feats, self.channels, self.lmax)
