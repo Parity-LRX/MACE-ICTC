@@ -213,6 +213,11 @@ def main() -> int:
                         "model-side edge mask. LAMMPS mff/torch filters neighbor-list skin edges before "
                         "calling the core, so this is safe for that deployment path and can reduce large "
                         "edge-tensor elementwise work. Do not use with raw neighbor lists that include skin.")
+    p.add_argument("--preserve-edge-order", action="store_true",
+                   help="skip the model-side argsort(edge_dst) and keep the caller's edge order. This is "
+                        "mathematically the same scatter-sum graph but can change fp32 reduction order at "
+                        "round-off level. Use only when the caller already supplies a stable/deployment "
+                        "edge order or when fp32 round-off differences are acceptable.")
     p.add_argument("--no-equiv", dest="no_equiv", action="store_true",
                    help="skip the rotation-equivariance gate on the loaded .pt2")
     args = p.parse_args()
@@ -265,6 +270,7 @@ def main() -> int:
         model.skip_input_validation = True  # set on the BARE model (the A.max().item() guard lives here,
                                             # not on the E0 wrapper) so make_fx tracing stays data-independent
         model.assume_edges_within_radius = bool(args.assume_cutoff_edges)
+        model.preserve_edge_order = bool(args.preserve_edge_order)
         dtype = next(model.parameters()).dtype  # honor the trained dtype (likely float64)
         species_z = [int(z) for z in (getattr(model, "atomic_numbers", None) or SPECIES) if int(z) > 0] or list(SPECIES)
         print(f"[aoti] loaded checkpoint {args.checkpoint}  trained_dtype={dtype}  species={species_z}  "
@@ -286,11 +292,14 @@ def main() -> int:
             correlation=args.contraction_order, attn_heads=args.attn_heads,
         )
         model.assume_edges_within_radius = bool(args.assume_cutoff_edges)
+        model.preserve_edge_order = bool(args.preserve_edge_order)
         species_z = list(SPECIES)
     model.eval()
     model.skip_input_validation = True
     if args.assume_cutoff_edges:
         print("[aoti] assuming cutoff-filtered edges: model-side edge_mask skipped")
+    if args.preserve_edge_order:
+        print("[aoti] preserving caller edge order: model-side argsort(edge_dst) skipped")
 
     def _apply_species(g):
         # When the checkpoint's element set differs from the harness default, re-draw the species

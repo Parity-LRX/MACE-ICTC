@@ -2021,14 +2021,17 @@ class PureCartesianICTDFix(nn.Module):
         cell = cell.to(dtype=dtype)
         edge_shifts = edge_shifts.to(dtype=dtype)
 
-        sort_idx = torch.argsort(edge_dst)
-        edge_src = edge_src[sort_idx]
-        edge_dst = edge_dst[sort_idx]
-        edge_shifts = edge_shifts[sort_idx]
+        if not getattr(self, "preserve_edge_order", False):
+            sort_idx = torch.argsort(edge_dst)
+            edge_src = edge_src[sort_idx]
+            edge_dst = edge_dst[sort_idx]
+            edge_shifts = edge_shifts[sort_idx]
+        else:
+            sort_idx = None
         edge_index = torch.stack([edge_src, edge_dst], dim=0)
 
         if precomputed_edge_vec is not None:
-            edge_vec = precomputed_edge_vec[sort_idx]
+            edge_vec = precomputed_edge_vec if sort_idx is None else precomputed_edge_vec[sort_idx]
         else:
             edge_batch_idx = batch[edge_src]
             edge_cells = cell[edge_batch_idx]
