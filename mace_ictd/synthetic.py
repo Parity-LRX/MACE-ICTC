@@ -1136,7 +1136,7 @@ def main() -> int:
     p.add_argument("--attn-heads", dest="attn_heads", type=int, default=0,
                    help="interaction neighbor-attention heads (0=off; trainer flag "
                         "--ictd-fix-interaction-attn-heads)")
-    p.add_argument("--product-backend", default="ictd-pure-u")
+    p.add_argument("--product-backend", default="ictd-bridge-u")
     p.add_argument("--dtype", default="float32", choices=["float32", "float64"])
     p.add_argument("--iters", type=int, default=20)
     p.add_argument("--warmup", type=int, default=5)

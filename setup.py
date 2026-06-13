@@ -117,6 +117,7 @@ setup(
             "mff-export-aoti=mace_ictd.cli.export_aoti_core:main",
             "mff-export-core=mace_ictd.cli.export_libtorch_core:main",
             "mff-lammps=mace_ictd.cli.lammps_interface:main",
+            "mff-convert-mace=mace_ictd.cli.convert_mace:main",
         ],
     },
     ext_modules=ext_modules,

@@ -21,7 +21,7 @@ Checked on torch 2.5.1 / e3nn 0.5.9 / mace-torch, float64.
 | message passing ×N | `InteractionBlock` (TP of node ⊗ Yₗ, radial-weighted) + residual self-connection | `ICTDResidualInteractionBlock` (same TP via `U`-matrices) + residual `sc` |
 | many-body | `EquivariantProductBasisBlock` (element-wise symmetric contraction, order ν) | `ICTDPureUProductBasisBlockSO3` = `ICTDPureUSymmetricContractionSO3` + `o3.Linear` |
 | readout | `LinearReadoutBlock` / `NonLinearReadoutBlock` per layer | `EquivariantScalarReadoutSO3` / `MACEStyleScalarReadoutSO3` (`C×0e → 16×0e → 1×0e`) |
-| energy assembly | Σ layer energies, `ScaleShiftBlock`, `AtomicEnergiesBlock` (E0) | Σ layer energies, `energy_output_scale`, E0 wrapper (`mff-export-aoti --embed-e0`) |
+| energy assembly | Σ layer energies, `ScaleShiftBlock`, `AtomicEnergiesBlock` (E0) | Σ layer energies, `energy_output_scale` / `energy_output_shift`, E0 wrapper (`mff-export-aoti --embed-e0`) |
 
 The mapping is **1:1**. The only structural choices that differ are basis-representation choices
 (dense `(C, 2l+1)` Cartesian blocks instead of `e3nn` spherical irreps), not model changes.
@@ -68,12 +68,14 @@ every SO(3)-equivariant contraction (the Clebsch–Gordan algebra) is preserved 
 ## 3. Many-body product basis — *the same symmetric contraction*
 
 This is the heart of MACE (the `EquivariantProductBasisBlock` / symmetric contraction up to
-correlation order ν). The ICTD model ships **two interchangeable backends**:
+correlation order ν). The ICTD model ships interchangeable backends:
 
 - `native-mace` — instantiates MACE's own `MaceSymmetricContraction` (the real
   `mace.modules.symmetric_contraction` code), bridged into the ICTD component basis by `Q`.
-- `ictd-pure-u` (the baseline default) — the identical contraction with the CG coefficients
-  **folded into dense `U` matrices** (precomputed, cuBLAS-friendly).
+- `ictd-bridge-u` — the default exact-MACE backend; it folds MACE's `U` tensors into the ICTD
+  basis once, then runs in the ICTD component basis.
+- `ictd-pure-u` — a dense-`U` ablation whose CG coefficients are generated directly from ICTD
+  CG tensors (precomputed, cuBLAS-friendly).
 
 Built with identical initialization (same seed) and run on the same 40-atom graph (channels=16,
 lmax=2, ν=3):
@@ -118,8 +120,8 @@ These are representation / engineering choices, **not** changes to the equivaria
    scaling and dense GEMMs, the reason ICTD-MACE is AOTInductor / cuBLAS friendly.
 2. **Last-layer contraction to `l=0`** (`product_target_lmax[-1]=0`), exactly as MACE does.
 3. **Readout** uses the MACE-standard `C×0e → 16×0e → 1×0e` MLP shape (`MACEStyleScalarReadoutSO3`).
-4. **`energy_output_scale`** plays the role of MACE's `ScaleShiftBlock` (scales the interaction
-   energy; E0 added separately).
+4. **`energy_output_scale` / `energy_output_shift`** play the role of MACE's `ScaleShiftBlock`:
+   `E_inter_atom = scale * readout + shift`; E0 is added separately.
 5. **Long-range module** (`long_range.py`) is an *additive* extension with no MACE counterpart;
    it is off / zero-initialized by default, so it does not perturb the MACE-equivalent core.
 

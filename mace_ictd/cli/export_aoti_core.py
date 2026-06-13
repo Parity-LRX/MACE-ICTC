@@ -156,7 +156,7 @@ def main() -> int:
     p.add_argument("--num-interaction", type=int, default=2)
     p.add_argument("--attn-heads", dest="attn_heads", type=int, default=1)
     p.add_argument("--contraction-order", dest="contraction_order", type=int, default=2)
-    p.add_argument("--product-backend", default="ictd-pure-u")
+    p.add_argument("--product-backend", default="ictd-bridge-u")
     p.add_argument("--dtype", default="float32", choices=["float32", "float64"])
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--checkpoint", default=None,

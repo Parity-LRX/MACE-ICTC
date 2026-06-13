@@ -72,7 +72,7 @@ import torch
 from mace_ictd.synthetic import build_model, make_fixed_graph, compute_energy_forces
 
 model = build_model(channels=64, lmax=2, num_interaction=2, route="baseline",
-                    product_backend="ictd-pure-u", dtype=torch.float64,
+                    product_backend="ictd-bridge-u", dtype=torch.float64,
                     device=torch.device("cpu"), correlation=2)
 graph = make_fixed_graph(num_nodes=128, avg_degree=24, dtype=torch.float64, device="cpu")
 energy, forces, e_atom = compute_energy_forces(model, graph, create_graph=False)
@@ -103,8 +103,10 @@ Loss is per-atom `SmoothL1` energy + `SmoothL1` force, with an optional `SmoothL
 term, `total = a·E + b·F (+ c·σ)` (`--energy-weight` / `--force-weight` / `--stress-weight`, the last
 default 0 = off); stress is `σ = dE/dε / V` via the strain derivative. The per-type E0 offset is
 re-added from `--atomic-energy-keys/-values` (default H/C/N/O) and `avg_num_neighbors` is
-auto-computed from the training H5 — both written into the checkpoint, so the saved `.pth` rebuilds
-bit-for-bit via `LAMMPS_MLIAP_MFF.from_checkpoint` and
+auto-computed from the training H5. Training also uses MACE-style per-atom interaction
+ScaleShift by default (`--scaling rms_forces_scaling`, with `--atomic-inter-scale/--atomic-inter-shift`
+overrides; use `--scaling no_scaling` for the old identity behavior). All of these values are written
+into the checkpoint, so the saved `.pth` rebuilds bit-for-bit via `LAMMPS_MLIAP_MFF.from_checkpoint` and
 drops straight into the AOTI / LAMMPS export above. Drop `--makefx-buckets` for global-pad make_fx,
 or `--train-makefx-compile` too for plain eager training. The input H5 is produced by
 `mace_ictd.data.preprocessing.save_to_h5_parallel` (xyz → `processed_<split>.h5` + a `.counts.npz`
@@ -134,6 +136,26 @@ mff-export-aoti --checkpoint model.pt --out model.pt2 --dynamic
 mff-export-aoti --route baseline --channels 64 --lmax 2 --num-interaction 2 --out synth.pt2 --dynamic
 mff-export-aoti --help
 ```
+
+### Convert a native `mace-torch` model
+
+```bash
+python -m mace_ictd.cli.convert_mace \
+    --mace-model mace.model \
+    --out mace_ictd.pth \
+    --product-backend ictd-bridge-u \
+    --dtype float64
+
+mff-export-aoti --checkpoint mace_ictd.pth --elements H,C,N,O --out mace_ictd.pt2 --dynamic --embed-e0
+```
+
+The converter loads a torch-saved `mace-torch` `ScaleShiftMACE`, copies weights into
+`PureCartesianICTDFix`, and writes a MACE-ICTD checkpoint that `LAMMPS_MLIAP_MFF.from_checkpoint`
+and `mff-export-aoti` can load directly. Current exact-conversion support is intentionally narrow:
+`num_interactions >= 2`, bessel radial basis, `radial_MLP=[64,64,64]`, uniform correlation across
+layers, no pair repulsion / distance transform, `MLP_irreps=16x0e`, and `max_ell >= hidden_irreps.lmax`.
+Unsupported variants are rejected rather than silently converted. From-scratch MACE-ICTD training uses
+`--lmax` for hidden irreps and optional `--max-ell` for the edge spherical-harmonics cutoff.
 
 ### LAMMPS
 

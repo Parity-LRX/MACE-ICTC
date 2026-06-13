@@ -44,7 +44,7 @@ import torch
 # Bump this string on ANY change to the CG / U mathematics or storage format.
 # A new value uses a fresh cache directory, so stale precomputed tensors are
 # never read.
-CACHE_VERSION = "v1"
+CACHE_VERSION = "v2"
 
 _TRUE = {"1", "true", "yes", "on"}
 _FALSE = {"0", "false", "no", "off", ""}

@@ -734,11 +734,13 @@ class NativeMACEProductBasisBlockSO3(nn.Module):
         lmax: int,
         target_lmax: int,
         correlation: int = 3,
+        use_reduced_cg: bool = False,
     ):
         super().__init__()
         self.channels = int(channels)
         self.lmax = int(lmax)
         self.target_lmax = int(target_lmax)
+        self.use_reduced_cg = bool(use_reduced_cg)
         self.hidden_irreps = _hidden_irreps(self.channels, self.lmax)
         self.target_irreps = _hidden_irreps(self.channels, self.target_lmax)
         self.symmetric_contractions = MaceSymmetricContraction(
@@ -746,10 +748,10 @@ class NativeMACEProductBasisBlockSO3(nn.Module):
             irreps_out=self.target_irreps,
             correlation=int(correlation),
             num_elements=int(num_elements),
-            use_reduced_cg=False,
+            use_reduced_cg=self.use_reduced_cg,
         )
         self.linear = o3.Linear(self.target_irreps, self.target_irreps)
-        self.basis_bridge = SO3ToE3NNBasisBridge(self.channels, self.lmax)
+        self.basis_bridge = SO3ToE3NNBasisBridge(self.channels, max(self.lmax, self.target_lmax))
 
     def forward(self, node_feats: torch.Tensor, sc: torch.Tensor | None, node_attrs: torch.Tensor) -> torch.Tensor:
         x = self.basis_bridge.ictd_flat_to_e3nn_features(node_feats, self.lmax)
@@ -790,20 +792,22 @@ class ICTDBridgeUSymmetricContractionSO3(nn.Module):
         lmax: int,
         target_lmax: int,
         correlation: int = 3,
+        use_reduced_cg: bool = False,
     ):
         super().__init__()
         self.channels = int(channels)
         self.lmax = int(lmax)
         self.target_lmax = int(target_lmax)
+        self.use_reduced_cg = bool(use_reduced_cg)
         self.hidden_irreps = _hidden_irreps(self.channels, self.lmax)
         self.target_irreps = _hidden_irreps(self.channels, self.target_lmax)
-        self.basis_bridge = SO3ToE3NNBasisBridge(self.channels, self.lmax)
+        self.basis_bridge = SO3ToE3NNBasisBridge(self.channels, max(self.lmax, self.target_lmax))
         self.symmetric_contractions = MaceSymmetricContraction(
             irreps_in=self.hidden_irreps,
             irreps_out=self.target_irreps,
             correlation=int(correlation),
             num_elements=int(num_elements),
-            use_reduced_cg=False,
+            use_reduced_cg=self.use_reduced_cg,
         )
         self._fold_basis_change_into_u_tensors()
 
@@ -857,11 +861,13 @@ class ICTDBridgeUProductBasisBlockSO3(nn.Module):
         lmax: int,
         target_lmax: int,
         correlation: int = 3,
+        use_reduced_cg: bool = False,
     ):
         super().__init__()
         self.channels = int(channels)
         self.lmax = int(lmax)
         self.target_lmax = int(target_lmax)
+        self.use_reduced_cg = bool(use_reduced_cg)
         self.target_irreps = _hidden_irreps(self.channels, self.target_lmax)
         self.symmetric_contractions = ICTDBridgeUSymmetricContractionSO3(
             num_elements=num_elements,
@@ -869,6 +875,7 @@ class ICTDBridgeUProductBasisBlockSO3(nn.Module):
             lmax=lmax,
             target_lmax=target_lmax,
             correlation=correlation,
+            use_reduced_cg=self.use_reduced_cg,
         )
         self.linear = o3.Linear(self.target_irreps, self.target_irreps)
 
@@ -1492,7 +1499,9 @@ class PureCartesianICTDFix(nn.Module):
         ictd_save_tp_mode: str = "fully-connected",
         ictd_fix_route: str = "baseline",
         ictd_fix_contraction_combine: str = "softmax",
-        ictd_fix_product_backend: str = "ictd-pure-u",
+        ictd_fix_product_backend: str = "ictd-bridge-u",
+        ictd_fix_use_reduced_cg: bool = False,
+        ictd_fix_edge_lmax: int | None = None,
         angular_basis: str = "ictd",
         ictd_fix_interaction_scale: str = "none",
         ictd_fix_fusion_scale_init: float = 0.1,
@@ -1523,6 +1532,8 @@ class PureCartesianICTDFix(nn.Module):
         avg_num_neighbors: float | None = None,
         energy_output_scale: float = 1.0,
         energy_output_scale_enabled: bool = False,
+        energy_output_shift: float = 0.0,
+        energy_output_shift_enabled: bool = False,
     ):
         super().__init__()
         if embed_size is None:
@@ -1572,6 +1583,14 @@ class PureCartesianICTDFix(nn.Module):
 
         self.channels = int(hidden_dim_conv)
         self.lmax = int(lmax)
+        self.ictd_fix_edge_lmax = self.lmax if ictd_fix_edge_lmax is None else int(ictd_fix_edge_lmax)
+        if self.ictd_fix_edge_lmax < 0:
+            raise ValueError(f"ictd_fix_edge_lmax must be >= 0, got {self.ictd_fix_edge_lmax}")
+        if self.ictd_fix_edge_lmax < self.lmax:
+            raise NotImplementedError(
+                "MACE-ICTD currently requires ictd_fix_edge_lmax >= lmax; "
+                f"got edge_lmax={self.ictd_fix_edge_lmax}, lmax={self.lmax}."
+            )
         self.num_interaction = int(num_interaction)
         self.max_radius = float(max_embed_radius)
         self.number_of_basis = int(main_number_of_basis)
@@ -1584,7 +1603,13 @@ class PureCartesianICTDFix(nn.Module):
             if requested_product_backend == "ictd-pure-u" and self.lmax > 3
             else requested_product_backend
         )
+        self.ictd_fix_use_reduced_cg = bool(ictd_fix_use_reduced_cg)
         self.ictd_fix_product_backend_fallback = self.ictd_fix_product_backend != self.ictd_fix_requested_product_backend
+        if self.ictd_fix_edge_lmax != self.lmax and self.ictd_fix_product_backend not in {"native-mace", "ictd-bridge-u"}:
+            raise NotImplementedError(
+                "ictd_fix_edge_lmax != lmax is currently supported only for exact MACE product "
+                "backends 'native-mace' and 'ictd-bridge-u'."
+            )
         self.ictd_fix_interaction_scale = str(ictd_fix_interaction_scale)
         self.ictd_fix_fusion_scale_init = float(ictd_fix_fusion_scale_init)
         self.ictd_fix_fusion_heads = int(ictd_fix_fusion_heads)
@@ -1674,8 +1699,10 @@ class PureCartesianICTDFix(nn.Module):
                     0: [0.625, 0.561, 0.540, 0.403],
                     1: [0.489, 0.745, 0.741, 0.620],
                 }
-                preset = message_presets.get(layer_idx, [0.5] * (self.lmax + 1))
-                message_scale_init = preset[: self.lmax + 1]
+                preset = list(message_presets.get(layer_idx, [0.5] * (self.ictd_fix_edge_lmax + 1)))
+                if len(preset) < self.ictd_fix_edge_lmax + 1:
+                    preset = preset + [0.5] * (self.ictd_fix_edge_lmax + 1 - len(preset))
+                message_scale_init = preset[: self.ictd_fix_edge_lmax + 1]
                 if sc_lmax == 0 and layer_idx > 0:
                     sc_scale_init = [0.342]
                 elif sc_lmax > 0 and layer_idx > 0:
@@ -1683,9 +1710,9 @@ class PureCartesianICTDFix(nn.Module):
             self.interactions.append(
                 ICTDResidualInteractionBlock(
                     channels=self.channels,
-                    lmax=self.lmax,
+                    lmax=self.ictd_fix_edge_lmax,
                     input_lmax=input_lmax,
-                    target_lmax=self.lmax,
+                    target_lmax=self.ictd_fix_edge_lmax,
                     sc_lmax=sc_lmax,
                     number_of_basis=self.number_of_basis,
                     num_elements=self.num_elements,
@@ -1709,9 +1736,10 @@ class PureCartesianICTDFix(nn.Module):
                     NativeMACEProductBasisBlockSO3(
                         num_elements=self.num_elements,
                         channels=self.channels,
-                        lmax=self.lmax,
+                        lmax=self.ictd_fix_edge_lmax,
                         target_lmax=target_lmax,
                         correlation=save_contraction_order,
+                        use_reduced_cg=self.ictd_fix_use_reduced_cg,
                     )
                 )
             elif effective_product_backend == "ictd-bridge-u":
@@ -1719,9 +1747,10 @@ class PureCartesianICTDFix(nn.Module):
                     ICTDBridgeUProductBasisBlockSO3(
                         num_elements=self.num_elements,
                         channels=self.channels,
-                        lmax=self.lmax,
+                        lmax=self.ictd_fix_edge_lmax,
                         target_lmax=target_lmax,
                         correlation=save_contraction_order,
+                        use_reduced_cg=self.ictd_fix_use_reduced_cg,
                     )
                 )
             elif effective_product_backend == "ictd-pure-u":
@@ -1840,12 +1869,10 @@ class PureCartesianICTDFix(nn.Module):
             else False
         )
 
-        # Optional fixed scalar scale on the network (short-range) energy output
-        # (MACE ScaleShiftMACE-style rms_forces_scaling). OFF by default -> registered as a
-        # None buffer, which is EXCLUDED from state_dict (old checkpoints load unchanged with
-        # strict=True) and the forward path stays byte-identical. When ON: E_sr = scale * readout,
-        # so forces scale by the same factor. Equivariance-safe (scalar prefactor on an
-        # O(3)-invariant energy); E0 is added afterward (outside the model) and is NOT scaled.
+        # Optional fixed scale/shift on the network (short-range) per-atom interaction energy.
+        # This mirrors MACE ScaleShiftMACE: E_inter_atom = scale * readout + shift. OFF by
+        # default -> None buffers are excluded from state_dict, so old checkpoints load unchanged
+        # with strict=True. E0 is added afterward (outside the model) and is NOT scaled/shifted.
         self.energy_output_scale_enabled = bool(energy_output_scale_enabled)
         if self.energy_output_scale_enabled:
             # Store at full (float64) precision; cast to the compute dtype at use in forward.
@@ -1856,6 +1883,19 @@ class PureCartesianICTDFix(nn.Module):
             )
         else:
             self.register_buffer("energy_output_scale", None)
+        self.energy_output_shift_enabled = bool(energy_output_shift_enabled)
+        if self.energy_output_shift_enabled:
+            self.register_buffer(
+                "energy_output_shift",
+                torch.tensor(float(energy_output_shift), dtype=torch.float64),
+            )
+        else:
+            self.register_buffer("energy_output_shift", None)
+        # Optional converter-only additive term for MACE's first interaction skip connection.
+        # It is None for normal training/checkpoints. `convert_mace_to_ictd` installs a
+        # tensor of shape (num_elements, channels) so the converted model can reproduce
+        # mace-torch without relying on Python forward hooks, which are brittle under export.
+        self.register_buffer("mace_first_layer_sc0", None)
 
     def _readout_head_scale(self, index: int, ref: torch.Tensor) -> torch.Tensor:
         if self.readout_head_scales is None:
@@ -1885,6 +1925,24 @@ class PureCartesianICTDFix(nn.Module):
             self.gmix_block_rmsnorm_gamma,
         )
 
+    def install_mace_first_layer_sc0(self, sc0_by_element: torch.Tensor | None) -> None:
+        """Install the first-layer element skip term used by converted mace-torch models.
+
+        MACE's first residual block adds a pure l=0, element-conditioned self connection.
+        This baseline ICTD block has no parameter slot for that exact additive constant, so
+        conversion stores it as a non-trainable buffer and `forward` adds it after product[0].
+        """
+        if sc0_by_element is None:
+            self.mace_first_layer_sc0 = None
+            return
+        sc0 = sc0_by_element.detach().clone()
+        if sc0.shape != (self.num_elements, self.channels):
+            raise ValueError(
+                f"mace_first_layer_sc0 must have shape ({self.num_elements}, {self.channels}), "
+                f"got {tuple(sc0.shape)}"
+            )
+        self.mace_first_layer_sc0 = sc0
+
     def _apply_e3nn_basis_fold(self) -> None:
         """Fold the FIXED angular operators (interaction Clebsch-Gordan tensors + the
         symmetric-contraction U tensors) into the e3nn/MACE spherical basis so the model
@@ -1899,7 +1957,7 @@ class PureCartesianICTDFix(nn.Module):
         if getattr(self, "_e3nn_folded", False):
             return
         from mace_ictd.mace_basis import orthogonal_Q_blocks
-        q_blocks = orthogonal_Q_blocks(self.lmax, dtype=torch.float64, device="cpu")
+        q_blocks = orthogonal_Q_blocks(max(self.lmax, self.ictd_fix_edge_lmax), dtype=torch.float64, device="cpu")
         self._e3nn_q_blocks = q_blocks
         folded_u = False
         for module in self.modules():
@@ -1913,7 +1971,7 @@ class PureCartesianICTDFix(nn.Module):
         if not folded_u:
             raise NotImplementedError(
                 "angular_basis='e3nn' currently requires the symmetric-contraction backend to "
-                "expose fold_u_to_e3nn (product_backend='ictd-pure-u', the default). The "
+                "expose enable_e3nn_basis (currently product_backend='ictd-pure-u'). The "
                 f"selected backend {getattr(self, 'ictd_fix_product_backend', '?')!r} has no e3nn fold.")
         self._e3nn_folded = True
 
@@ -1976,12 +2034,12 @@ class PureCartesianICTDFix(nn.Module):
         edge_length = edge_vec.norm(dim=1)
         n = edge_vec / edge_length.clamp(min=1e-8).unsqueeze(-1)
         edge_mask = (edge_length <= self.max_radius).to(dtype=pos.dtype).unsqueeze(-1)
-        Y_list = direction_harmonics_all(n.to(dtype=dtype), self.lmax)
+        Y_list = direction_harmonics_all(n.to(dtype=dtype), self.ictd_fix_edge_lmax)
         if self.angular_basis == "e3nn":
             # fold the angular embedding into the e3nn/MACE spherical basis (Y_ictd @ Q_l = Y_e3nn)
             Y_list = [Y_list[l] @ self._e3nn_q_blocks[l].to(dtype=Y_list[l].dtype, device=Y_list[l].device)
-                      for l in range(self.lmax + 1)]
-        edge_attrs = {l: Y_list[l].to(dtype=dtype).unsqueeze(-2) for l in range(self.lmax + 1)}
+                      for l in range(self.ictd_fix_edge_lmax + 1)]
+        edge_attrs = {l: Y_list[l].to(dtype=dtype).unsqueeze(-2) for l in range(self.ictd_fix_edge_lmax + 1)}
         edge_feats = mace_radial_embedding(
             edge_length,
             r_max=self.max_radius,
@@ -2040,6 +2098,9 @@ class PureCartesianICTDFix(nn.Module):
                 sync_after_scatter=sync_after_scatter,
             )
             h = product(node_feats=message, sc=sc, node_attrs=node_attrs)
+            if layer_idx == 0 and self.mace_first_layer_sc0 is not None:
+                add = self.mace_first_layer_sc0.to(dtype=h.dtype, device=h.device)[compact_idx]
+                h = torch.cat((h[..., : self.channels] + add, h[..., self.channels :]), dim=-1)
             layer_states.append(h)
             if layer_idx < self.num_interaction - 1:
                 e_layer = self.layer_energy_readouts[layer_idx](h)
@@ -2053,12 +2114,13 @@ class PureCartesianICTDFix(nn.Module):
 
         out = total_energy.sum(dim=-1, keepdim=True)
 
-        # Optional fixed scalar force-RMS scale on the short-range energy (MACE-style).
-        # None when disabled -> byte-identical (no multiply). Applied BEFORE the long-range
-        # add so it scales only the network/interaction energy (E0 and the long-range term
-        # stay unscaled, matching ScaleShiftMACE where scale multiplies the interaction energy).
+        # Optional MACE ScaleShiftMACE-style scale/shift on the short-range interaction energy.
+        # None when disabled -> byte-identical. Applied BEFORE the long-range add so it affects
+        # only the network interaction energy; E0 is added outside this module.
         if self.energy_output_scale is not None:
             out = out * self.energy_output_scale.to(dtype=out.dtype, device=out.device)
+        if self.energy_output_shift is not None:
+            out = out + self.energy_output_shift.to(dtype=out.dtype, device=out.device)
 
         # --- long-range additive term (skipped entirely when module is None) ---
         reciprocal_source = None

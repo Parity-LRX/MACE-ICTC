@@ -70,7 +70,7 @@ def _make_h5(path, sizes, *, box=12.0, cutoff=5.0, seed=0):
         f.attrs["max_atoms"] = max_a
 
 
-def _mk_model(ann, dtype, device):
+def _mk_model(ann, dtype, device, **extra):
     cfg = ModelConfig(dtype=dtype)
     cfg.channel_in = 32; cfg.irreps_output_conv_channels = 32; cfg.lmax = 2
     cfg.num_layers = 1; cfg.max_radius = 5.0; cfg.max_radius_main = 5.0
@@ -78,16 +78,16 @@ def _mk_model(ann, dtype, device):
     model = build_baseline_model(
         cfg, avg_num_neighbors=ann, num_interaction=2, route="baseline",
         product_backend="ictd-pure-u", correlation=2, radial_sqrt_num_basis=False,
-        attn_heads=0, atomic_numbers=[1, 6, 7, 8], ictd_save_tp_mode="fully-connected",
-        invariant_channels=32, device=device, dtype=dtype)
+        edge_lmax=None, attn_heads=0, atomic_numbers=[1, 6, 7, 8], ictd_save_tp_mode="fully-connected",
+        invariant_channels=32, device=device, dtype=dtype, **extra)
     return cfg, model
 
 
-def _extra_hparams(ann):
+def _extra_hparams(ann, **extra):
     return dict(num_interaction=2, invariant_channels=32, ictd_fix_route="baseline",
                 ictd_fix_product_backend="ictd-pure-u", save_contraction_order=2,
                 ictd_save_tp_mode="fully-connected", ictd_fix_interaction_attn_heads=0,
-                radial_sqrt_num_basis=False, avg_num_neighbors=float(ann))
+                radial_sqrt_num_basis=False, avg_num_neighbors=float(ann), **extra)
 
 
 def run(device="cpu"):
@@ -126,12 +126,18 @@ def run(device="cpu"):
 
     # 3. checkpoint round-trip (rebuild + strict load + forward parity) -------
     ckpt = os.path.join(tmp, "rt.pth")
-    cfg1, m1 = _mk_model(ann, dtype, dev)
+    scale_shift = dict(
+        energy_output_scale=1.5,
+        energy_output_scale_enabled=True,
+        energy_output_shift=-0.25,
+        energy_output_shift_enabled=True,
+    )
+    cfg1, m1 = _mk_model(ann, dtype, dev, **scale_shift)
     tr1 = ForceTrainer(m1, loader, device=dev, config=cfg1, dtype=dtype, max_radius=5.0,
-                       epochs=1, extra_hparams=_extra_hparams(ann))
+                       epochs=1, extra_hparams=_extra_hparams(ann, **scale_shift))
     tr1.save_checkpoint(ckpt, epoch=0)
     blob = torch.load(ckpt, map_location="cpu", weights_only=False)
-    cfg2, m2 = _mk_model(ann, dtype, dev)
+    cfg2, m2 = _mk_model(ann, dtype, dev, **scale_shift)
     missing, unexpected = m2.load_state_dict(blob["e3trans_state_dict"], strict=True)
     assert not missing and not unexpected, f"strict load mismatch {missing} {unexpected}"
     batch = next(iter(loader)); b = tr1._unpack(batch)

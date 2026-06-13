@@ -1168,6 +1168,31 @@ class LAMMPS_MLIAP_MFF(MLIAPUnified):
                 )
                 resolved_avg_nn = 14.38
             resolved_avg_nn = float(resolved_avg_nn)
+
+            def _scalar_meta(name: str, default: float) -> float:
+                if name in ckpt:
+                    return float(ckpt[name])
+                if name in arch_meta:
+                    return float(arch_meta[name])
+                if name in selected_state_dict:
+                    v = selected_state_dict[name]
+                    return float(v.detach().cpu().item() if torch.is_tensor(v) else v)
+                return float(default)
+
+            energy_output_scale_enabled = bool(
+                ("energy_output_scale" in selected_state_dict)
+                or ckpt.get(
+                    "energy_output_scale_enabled",
+                    arch_meta.get("energy_output_scale_enabled", False),
+                )
+            )
+            energy_output_shift_enabled = bool(
+                ("energy_output_shift" in selected_state_dict)
+                or ckpt.get(
+                    "energy_output_shift_enabled",
+                    arch_meta.get("energy_output_shift_enabled", False),
+                )
+            )
             atomic_numbers = aek.detach().cpu().to(dtype=torch.long).tolist() if aek is not None else None
             model = PureCartesianICTDFix(
                 max_embed_radius=config.max_radius,
@@ -1199,6 +1224,11 @@ class LAMMPS_MLIAP_MFF(MLIAPUnified):
                         arch_meta.get("radial_sqrt_num_basis", True),
                     )
                 ),
+                polynomial_cutoff_p=(
+                    None
+                    if (ckpt.get("polynomial_cutoff_p", arch_meta.get("polynomial_cutoff_p", 6)) is None)
+                    else int(ckpt.get("polynomial_cutoff_p", arch_meta.get("polynomial_cutoff_p", 6)))
+                ),
                 ictd_save_tp_mode=str(
                     ckpt.get("ictd_save_tp_mode")
                     or arch_meta.get("ictd_save_tp_mode", "fully-connected")
@@ -1214,6 +1244,17 @@ class LAMMPS_MLIAP_MFF(MLIAPUnified):
                 ictd_fix_product_backend=str(
                     ckpt.get("ictd_fix_product_backend")
                     or arch_meta.get("ictd_fix_product_backend", "ictd-pure-u")
+                ),
+                ictd_fix_use_reduced_cg=bool(
+                    ckpt.get(
+                        "ictd_fix_use_reduced_cg",
+                        arch_meta.get("ictd_fix_use_reduced_cg", False),
+                    )
+                ),
+                ictd_fix_edge_lmax=(
+                    None
+                    if ckpt.get("ictd_fix_edge_lmax", arch_meta.get("ictd_fix_edge_lmax", None)) is None
+                    else int(ckpt.get("ictd_fix_edge_lmax", arch_meta.get("ictd_fix_edge_lmax", None)))
                 ),
                 ictd_fix_interaction_scale=str(
                     ckpt.get("ictd_fix_interaction_scale")
@@ -1274,6 +1315,10 @@ class LAMMPS_MLIAP_MFF(MLIAPUnified):
                 save_contraction_order=save_contraction_order,
                 save_multiple_mix_channels=save_multiple_mix_channels,
                 avg_num_neighbors=resolved_avg_nn,
+                energy_output_scale_enabled=energy_output_scale_enabled,
+                energy_output_scale=_scalar_meta("energy_output_scale", 1.0),
+                energy_output_shift_enabled=energy_output_shift_enabled,
+                energy_output_shift=_scalar_meta("energy_output_shift", 0.0),
                 device=torch.device(device),
                 long_range_mode=long_range_mode,
                 long_range_hidden_dim=long_range_hidden_dim,
@@ -1794,6 +1839,10 @@ class LAMMPS_MLIAP_MFF(MLIAPUnified):
         if mode == "pure-cartesian-ictd-save-multiple":
             model_keys = set(model.state_dict().keys())
             selected_state_dict = {k: v for k, v in selected_state_dict.items() if k in model_keys}
+        if mode == "pure-cartesian-ictd-fix" and "mace_first_layer_sc0" in selected_state_dict:
+            if not hasattr(model, "install_mace_first_layer_sc0"):
+                raise RuntimeError("checkpoint contains mace_first_layer_sc0 but model cannot install it")
+            model.install_mace_first_layer_sc0(selected_state_dict["mace_first_layer_sc0"])
 
         if mode == "spherical-save-cue":
             load_result = model.load_state_dict(selected_state_dict, strict=False)

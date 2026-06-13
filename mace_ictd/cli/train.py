@@ -23,16 +23,18 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import os
 
 import h5py
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
 from mace_ictd.data import H5Dataset, collate_fn_h5, BucketBatchSampler
 from mace_ictd.models.pure_cartesian_ictd_fix import PureCartesianICTDFix
 from mace_ictd.utils.config import ModelConfig
-from mace_ictd.training.train_loop import ForceTrainer
+from mace_ictd.training.train_loop import ForceTrainer, _DEFAULT_E0_KEYS, _DEFAULT_E0_VALUES
 
 
 def _avg_num_neighbors_from_h5(path: str) -> float:
@@ -49,6 +51,85 @@ def _avg_num_neighbors_from_h5(path: str) -> float:
     return float(tot_e) / max(tot_n, 1)
 
 
+def _sample_keys(f: h5py.File) -> list[str]:
+    def _key_order(name: str):
+        if name.startswith("sample_"):
+            tail = name.split("_", 1)[1]
+            if tail.isdigit():
+                return (0, int(tail))
+        return (1, name)
+
+    return sorted(
+        (
+            k
+            for k in f.keys()
+            if isinstance(f[k], h5py.Group) and "A" in f[k] and "y" in f[k]
+        ),
+        key=_key_order,
+    )
+
+
+def _atomic_inter_scale_shift_from_h5(
+    path: str,
+    *,
+    atomic_energy_keys,
+    atomic_energy_values,
+    scaling: str,
+) -> tuple[float, float]:
+    """MACE-style interaction-energy statistics from a processed H5.
+
+    ``mean`` is the per-graph average atomic interaction energy
+    ``(E_total - sum(E0[Z])) / n_atoms``. For ``rms_forces_scaling`` the scale is
+    the RMS of force components; for ``std_scaling`` it is the sample standard
+    deviation of those per-graph atomic interaction energies.
+    """
+    if scaling == "no_scaling":
+        return 1.0, 0.0
+    if scaling not in {"std_scaling", "rms_forces_scaling"}:
+        raise ValueError(f"unknown scaling mode {scaling!r}")
+
+    e0_by_z = {int(k): float(v) for k, v in zip(atomic_energy_keys, atomic_energy_values)}
+    atom_inter: list[float] = []
+    force_sq_sum = 0.0
+    force_count = 0
+
+    with h5py.File(path, "r") as f:
+        for key in _sample_keys(f):
+            g = f[key]
+            A = np.asarray(g["A"][:], dtype=np.int64).reshape(-1)
+            missing = sorted({int(z) for z in A if int(z) not in e0_by_z})
+            if missing:
+                raise ValueError(
+                    f"{path}:{key} contains atomic numbers {missing} without E0 values; "
+                    "pass --atomic-energy-keys/--atomic-energy-values."
+                )
+            e0 = sum(e0_by_z[int(z)] for z in A)
+            n_atoms = max(int(A.shape[0]), 1)
+            atom_inter.append((float(g["y"][()]) - e0) / n_atoms)
+            if scaling == "rms_forces_scaling":
+                force = np.asarray(g["force"][:], dtype=np.float64)
+                force_sq_sum += float(np.square(force).sum())
+                force_count += int(force.size)
+
+    if not atom_inter:
+        raise ValueError(f"no samples with A/y were found in {path}")
+
+    mean = float(sum(atom_inter) / len(atom_inter))
+    if scaling == "std_scaling":
+        if len(atom_inter) < 2:
+            scale = 1.0
+        else:
+            var = sum((x - mean) ** 2 for x in atom_inter) / (len(atom_inter) - 1)
+            scale = math.sqrt(max(var, 0.0))
+    else:
+        scale = math.sqrt(force_sq_sum / force_count) if force_count > 0 else 1.0
+
+    if scale == 0.0:
+        logging.warning("ScaleShift scale statistic is zero; using scale=1.0")
+        scale = 1.0
+    return float(scale), mean
+
+
 def build_baseline_model(
     cfg: ModelConfig,
     *,
@@ -58,12 +139,17 @@ def build_baseline_model(
     product_backend: str,
     correlation: int,
     radial_sqrt_num_basis: bool,
+    edge_lmax: int | None,
     attn_heads: int,
     atomic_numbers,
     ictd_save_tp_mode: str,
     invariant_channels: int,
     device,
     dtype,
+    energy_output_scale: float = 1.0,
+    energy_output_scale_enabled: bool = False,
+    energy_output_shift: float = 0.0,
+    energy_output_shift_enabled: bool = False,
 ) -> PureCartesianICTDFix:
     """Construct the model exactly the way from_checkpoint rebuilds it (so the saved
     weights reload into an identical module). All structural choices come from ``cfg``
@@ -87,6 +173,7 @@ def build_baseline_model(
         invariant_channels=invariant_channels,
         function_type_main=cfg.function_type,
         lmax=cfg.lmax,
+        ictd_fix_edge_lmax=edge_lmax,
         ictd_save_tp_mode=ictd_save_tp_mode,
         ictd_fix_route=route,
         ictd_fix_product_backend=product_backend,
@@ -94,6 +181,10 @@ def build_baseline_model(
         save_contraction_order=correlation,
         radial_sqrt_num_basis=radial_sqrt_num_basis,
         avg_num_neighbors=avg_num_neighbors,
+        energy_output_scale=energy_output_scale,
+        energy_output_scale_enabled=energy_output_scale_enabled,
+        energy_output_shift=energy_output_shift,
+        energy_output_shift_enabled=energy_output_shift_enabled,
         internal_compute_dtype=cfg.internal_compute_dtype,
         device=device,
     ).to(device=device, dtype=dtype)
@@ -109,11 +200,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # architecture
     ap.add_argument("--channels", type=int, default=64)
     ap.add_argument("--lmax", type=int, default=2)
+    ap.add_argument("--max-ell", type=int, default=None,
+                    help="MACE-style edge spherical harmonics max_ell. Defaults to --lmax.")
     ap.add_argument("--num-interaction", type=int, default=2)
     ap.add_argument("--num-layers", type=int, default=1)
     ap.add_argument("--correlation", type=int, default=2, help="save_contraction_order (body order - 1).")
     ap.add_argument("--route", default="baseline")
-    ap.add_argument("--product-backend", default="ictd-pure-u")
+    ap.add_argument("--product-backend", default="ictd-bridge-u")
     ap.add_argument("--invariant-channels", type=int, default=32)
     ap.add_argument("--ictd-save-tp-mode", default="fully-connected")
     ap.add_argument("--function-type", default="gaussian", choices=["gaussian", "bessel"])
@@ -126,6 +219,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # atomic-energy E0 offset
     ap.add_argument("--atomic-energy-keys", default=None, help='e.g. "1,6,7,8"')
     ap.add_argument("--atomic-energy-values", default=None, help='e.g. "-430.5,-821.0,-1488.2,-2044.4"')
+    ap.add_argument("--scaling", default="rms_forces_scaling",
+                    choices=["std_scaling", "rms_forces_scaling", "no_scaling"],
+                    help="MACE-style ScaleShiftMACE statistics for per-atom interaction energy.")
+    ap.add_argument("--atomic-inter-scale", type=float, default=None,
+                    help="Override the ScaleShiftMACE interaction-energy scale.")
+    ap.add_argument("--atomic-inter-shift", type=float, default=None,
+                    help="Override the ScaleShiftMACE per-atom interaction-energy shift.")
+    ap.add_argument("--no-atomic-inter-shift", action="store_true",
+                    help="Use a zero interaction-energy shift while keeping the selected scale statistic.")
     # optimization
     ap.add_argument("--epochs", type=int, default=10)
     ap.add_argument("--batch-size", type=int, default=4)
@@ -195,6 +297,35 @@ def main(argv=None):
     ann = args.avg_num_neighbors if args.avg_num_neighbors is not None else _avg_num_neighbors_from_h5(train_h5)
     logging.info("avg_num_neighbors = %.4f", ann)
 
+    atomic_numbers = aek if aek is not None else [1, 6, 7, 8]
+    atomic_energy_keys = aek if aek is not None else _DEFAULT_E0_KEYS
+    atomic_energy_values = aev if aev is not None else _DEFAULT_E0_VALUES
+    scale, shift = _atomic_inter_scale_shift_from_h5(
+        train_h5,
+        atomic_energy_keys=atomic_energy_keys,
+        atomic_energy_values=atomic_energy_values,
+        scaling=args.scaling,
+    )
+    if args.no_atomic_inter_shift:
+        shift = 0.0
+    if args.atomic_inter_scale is not None:
+        scale = float(args.atomic_inter_scale)
+    if args.atomic_inter_shift is not None:
+        shift = float(args.atomic_inter_shift)
+    energy_output_scale_enabled = args.scaling != "no_scaling" or args.atomic_inter_scale is not None
+    energy_output_shift_enabled = (
+        (args.scaling != "no_scaling" and not args.no_atomic_inter_shift)
+        or args.atomic_inter_shift is not None
+    )
+    logging.info(
+        "ScaleShiftMACE-style interaction scaling: mode=%s scale=%g%s shift=%g%s",
+        args.scaling,
+        scale,
+        " (disabled)" if not energy_output_scale_enabled else "",
+        shift,
+        " (disabled)" if not energy_output_shift_enabled else "",
+    )
+
     # model config (everything from_checkpoint reads back is captured here or in extra_hparams)
     cfg = ModelConfig(dtype=dtype)
     cfg.channel_in = args.channels
@@ -206,13 +337,18 @@ def main(argv=None):
     cfg.function_type = args.function_type
     cfg.internal_compute_dtype = dtype
 
-    atomic_numbers = aek if aek is not None else [1, 6, 7, 8]
     model = build_baseline_model(
         cfg, avg_num_neighbors=ann, num_interaction=args.num_interaction,
         route=args.route, product_backend=args.product_backend, correlation=args.correlation,
-        radial_sqrt_num_basis=args.radial_sqrt_num_basis, attn_heads=args.attn_heads,
+        radial_sqrt_num_basis=args.radial_sqrt_num_basis, edge_lmax=args.max_ell,
+        attn_heads=args.attn_heads,
         atomic_numbers=atomic_numbers, ictd_save_tp_mode=args.ictd_save_tp_mode,
-        invariant_channels=args.invariant_channels, device=device, dtype=dtype,
+        invariant_channels=args.invariant_channels,
+        energy_output_scale=scale,
+        energy_output_scale_enabled=energy_output_scale_enabled,
+        energy_output_shift=shift,
+        energy_output_shift_enabled=energy_output_shift_enabled,
+        device=device, dtype=dtype,
     )
     n_params = sum(p.numel() for p in model.parameters())
     logging.info("model: %s route=%s channels=%d lmax=%d num_interaction=%d params=%d",
@@ -241,11 +377,16 @@ def main(argv=None):
         invariant_channels=args.invariant_channels,
         ictd_fix_route=args.route,
         ictd_fix_product_backend=args.product_backend,
+        ictd_fix_edge_lmax=(args.lmax if args.max_ell is None else args.max_ell),
         save_contraction_order=args.correlation,
         ictd_save_tp_mode=args.ictd_save_tp_mode,
         ictd_fix_interaction_attn_heads=args.attn_heads,
         radial_sqrt_num_basis=bool(args.radial_sqrt_num_basis),
         avg_num_neighbors=float(ann),
+        energy_output_scale_enabled=bool(energy_output_scale_enabled),
+        energy_output_scale=float(scale),
+        energy_output_shift_enabled=bool(energy_output_shift_enabled),
+        energy_output_shift=float(shift),
     )
 
     trainer = ForceTrainer(

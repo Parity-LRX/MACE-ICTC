@@ -483,16 +483,31 @@ class ForceTrainer:
                 "ictd_tp_path_policy", "ictd_tp_max_rank_other", "ictd_save_tp_mode",
                 "save_contraction_order", "save_multiple_mix_channels",
                 "ictd_fix_route", "ictd_fix_product_backend",
+                "ictd_fix_use_reduced_cg", "ictd_fix_edge_lmax",
                 "ictd_fix_fusion_heads", "ictd_fix_fusion_head_weight_mode",
                 "ictd_fix_interaction_attn_heads", "ictd_fix_interaction_scale",
                 "ictd_fix_fusion_scale_init", "ictd_fix_gmix_gate_init",
                 "ictd_fix_gmix_output_lmax", "avg_num_neighbors",
-                "long_range_mode",
+                "polynomial_cutoff_p", "long_range_mode",
             ):
                 if hasattr(base, attr):
                     val = getattr(base, attr)
                     if val is not None:
                         hp[attr] = val
+            hp["energy_output_scale_enabled"] = bool(
+                getattr(base, "energy_output_scale_enabled", False)
+            )
+            scale_buf = getattr(base, "energy_output_scale", None)
+            hp["energy_output_scale"] = (
+                float(scale_buf.detach().cpu().item()) if torch.is_tensor(scale_buf) else 1.0
+            )
+            hp["energy_output_shift_enabled"] = bool(
+                getattr(base, "energy_output_shift_enabled", False)
+            )
+            shift_buf = getattr(base, "energy_output_shift", None)
+            hp["energy_output_shift"] = (
+                float(shift_buf.detach().cpu().item()) if torch.is_tensor(shift_buf) else 0.0
+            )
             # Explicit construction choices win (these are exactly what build_baseline_model
             # passed, so from_checkpoint rebuilds the same architecture).
             hp.update(self.extra_hparams)

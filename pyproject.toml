@@ -27,6 +27,7 @@ full = ["torch-scatter>=2.0.9", "torch-cluster>=1.6.0", "cuequivariance-torch>=0
 mff-export-aoti = "mace_ictd.cli.export_aoti_core:main"
 mff-export-core = "mace_ictd.cli.export_libtorch_core:main"
 mff-lammps = "mace_ictd.cli.lammps_interface:main"
+mff-convert-mace = "mace_ictd.cli.convert_mace:main"
 
 [tool.setuptools.packages.find]
 include = ["mace_ictd", "mace_ictd.*"]
