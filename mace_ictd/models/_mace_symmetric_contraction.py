@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Dict, Optional, Union
 
 import opt_einsum_fx
@@ -23,6 +24,7 @@ from mace_ictd.models._mace_cg import U_matrix_real
 
 BATCH_EXAMPLE = 10
 ALPHABET = ["w", "x", "v", "n", "z", "r", "t", "y", "u", "o", "p", "s"]
+_USE_SCALAR_CORR3_FAST = os.environ.get("ICTD_USE_SCALAR_CORR3_CONTRACTION", "1") == "1"
 
 
 @compile_mode("script")
@@ -100,6 +102,9 @@ class _Contraction(torch.nn.Module):
         self.num_features = irreps_in.count((0, 1))
         self.coupling_irreps = o3.Irreps([irrep.ir for irrep in irreps_in])
         self.correlation = int(correlation)
+        self.output_lmax = int(irrep_out.lmax)
+        self.internal_weights = bool(internal_weights)
+        self.shared_weights = bool(weights) if isinstance(weights, bool) else weights is not None
         dtype = torch.get_default_dtype()
 
         path_weight = []
@@ -220,7 +225,55 @@ class _Contraction(torch.nn.Module):
             self.weights = weights[:-1]
             self.weights_max = weights[-1]
 
+        self._use_scalar_corr3_fast = (
+            _USE_SCALAR_CORR3_FAST
+            and self.output_lmax == 0
+            and self.correlation == 3
+            and self.internal_weights
+            and self.shared_weights
+        )
+
+    def _forward_scalar_corr3(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        batch = x.shape[0]
+        channels = x.shape[1]
+        num_ell = x.shape[2]
+        num_elements = y.shape[-1]
+
+        u3 = self.U_tensors(3)
+        u2 = self.U_tensors(2)
+        u1 = self.U_tensors(1)
+
+        w3 = torch.matmul(y, self.weights_max.reshape(num_elements, -1))
+        w3 = w3.view(batch, u3.shape[-1], channels).permute(0, 2, 1).contiguous()
+        w2 = torch.matmul(y, self.weights[0].reshape(num_elements, -1))
+        w2 = w2.view(batch, u2.shape[-1], channels).permute(0, 2, 1).contiguous()
+        w1 = torch.matmul(y, self.weights[1].reshape(num_elements, -1))
+        w1 = w1.view(batch, u1.shape[-1], channels).permute(0, 2, 1).contiguous()
+
+        z3 = (x.unsqueeze(-1) * w3.unsqueeze(-2)).reshape(
+            batch * channels, num_ell * u3.shape[-1]
+        )
+        out2 = torch.matmul(
+            z3,
+            u3.reshape(num_ell * num_ell, num_ell * u3.shape[-1]).t(),
+        ).view(batch, channels, num_ell, num_ell)
+
+        c2 = torch.matmul(
+            w2.reshape(batch * channels, u2.shape[-1]),
+            u2.reshape(num_ell * num_ell, u2.shape[-1]).t(),
+        ).view(batch, channels, num_ell, num_ell)
+        out1 = torch.sum((out2 + c2) * x.unsqueeze(-2), dim=-1)
+
+        c1 = torch.matmul(
+            w1.reshape(batch * channels, u1.shape[-1]),
+            u1.reshape(num_ell, u1.shape[-1]).t(),
+        ).view(batch, channels, num_ell)
+        out = torch.sum((out1 + c1) * x, dim=-1)
+        return out.reshape(batch, -1)
+
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        if self._use_scalar_corr3_fast and x.dtype == torch.float32:
+            return self._forward_scalar_corr3(x, y)
         out = self.graph_opt_main(
             self.U_tensors(self.correlation),
             self.weights_max,
