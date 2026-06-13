@@ -80,6 +80,11 @@ _USE_BUCKETED_CHANNELWISE_MIX = os.environ.get("ICTD_USE_BUCKETED_CHANNELWISE_MI
 # path-preserving index_add is pure placement, so a direct placement path removes
 # small scatter/cat overhead. Set to 0 to keep the older bitwise-stable graph.
 _USE_SCALAR_PATH_TP = os.environ.get("ICTD_USE_SCALAR_PATH_TP", "1") == "1"
+# In the scalar MACE interaction path, per-channel path weights and radial gates
+# commute with the angular projector. For fp32 inference, apply them before the
+# large (..., C, 2l+1) edge tensor is formed so backward/AOTI has fewer large
+# elementwise nodes. Float64 keeps the old operation order for parity tests.
+_USE_SCALAR_TP_PRESCALE = os.environ.get("ICTD_USE_SCALAR_TP_PRESCALE", "1") == "1"
 
 
 def _resolve_internal_compute_dtype(internal_compute_dtype: torch.dtype | None) -> torch.dtype:
@@ -2570,6 +2575,7 @@ class EdgeWeightedPathPreservingTensorProduct(EdgeWeightedPathTensorProduct):
             else self._get_proj_group_list(device=device, dtype=dtype)
         )
         w = self.weight.to(device=device, dtype=compute_dtype)
+        use_prescale = _USE_SCALAR_TP_PRESCALE and dtype == torch.float32
 
         for g_idx, group in enumerate(self._groups):
             l2 = int(group["l2"])
@@ -2581,20 +2587,38 @@ class EdgeWeightedPathPreservingTensorProduct(EdgeWeightedPathTensorProduct):
             p_idx, l3, s, e = group["segments"][0]
             p_idx = int(p_idx)
             l3 = int(l3)
-            if use_identity_projector:
-                seg = a_comp * b_comp
-                scale = float(self._scalar_direct_group_scales[g_idx])
-                if scale != 1.0:
-                    seg = seg * scale
-            else:
-                pair = (a_comp.unsqueeze(-1) * b_comp.unsqueeze(-2)).reshape(
-                    *batch_shape, self.channels, 2 * l2 + 1
+            if use_prescale:
+                channel_scale = a_comp.squeeze(-1) * w[p_idx].view(
+                    *([1] * len(batch_shape)), self.channels
                 )
-                y = torch.matmul(pair, proj_list[g_idx])
-                seg = y[..., int(s) : int(e)]
-            seg = seg * w[p_idx].view(*([1] * len(batch_shape)), self.channels, 1)
-            if gates is not None:
-                seg = seg * gates[..., p_idx, :].unsqueeze(-1)
+                if gates is not None:
+                    channel_scale = channel_scale * gates[..., p_idx, :].to(dtype=compute_dtype)
+                if use_identity_projector:
+                    scale = float(self._scalar_direct_group_scales[g_idx])
+                    if scale != 1.0:
+                        channel_scale = channel_scale * scale
+                    seg = channel_scale.unsqueeze(-1) * b_comp
+                else:
+                    pair = (channel_scale.unsqueeze(-1).unsqueeze(-1) * b_comp.unsqueeze(-2)).reshape(
+                        *batch_shape, self.channels, 2 * l2 + 1
+                    )
+                    y = torch.matmul(pair, proj_list[g_idx])
+                    seg = y[..., int(s) : int(e)]
+            else:
+                if use_identity_projector:
+                    seg = a_comp * b_comp
+                    scale = float(self._scalar_direct_group_scales[g_idx])
+                    if scale != 1.0:
+                        seg = seg * scale
+                else:
+                    pair = (a_comp.unsqueeze(-1) * b_comp.unsqueeze(-2)).reshape(
+                        *batch_shape, self.channels, 2 * l2 + 1
+                    )
+                    y = torch.matmul(pair, proj_list[g_idx])
+                    seg = y[..., int(s) : int(e)]
+                seg = seg * w[p_idx].view(*([1] * len(batch_shape)), self.channels, 1)
+                if gates is not None:
+                    seg = seg * gates[..., p_idx, :].unsqueeze(-1)
             out[l3] = seg.to(dtype=dtype) if seg.dtype != dtype else seg
 
         return out

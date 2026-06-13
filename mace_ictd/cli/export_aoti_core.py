@@ -159,6 +159,10 @@ def main() -> int:
     p.add_argument("--product-backend", default="ictd-bridge-u")
     p.add_argument("--dtype", default="float32", choices=["float32", "float64"])
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument("--allow-tf32", action="store_true",
+                   help="allow NVIDIA TF32 matmul/convolution for float32 export and validation. "
+                        "This can speed GEMM-heavy AOTI graphs but uses a lower-precision matmul format; "
+                        "the exporter still checks energy/force numerics before exiting. Default is off.")
     p.add_argument("--checkpoint", default=None,
                    help="path to a trained .pth checkpoint to export (via LAMMPS_MLIAP_MFF.from_checkpoint). "
                         "When set, the REAL trained weights/dtype/species are used instead of a random model, "
@@ -204,6 +208,11 @@ def main() -> int:
                    help="enable Inductor max-autotune for AOTI compilation. This can improve the exported "
                         ".pt2 runtime, but substantially increases compile time; numerics are still checked "
                         "before the command exits.")
+    p.add_argument("--assume-cutoff-edges", action="store_true",
+                   help="assume every supplied edge has already been filtered to r <= cutoff and skip the "
+                        "model-side edge mask. LAMMPS mff/torch filters neighbor-list skin edges before "
+                        "calling the core, so this is safe for that deployment path and can reduce large "
+                        "edge-tensor elementwise work. Do not use with raw neighbor lists that include skin.")
     p.add_argument("--no-equiv", dest="no_equiv", action="store_true",
                    help="skip the rotation-equivariance gate on the loaded .pt2")
     args = p.parse_args()
@@ -228,10 +237,16 @@ def main() -> int:
 
     device = torch.device(args.device)
     dtype = torch.float32 if args.dtype == "float32" else torch.float64
-    # Hard-off TF32: keep full float32 matmul precision. TF32 would drop matmul to ~1e-3
-    # (orthogonal to compilation, but a real precision knob) -- we want numerics unchanged.
-    torch.backends.cuda.matmul.allow_tf32 = False
-    torch.backends.cudnn.allow_tf32 = False
+    if args.allow_tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.set_float32_matmul_precision("high")
+        print("[aoti] TF32 enabled for float32 matmul/convolution (numerics will be checked)")
+    else:
+        # Hard-off TF32: keep full float32 matmul precision. TF32 would drop matmul
+        # to roughly 1e-3 on some models, so unchanged numerics remains the default.
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
     torch.manual_seed(0)
 
     if args.checkpoint:
@@ -249,6 +264,7 @@ def main() -> int:
         model = obj.wrapper.model
         model.skip_input_validation = True  # set on the BARE model (the A.max().item() guard lives here,
                                             # not on the E0 wrapper) so make_fx tracing stays data-independent
+        model.assume_edges_within_radius = bool(args.assume_cutoff_edges)
         dtype = next(model.parameters()).dtype  # honor the trained dtype (likely float64)
         species_z = [int(z) for z in (getattr(model, "atomic_numbers", None) or SPECIES) if int(z) > 0] or list(SPECIES)
         print(f"[aoti] loaded checkpoint {args.checkpoint}  trained_dtype={dtype}  species={species_z}  "
@@ -269,9 +285,12 @@ def main() -> int:
             route=args.route, product_backend=args.product_backend, dtype=dtype, device=device,
             correlation=args.contraction_order, attn_heads=args.attn_heads,
         )
+        model.assume_edges_within_radius = bool(args.assume_cutoff_edges)
         species_z = list(SPECIES)
     model.eval()
     model.skip_input_validation = True
+    if args.assume_cutoff_edges:
+        print("[aoti] assuming cutoff-filtered edges: model-side edge_mask skipped")
 
     def _apply_species(g):
         # When the checkpoint's element set differs from the harness default, re-draw the species

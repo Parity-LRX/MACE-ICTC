@@ -2033,7 +2033,11 @@ class PureCartesianICTDFix(nn.Module):
 
         edge_length = edge_vec.norm(dim=1)
         n = edge_vec / edge_length.clamp(min=1e-8).unsqueeze(-1)
-        edge_mask = (edge_length <= self.max_radius).to(dtype=pos.dtype).unsqueeze(-1)
+        edge_mask = (
+            None
+            if getattr(self, "assume_edges_within_radius", False)
+            else (edge_length <= self.max_radius).to(dtype=pos.dtype).unsqueeze(-1)
+        )
         Y_list = direction_harmonics_all(n.to(dtype=dtype), self.ictd_fix_edge_lmax)
         if self.angular_basis == "e3nn":
             # fold the angular embedding into the e3nn/MACE spherical basis (Y_ictd @ Q_l = Y_e3nn)
