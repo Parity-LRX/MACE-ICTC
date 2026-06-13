@@ -200,9 +200,23 @@ def main() -> int:
     p.add_argument("--vary-atoms", dest="vary_atoms", type=int, default=0,
                    help="with --n-dynamic: also call the .pt2 at this atom count (!= --atoms) -> proves "
                         "one .pt2 handles a different N. Uses --degree for its neighbor count.")
+    p.add_argument("--inductor-max-autotune", action="store_true",
+                   help="enable Inductor max-autotune for AOTI compilation. This can improve the exported "
+                        ".pt2 runtime, but substantially increases compile time; numerics are still checked "
+                        "before the command exits.")
     p.add_argument("--no-equiv", dest="no_equiv", action="store_true",
                    help="skip the rotation-equivariance gate on the loaded .pt2")
     args = p.parse_args()
+    if args.inductor_max_autotune:
+        os.environ["TORCHINDUCTOR_MAX_AUTOTUNE"] = "1"
+        os.environ["TORCHINDUCTOR_COORDINATE_DESCENT_TUNING"] = "1"
+        try:
+            import torch._inductor.config as inductor_config
+            inductor_config.max_autotune = True
+            inductor_config.coordinate_descent_tuning = True
+        except Exception as ex:
+            print(f"[aoti] WARNING: failed to set Inductor autotune config directly: {type(ex).__name__}: {ex}")
+        print("[aoti] Inductor max-autotune enabled (slower compile, benchmark before production use)")
     if args.n_dynamic:
         args.dynamic = True  # N-dynamic implies E-dynamic
         # MUST be set BEFORE any e3nn module is constructed (the model build below). jit_script_fx=True
