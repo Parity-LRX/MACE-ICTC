@@ -279,13 +279,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--adam-beta2", type=float, default=0.999)
     ap.add_argument("--adam-eps", type=float, default=1e-8)
     ap.add_argument("--amsgrad", action="store_true")
-    ap.add_argument("--lr-scheduler", default="cosine", choices=["cosine", "step", "none"])
+    ap.add_argument("--lr-scheduler", default="cosine",
+                    choices=["cosine", "plateau", "exp", "step", "none", "ReduceLROnPlateau", "ExponentialLR"],
+                    help="LR schedule. plateau/exp follow mace-torch naming; step is a legacy alias.")
     ap.add_argument("--warmup-batches", type=int, default=0)
     ap.add_argument("--warmup-start-ratio", type=float, default=0.1)
+    ap.add_argument("--lr-factor", type=float, default=0.8,
+                    help="ReduceLROnPlateau factor when --lr-scheduler plateau.")
+    ap.add_argument("--scheduler-patience", type=int, default=50,
+                    help="ReduceLROnPlateau patience in epochs.")
+    ap.add_argument("--lr-scheduler-gamma", type=float, default=0.9993,
+                    help="ExponentialLR gamma when --lr-scheduler exp.")
     ap.add_argument("--lr-decay-step", type=int, default=1000,
-                    help="StepLR step_size when --lr-scheduler step is selected.")
+                    help="Legacy step scheduler interval in optimizer steps.")
     ap.add_argument("--lr-decay-factor", type=float, default=0.98,
-                    help="StepLR gamma when --lr-scheduler step is selected.")
+                    help="Legacy step scheduler gamma.")
     ap.add_argument("--loss", default="smooth_l1", choices=["smooth_l1", "mse"],
                     help="Loss kernel used for each enabled target.")
     ap.add_argument("--loss-beta", type=float, default=0.5,
@@ -299,10 +307,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--ema-decay", type=float, default=0.0,
                     help="Enable EMA when >0. Example: 0.999. Saved as e3trans_ema_state_dict.")
     ap.add_argument("--ema-start-step", type=int, default=0)
-    ap.add_argument("--swa-start-epoch", type=int, default=-1,
-                    help="-1 disables SWA; >=0 starts weight averaging from that epoch.")
+    ap.add_argument("--swa", "--stage-two", action="store_true", dest="stage_two",
+                    help="Enable mace-torch-style Stage Two/SWA: switch loss weights, lower LR, and average weights.")
+    ap.add_argument("--swa-start-epoch", "--start-swa", "--start-stage-two",
+                    type=int, default=-1, dest="swa_start_epoch",
+                    help="-1 disables epoch trigger; >=0 starts Stage Two/SWA from that epoch.")
     ap.add_argument("--swa-start-step", type=int, default=-1,
-                    help="-1 disables SWA; >=0 starts weight averaging from that optimizer step.")
+                    help="-1 disables step trigger; >=0 starts Stage Two/SWA from that optimizer step.")
+    ap.add_argument("--swa-lr", "--stage-two-lr", type=float, default=1e-3, dest="swa_lr",
+                    help="Stage Two/SWA learning rate. Must satisfy --min-lr <= swa_lr <= --lr.")
+    ap.add_argument("--swa-energy-weight", "--stage-two-energy-weight",
+                    type=float, default=1000.0, dest="swa_energy_weight")
+    ap.add_argument("--swa-force-weight", "--stage-two-force-weight",
+                    type=float, default=100.0, dest="swa_force_weight")
+    ap.add_argument("--swa-stress-weight", "--stage-two-stress-weight",
+                    type=float, default=None, dest="swa_stress_weight",
+                    help="Stage Two stress weight. Default: 0 if stress is off, else 10.")
+    ap.add_argument("--swa-anneal-epochs", type=int, default=1,
+                    help="SWALR annealing epochs after Stage Two starts.")
+    ap.add_argument("--swa-anneal-strategy", default="linear", choices=["linear", "cos"],
+                    help="SWALR annealing strategy.")
     ap.add_argument("--checkpoint-state-source", default="auto", choices=["auto", "raw", "ema", "swa"],
                     help="Which saved weights deploy loaders should use. auto prefers EMA, then SWA, then raw.")
     ap.add_argument("--no-shuffle", dest="shuffle", action="store_false")
@@ -336,6 +360,16 @@ def main(argv=None):
     logging.info("seed = %s", args.seed)
     if args.loss == "smooth_l1" and args.loss_beta <= 0:
         raise ValueError("--loss-beta must be positive for --loss smooth_l1")
+    if args.min_lr > args.lr:
+        raise ValueError("--min-lr must be <= --lr")
+    if args.swa_start_epoch >= 0 or args.swa_start_step >= 0:
+        args.stage_two = True
+    if args.stage_two and args.swa_start_epoch < 0 and args.swa_start_step < 0:
+        args.swa_start_epoch = max(1, args.epochs // 4 * 3)
+    if args.swa_stress_weight is None:
+        args.swa_stress_weight = 10.0 if args.stress_weight > 0.0 else 0.0
+    if args.stage_two and not (args.min_lr <= args.swa_lr <= args.lr):
+        raise ValueError("--swa-lr must satisfy --min-lr <= --swa-lr <= --lr")
 
     # parse make_fx bucket spec: "6" -> int K, "64,128,256" -> explicit bounds
     makefx_buckets = None
@@ -480,10 +514,16 @@ def main(argv=None):
         optimizer_type=args.optimizer, adam_beta1=args.adam_beta1, adam_beta2=args.adam_beta2,
         adam_eps=args.adam_eps, amsgrad=args.amsgrad, lr_scheduler=args.lr_scheduler,
         warmup_batches=args.warmup_batches, warmup_start_ratio=args.warmup_start_ratio,
+        lr_factor=args.lr_factor, scheduler_patience=args.scheduler_patience,
+        lr_scheduler_gamma=args.lr_scheduler_gamma,
         lr_decay_step=args.lr_decay_step, lr_decay_factor=args.lr_decay_factor,
         epochs=args.epochs, max_steps=args.max_steps, max_grad_norm=args.max_grad_norm,
         ema_decay=args.ema_decay, ema_start_step=args.ema_start_step,
+        stage_two_enabled=args.stage_two,
         swa_start_epoch=args.swa_start_epoch, swa_start_step=args.swa_start_step,
+        swa_lr=args.swa_lr, swa_energy_weight=args.swa_energy_weight,
+        swa_force_weight=args.swa_force_weight, swa_stress_weight=args.swa_stress_weight,
+        swa_anneal_epochs=args.swa_anneal_epochs, swa_anneal_strategy=args.swa_anneal_strategy,
         checkpoint_state_source=args.checkpoint_state_source,
         train_makefx_compile=args.train_makefx_compile,
         require_train_makefx_compile=bool(args.train_makefx_compile and args.product_backend == "cueq"),

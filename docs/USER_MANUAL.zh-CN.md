@@ -187,12 +187,19 @@ python -m mace_ictd.cli.train \
   --adam-beta1 0.9 \
   --adam-beta2 0.999 \
   --adam-eps 1e-8 \
-  --lr-scheduler cosine \
+  --lr-scheduler plateau \
+  --lr-factor 0.8 \
+  --scheduler-patience 50 \
   --warmup-batches 1000 \
   --warmup-start-ratio 0.1 \
+  --swa \
+  --start-swa 225 \
+  --swa-lr 0.0001 \
+  --swa-energy-weight 1000.0 \
+  --swa-force-weight 100.0 \
+  --swa-stress-weight 0.0 \
   --ema-decay 0.0 \
-  --swa-start-epoch -1 \
-  --checkpoint-state-source raw \
+  --checkpoint-state-source swa \
   --device cuda \
   --dtype float64 \
   --checkpoint model_bridge_u.pth
@@ -238,10 +245,15 @@ python -m mace_ictd.cli.train \
   --lr-scheduler cosine \
   --warmup-batches 1000 \
   --warmup-start-ratio 0.1 \
+  --swa \
+  --start-swa 225 \
+  --swa-lr 0.0001 \
+  --swa-energy-weight 1000.0 \
+  --swa-force-weight 100.0 \
+  --swa-stress-weight 0.0 \
   --ema-decay 0.999 \
   --ema-start-step 1000 \
-  --swa-start-epoch -1 \
-  --checkpoint-state-source auto \
+  --checkpoint-state-source swa \
   --device cuda \
   --dtype float32 \
   --checkpoint model_cueq_e3nn_makefx.pth
@@ -327,11 +339,13 @@ python -m mace_ictd.cli.train --help
 | `--max-steps` | 可选的 optimizer step 上限；达到后即使在 epoch 中间也会停止。 |
 | `--batch-size` | 每个 batch 或 bucketed batch 的 graph 数。 |
 | `--optimizer` | `adamw` 或 `adam`。 |
-| `--lr`、`--min-lr`、`--weight-decay` | learning rate、cosine scheduler 的最小 LR、AdamW weight decay。 |
+| `--lr`、`--min-lr`、`--weight-decay` | 初始/最大学习率、scheduler 的 LR 下限、AdamW weight decay。LR 会限制在 `[--min-lr, --lr]`。 |
 | `--adam-beta1`、`--adam-beta2`、`--adam-eps`、`--amsgrad` | Adam/AdamW 的数值参数。 |
-| `--lr-scheduler` | `cosine`、`step` 或 `none`。 |
+| `--lr-scheduler` | `plateau`、`exp`、`cosine`、`step` 或 `none`；也接受 `ReduceLROnPlateau` 和 `ExponentialLR` 别名。 |
 | `--warmup-batches`、`--warmup-start-ratio` | linear warmup 长度和初始 LR 倍率。 |
-| `--lr-decay-step`、`--lr-decay-factor` | `--lr-scheduler step` 时的 StepLR 参数。 |
+| `--lr-factor`、`--scheduler-patience` | plateau scheduler 的 factor 和 patience。 |
+| `--lr-scheduler-gamma` | exp scheduler 的 gamma。 |
+| `--lr-decay-step`、`--lr-decay-factor` | legacy step scheduler 参数。 |
 | `--max-grad-norm` | 可选 gradient clipping 阈值。 |
 
 Loss：
@@ -351,18 +365,23 @@ total = energy_weight * loss(E)
 
 打开 stress 后，stress 通过 strain derivative 计算。
 
-EMA 和 SWA：
+MACE-style Stage Two / SWA：
 
 | 参数 | 含义 |
 |---|---|
+| `--swa`、`--stage-two` | 开启 mace-torch 风格 Stage Two：切换 loss weights、降低 LR、保存平均权重。 |
+| `--start-swa`、`--start-stage-two`、`--swa-start-epoch` | 从哪个 epoch 开始 Stage Two。如果只开 `--swa` 但不指定 start，默认 `max(1, epochs * 3 // 4)`，和 mace-torch 一致。 |
+| `--swa-start-step` | 可选的 global step 触发。 |
+| `--swa-lr`、`--stage-two-lr` | Stage Two/SWA LR；必须满足 `--min-lr <= --swa-lr <= --lr`。 |
+| `--swa-energy-weight`、`--swa-force-weight`、`--swa-stress-weight` | Stage Two loss 权重。MACE-like energy/force 默认是 `1000` 和 `100`；stress 默认在 stress 关闭时为 `0`，stress 打开时为 `10`。 |
+| `--swa-anneal-epochs`、`--swa-anneal-strategy` | SWALR annealing 控制。 |
 | `--ema-decay` | 大于 `0` 时开启 EMA，例如 `0.999`；保存为 `e3trans_ema_state_dict`。 |
 | `--ema-start-step` | 从哪个 global optimizer step 开始更新 EMA。 |
-| `--swa-start-epoch` | `-1` 关闭 SWA；否则从该 epoch 开始做算术平均权重。 |
-| `--swa-start-step` | `-1` 关闭 SWA；否则从该 global step 开始做算术平均权重。 |
 | `--checkpoint-state-source` | `auto`、`raw`、`ema` 或 `swa`。部署加载器读取 `default_state_source`；`auto` 优先 EMA，其次 SWA，最后 raw。 |
 
-这里的 SWA 是“权重平均 + checkpoint 选择”。它本身不会自动附带原生 MACE
-那种后段 SWA learning rate 或 loss weight schedule；如果要复现那类训练阶段，需要用上面的 optimizer/loss 参数显式设定。
+现在这里复刻的是和本 trainer 相关的 mace-torch Stage Two 行为：到 Stage Two
+边界后切换 loss weights，暂停主 LR scheduler，把 optimizer LR 切到 `--swa-lr`，
+并把平均权重保存为 `e3trans_swa_state_dict`。
 
 ScaleShift：
 

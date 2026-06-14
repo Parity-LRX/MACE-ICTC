@@ -38,6 +38,7 @@ import time
 
 import torch
 import torch.nn.functional as F
+from torch.optim.swa_utils import SWALR
 
 from mace_ictd.utils.scatter import scatter
 from mace_ictd.utils.tensor_utils import map_tensor_values
@@ -86,6 +87,9 @@ class ForceTrainer:
         lr_scheduler: str = "cosine",
         warmup_batches: int = 0,
         warmup_start_ratio: float = 0.1,
+        lr_factor: float = 0.8,
+        scheduler_patience: int = 50,
+        lr_scheduler_gamma: float = 0.9993,
         lr_decay_step: int = 1000,
         lr_decay_factor: float = 0.98,
         epochs: int = 1,
@@ -94,8 +98,15 @@ class ForceTrainer:
         # averaged weights
         ema_decay: float = 0.0,
         ema_start_step: int = 0,
+        stage_two_enabled: bool = False,
         swa_start_epoch: int = -1,
         swa_start_step: int = -1,
+        swa_lr: float | None = None,
+        swa_energy_weight: float | None = None,
+        swa_force_weight: float | None = None,
+        swa_stress_weight: float | None = None,
+        swa_anneal_epochs: int = 1,
+        swa_anneal_strategy: str = "linear",
         checkpoint_state_source: str = "auto",
         # make_fx
         train_makefx_compile: bool = False,
@@ -135,6 +146,12 @@ class ForceTrainer:
 
         self.learning_rate = float(learning_rate)
         self.min_learning_rate = float(min_learning_rate)
+        if self.learning_rate <= 0:
+            raise ValueError("learning_rate must be positive")
+        if self.min_learning_rate < 0:
+            raise ValueError("min_learning_rate must be non-negative")
+        if self.min_learning_rate > self.learning_rate:
+            raise ValueError("min_learning_rate must be <= learning_rate")
         self.weight_decay = float(weight_decay)
         self.optimizer_type = str(optimizer_type).lower()
         self.adam_beta1 = float(adam_beta1)
@@ -145,9 +162,18 @@ class ForceTrainer:
         if self.adam_eps <= 0:
             raise ValueError("adam_eps must be positive")
         self.amsgrad = bool(amsgrad)
-        self.lr_scheduler_kind = str(lr_scheduler).lower()
+        self.lr_scheduler_kind = self._normalize_scheduler_kind(lr_scheduler)
         self.warmup_batches = int(max(0, warmup_batches))
         self.warmup_start_ratio = float(warmup_start_ratio)
+        if self.warmup_start_ratio < 0.0 or self.warmup_start_ratio > 1.0:
+            raise ValueError("warmup_start_ratio must be in [0, 1]")
+        self.lr_factor = float(lr_factor)
+        if self.lr_factor <= 0.0 or self.lr_factor >= 1.0:
+            raise ValueError("lr_factor must satisfy 0 < lr_factor < 1")
+        self.scheduler_patience = int(max(0, scheduler_patience))
+        self.lr_scheduler_gamma = float(lr_scheduler_gamma)
+        if self.lr_scheduler_gamma <= 0.0 or self.lr_scheduler_gamma > 1.0:
+            raise ValueError("lr_scheduler_gamma must satisfy 0 < gamma <= 1")
         self.lr_decay_step = int(lr_decay_step)
         self.lr_decay_factor = float(lr_decay_factor)
 
@@ -184,6 +210,39 @@ class ForceTrainer:
             raise ValueError("swa_start_epoch must be -1 (disabled) or >= 0")
         if self.swa_start_step < -1:
             raise ValueError("swa_start_step must be -1 (disabled) or >= 0")
+        self.stage_two_enabled = bool(
+            stage_two_enabled or self.swa_start_epoch >= 0 or self.swa_start_step >= 0
+        )
+        if self.stage_two_enabled and self.swa_start_epoch < 0 and self.swa_start_step < 0:
+            self.swa_start_epoch = max(1, self.epochs // 4 * 3)
+        if self.stage_two_enabled and self.swa_start_epoch > self.epochs and self.max_steps is None:
+            log.warning(
+                "stage two start epoch %d is greater than total epochs %d; stage two will not activate",
+                self.swa_start_epoch,
+                self.epochs,
+            )
+        self.swa_lr = self.learning_rate if swa_lr is None else float(swa_lr)
+        if self.swa_lr <= 0:
+            raise ValueError("swa_lr must be positive")
+        if self.stage_two_enabled and not (self.min_learning_rate <= self.swa_lr <= self.learning_rate):
+            raise ValueError("swa_lr must satisfy min_learning_rate <= swa_lr <= learning_rate")
+        self.stage_two_energy_weight = (
+            self.a if swa_energy_weight is None else float(swa_energy_weight)
+        )
+        self.stage_two_force_weight = (
+            self.b if swa_force_weight is None else float(swa_force_weight)
+        )
+        self.stage_two_stress_weight = (
+            self.c if swa_stress_weight is None else float(swa_stress_weight)
+        )
+        self.swa_anneal_epochs = int(max(1, swa_anneal_epochs))
+        self.swa_anneal_strategy = str(swa_anneal_strategy)
+        if self.swa_anneal_strategy not in {"linear", "cos"}:
+            raise ValueError("swa_anneal_strategy must be 'linear' or 'cos'")
+        self._stage_two_active = False
+        self._stage_two_activated_epoch = None
+        self._stage_two_activated_step = None
+        self._swa_scheduler = None
         self._swa_state = None
         self._swa_n = 0
         self.checkpoint_state_source = str(checkpoint_state_source or "auto").lower()
@@ -207,36 +266,127 @@ class ForceTrainer:
         else:
             self.optimizer = torch.optim.AdamW(params, **common)
 
+    @staticmethod
+    def _normalize_scheduler_kind(kind):
+        raw = str(kind or "none").strip().lower().replace("_", "").replace("-", "")
+        aliases = {
+            "none": "none",
+            "off": "none",
+            "cosine": "cosine",
+            "cosineannealinglr": "cosine",
+            "exp": "exp",
+            "exponential": "exp",
+            "exponentiallr": "exp",
+            "plateau": "plateau",
+            "reducelronplateau": "plateau",
+            "step": "step",
+            "steplr": "step",
+        }
+        if raw not in aliases:
+            raise ValueError("lr_scheduler must be one of none/cosine/exp/plateau/step")
+        return aliases[raw]
+
     def _build_scheduler(self, kind, warmup_batches, warmup_start_ratio,
                          decay_step, decay_factor, min_lr):
-        kind = str(kind).lower()
         steps_per_epoch = max(1, len(self.train_loader))
         total_steps = max(1, self.max_steps or (self.epochs * steps_per_epoch))
-        warmup_batches = int(max(0, warmup_batches))
-
-        def _warmup_lambda(step):
-            if warmup_batches <= 0:
-                return 1.0
-            return warmup_start_ratio + (1.0 - warmup_start_ratio) * min(step / warmup_batches, 1.0)
-
-        if kind == "none":
-            decay = None
-        elif kind == "step":
-            decay = torch.optim.lr_scheduler.StepLR(
-                self.optimizer, step_size=int(decay_step), gamma=float(decay_factor))
-        else:  # cosine (default)
-            decay = torch.optim.lr_scheduler.CosineAnnealingLR(
-                self.optimizer, T_max=max(1, total_steps - warmup_batches), eta_min=min_lr)
-
+        self._warmup_start_lr = max(min_lr, self.learning_rate * float(warmup_start_ratio))
+        self._post_warmup_step = 0
+        self._cosine_total_steps = max(1, total_steps - int(max(0, warmup_batches)))
+        self._scheduler = None
+        self._scheduler_kind = kind
+        self._scheduler_interval = "none"
+        if kind == "plateau":
+            self._scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer,
+                factor=self.lr_factor,
+                patience=self.scheduler_patience,
+                min_lr=min_lr,
+            )
+            self._scheduler_interval = "epoch"
+        elif kind == "exp":
+            self._scheduler_interval = "epoch"
+        elif kind in {"cosine", "step"}:
+            self._scheduler_interval = "step"
         if warmup_batches > 0:
-            warmup = torch.optim.lr_scheduler.LambdaLR(self.optimizer, _warmup_lambda)
-            if decay is None:
-                self.scheduler = warmup
-            else:
-                self.scheduler = torch.optim.lr_scheduler.SequentialLR(
-                    self.optimizer, schedulers=[warmup, decay], milestones=[warmup_batches])
+            self._set_optimizer_lrs(self._warmup_start_lr)
         else:
-            self.scheduler = decay  # may be None
+            self._set_optimizer_lrs(self.learning_rate)
+
+    def _set_optimizer_lrs(self, lr):
+        lr = min(self.learning_rate, max(self.min_learning_rate, float(lr)))
+        for group in self.optimizer.param_groups:
+            group["lr"] = lr
+
+    def _clamp_optimizer_lrs(self):
+        for group in self.optimizer.param_groups:
+            group["lr"] = min(self.learning_rate, max(self.min_learning_rate, float(group["lr"])))
+
+    def _step_scheduler_after_batch(self):
+        if self._stage_two_active:
+            return
+        if self.warmup_batches > 0 and self.global_step <= self.warmup_batches:
+            frac = min(float(self.global_step) / max(1, self.warmup_batches), 1.0)
+            lr = self._warmup_start_lr + (self.learning_rate - self._warmup_start_lr) * frac
+            self._set_optimizer_lrs(lr)
+            return
+        if self.warmup_batches > 0 and self.global_step == self.warmup_batches + 1:
+            self._set_optimizer_lrs(self.learning_rate)
+        if self._scheduler_kind == "cosine":
+            self._post_warmup_step += 1
+            t = min(self._post_warmup_step, self._cosine_total_steps)
+            frac = 0.5 * (1.0 + math.cos(math.pi * t / self._cosine_total_steps))
+            lr = self.min_learning_rate + (self.learning_rate - self.min_learning_rate) * frac
+            self._set_optimizer_lrs(lr)
+        elif self._scheduler_kind == "step" and self.lr_decay_step > 0:
+            if self.global_step % self.lr_decay_step == 0:
+                for group in self.optimizer.param_groups:
+                    group["lr"] = float(group["lr"]) * float(self.lr_decay_factor)
+                self._clamp_optimizer_lrs()
+
+    def _step_scheduler_after_epoch(self, metric):
+        if self._stage_two_active:
+            if self._swa_scheduler is not None:
+                self._swa_scheduler.step()
+                self._clamp_optimizer_lrs()
+            return
+        if self._scheduler_kind == "plateau" and self._scheduler is not None:
+            self._scheduler.step(metric)
+            self._clamp_optimizer_lrs()
+        elif self._scheduler_kind == "exp":
+            for group in self.optimizer.param_groups:
+                group["lr"] = float(group["lr"]) * self.lr_scheduler_gamma
+            self._clamp_optimizer_lrs()
+
+    def _maybe_activate_stage_two(self, epoch: int):
+        if self._stage_two_active or not self.stage_two_enabled:
+            return
+        by_epoch = self.swa_start_epoch >= 0 and int(epoch) >= self.swa_start_epoch
+        by_step = self.swa_start_step >= 0 and self.global_step >= self.swa_start_step
+        if not (by_epoch or by_step):
+            return
+        self._stage_two_active = True
+        self._stage_two_activated_epoch = int(epoch)
+        self._stage_two_activated_step = int(self.global_step)
+        self.a = self.stage_two_energy_weight
+        self.b = self.stage_two_force_weight
+        self.c = self.stage_two_stress_weight
+        self._set_optimizer_lrs(self.swa_lr)
+        self._swa_scheduler = SWALR(
+            optimizer=self.optimizer,
+            swa_lr=self.swa_lr,
+            anneal_epochs=self.swa_anneal_epochs,
+            anneal_strategy=self.swa_anneal_strategy,
+        )
+        log.info(
+            "Stage Two/SWA activated at epoch=%d step=%d: weights E=%g F=%g S=%g lr=%g",
+            epoch,
+            self.global_step,
+            self.a,
+            self.b,
+            self.c,
+            self.swa_lr,
+        )
 
     # ----------------------------------------------------------------- make_fx
     def _makefx_forward(self, pos, A, batch_idx, edge_src, edge_dst, edge_shifts, cell, strain=None):
@@ -477,15 +627,10 @@ class ForceTrainer:
             else:
                 old.copy_(cur)
 
-    def _swa_is_active(self, epoch: int) -> bool:
-        by_epoch = self.swa_start_epoch >= 0 and int(epoch) >= self.swa_start_epoch
-        by_step = self.swa_start_step >= 0 and self.global_step >= self.swa_start_step
-        return by_epoch or by_step
-
     def _update_averaged_states(self, epoch: int):
         if self.ema_decay > 0.0 and self.global_step >= self.ema_start_step:
             self._update_ema_state()
-        if self._swa_is_active(epoch):
+        if self._stage_two_active:
             self._update_swa_state()
 
     def _reached_max_steps(self) -> bool:
@@ -496,6 +641,7 @@ class ForceTrainer:
         if self.train_sampler is not None and hasattr(self.train_sampler, "set_epoch"):
             self.train_sampler.set_epoch(epoch)
         self.model.train()
+        self._maybe_activate_stage_two(epoch)
         n_batches = len(self.train_loader)
         run = {"total_loss": 0.0, "energy_loss": 0.0, "force_loss": 0.0,
                "stress_loss": 0.0, "force_rmse": 0.0, "energy_rmse_avg": 0.0}
@@ -504,6 +650,7 @@ class ForceTrainer:
         for i, batch in enumerate(self.train_loader):
             if self._reached_max_steps():
                 break
+            self._maybe_activate_stage_two(epoch)
             self.optimizer.zero_grad(set_to_none=True)
             out = self._compute(batch, training=True)
             loss = out["total_loss"]
@@ -511,9 +658,8 @@ class ForceTrainer:
             if self.max_grad_norm is not None and self.max_grad_norm > 0:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
             self.optimizer.step()
-            if self.scheduler is not None:
-                self.scheduler.step()
             self.global_step += 1
+            self._step_scheduler_after_batch()
             self._update_averaged_states(epoch)
             for k in run:
                 run[k] += float(out[k])
@@ -521,8 +667,9 @@ class ForceTrainer:
             if self.log_interval and (i % self.log_interval == 0):
                 lr = self.optimizer.param_groups[0]["lr"]
                 s = f" S={float(out['stress_loss']):.4f}" if self.c > 0 else ""
-                log.info("epoch %d step %d batch %d/%d loss=%.4f E=%.4f F=%.4f%s Frmse=%.4f lr=%.2e",
-                         epoch, self.global_step, i, n_batches, float(out["total_loss"]),
+                phase = "stage2" if self._stage_two_active else "stage1"
+                log.info("epoch %d step %d batch %d/%d phase=%s loss=%.4f E=%.4f F=%.4f%s Frmse=%.4f lr=%.2e",
+                         epoch, self.global_step, i, n_batches, phase, float(out["total_loss"]),
                          float(out["energy_loss"]), float(out["force_loss"]), s,
                          float(out["force_rmse"]), lr)
         seen = max(seen, 1)
@@ -553,9 +700,11 @@ class ForceTrainer:
         for epoch in range(epochs):
             if self._reached_max_steps():
                 break
+            self._maybe_activate_stage_two(epoch)
             tr = self.train_epoch(epoch)
             sterm = f" S={tr['stress_loss']:.4f}" if self.c > 0 else ""
-            msg = (f"[epoch {epoch} step {self.global_step}] train loss={tr['total_loss']:.4f} "
+            phase = "stage2" if self._stage_two_active else "stage1"
+            msg = (f"[epoch {epoch} step {self.global_step} {phase}] train loss={tr['total_loss']:.4f} "
                    f"E={tr['energy_loss']:.4f} F={tr['force_loss']:.4f}{sterm} "
                    f"Frmse={tr['force_rmse']:.4f} ({tr['time']:.1f}s)")
             if self.val_loader is not None:
@@ -567,6 +716,7 @@ class ForceTrainer:
                 cur = tr["total_loss"]
             log.info(msg)
             print(msg, flush=True)
+            self._step_scheduler_after_epoch(cur)
             if self.checkpoint_path is not None and cur < best:
                 best = cur
                 self.save_checkpoint(self.checkpoint_path, epoch=epoch)
@@ -668,6 +818,10 @@ class ForceTrainer:
             "lr_scheduler": self.lr_scheduler_kind,
             "warmup_batches": self.warmup_batches,
             "warmup_start_ratio": self.warmup_start_ratio,
+            "warmup_start_lr": self._warmup_start_lr,
+            "lr_factor": self.lr_factor,
+            "scheduler_patience": self.scheduler_patience,
+            "lr_scheduler_gamma": self.lr_scheduler_gamma,
             "lr_decay_step": self.lr_decay_step,
             "lr_decay_factor": self.lr_decay_factor,
             "epochs": self.epochs,
@@ -675,8 +829,18 @@ class ForceTrainer:
             "max_grad_norm": self.max_grad_norm,
             "ema_decay": self.ema_decay,
             "ema_start_step": self.ema_start_step,
+            "stage_two_enabled": self.stage_two_enabled,
+            "stage_two_active": self._stage_two_active,
+            "stage_two_activated_epoch": self._stage_two_activated_epoch,
+            "stage_two_activated_step": self._stage_two_activated_step,
             "swa_start_epoch": self.swa_start_epoch,
             "swa_start_step": self.swa_start_step,
+            "swa_lr": self.swa_lr,
+            "swa_energy_weight": self.stage_two_energy_weight,
+            "swa_force_weight": self.stage_two_force_weight,
+            "swa_stress_weight": self.stage_two_stress_weight,
+            "swa_anneal_epochs": self.swa_anneal_epochs,
+            "swa_anneal_strategy": self.swa_anneal_strategy,
             "swa_n_averaged": self._swa_n,
             "checkpoint_state_source": self.checkpoint_state_source,
             "train_makefx_compile": self.train_makefx_compile,

@@ -187,12 +187,19 @@ python -m mace_ictd.cli.train \
   --adam-beta1 0.9 \
   --adam-beta2 0.999 \
   --adam-eps 1e-8 \
-  --lr-scheduler cosine \
+  --lr-scheduler plateau \
+  --lr-factor 0.8 \
+  --scheduler-patience 50 \
   --warmup-batches 1000 \
   --warmup-start-ratio 0.1 \
+  --swa \
+  --start-swa 225 \
+  --swa-lr 0.0001 \
+  --swa-energy-weight 1000.0 \
+  --swa-force-weight 100.0 \
+  --swa-stress-weight 0.0 \
   --ema-decay 0.0 \
-  --swa-start-epoch -1 \
-  --checkpoint-state-source raw \
+  --checkpoint-state-source swa \
   --device cuda \
   --dtype float64 \
   --checkpoint model_bridge_u.pth
@@ -238,10 +245,15 @@ python -m mace_ictd.cli.train \
   --lr-scheduler cosine \
   --warmup-batches 1000 \
   --warmup-start-ratio 0.1 \
+  --swa \
+  --start-swa 225 \
+  --swa-lr 0.0001 \
+  --swa-energy-weight 1000.0 \
+  --swa-force-weight 100.0 \
+  --swa-stress-weight 0.0 \
   --ema-decay 0.999 \
   --ema-start-step 1000 \
-  --swa-start-epoch -1 \
-  --checkpoint-state-source auto \
+  --checkpoint-state-source swa \
   --device cuda \
   --dtype float32 \
   --checkpoint model_cueq_e3nn_makefx.pth
@@ -326,11 +338,13 @@ Optimization, step, and seed controls:
 | `--max-steps` | Optional optimizer-step cap. If set, training stops once this global step is reached, even mid-epoch. |
 | `--batch-size` | Graphs per batch or per bucketed batch. |
 | `--optimizer` | `adamw` or `adam`. |
-| `--lr`, `--min-lr`, `--weight-decay` | Learning rate, cosine minimum LR, and AdamW weight decay. |
+| `--lr`, `--min-lr`, `--weight-decay` | Initial/max learning rate, scheduler floor, and AdamW weight decay. LR is clamped to `[--min-lr, --lr]`. |
 | `--adam-beta1`, `--adam-beta2`, `--adam-eps`, `--amsgrad` | Adam/AdamW numerical parameters. |
-| `--lr-scheduler` | `cosine`, `step`, or `none`. |
+| `--lr-scheduler` | `plateau`, `exp`, `cosine`, `step`, or `none`. `ReduceLROnPlateau` and `ExponentialLR` aliases are accepted. |
 | `--warmup-batches`, `--warmup-start-ratio` | Linear warmup length and initial LR multiplier. |
-| `--lr-decay-step`, `--lr-decay-factor` | StepLR parameters when `--lr-scheduler step` is selected. |
+| `--lr-factor`, `--scheduler-patience` | Plateau factor and patience. |
+| `--lr-scheduler-gamma` | Exponential scheduler gamma. |
+| `--lr-decay-step`, `--lr-decay-factor` | Legacy step scheduler parameters. |
 | `--max-grad-norm` | Optional gradient clipping threshold. |
 
 Energy/force/stress loss:
@@ -350,20 +364,24 @@ total = energy_weight * loss(E)
 
 When stress is enabled, stress is computed from the strain derivative.
 
-EMA and SWA:
+MACE-style Stage Two / SWA:
 
 | Argument | Meaning |
 |---|---|
+| `--swa`, `--stage-two` | Enables mace-torch-style Stage Two: switch loss weights, lower LR, and save averaged weights. |
+| `--start-swa`, `--start-stage-two`, `--swa-start-epoch` | First epoch using Stage Two. If `--swa` is set and no start is given, defaults to `max(1, epochs * 3 // 4)`, matching mace-torch behavior. |
+| `--swa-start-step` | Optional global-step trigger for Stage Two. |
+| `--swa-lr`, `--stage-two-lr` | Stage Two/SWA LR. It must satisfy `--min-lr <= --swa-lr <= --lr`. |
+| `--swa-energy-weight`, `--swa-force-weight`, `--swa-stress-weight` | Stage Two loss weights. MACE-like energy/force defaults are `1000` and `100`; stress defaults to `0` when stress is off and `10` when stress is on. |
+| `--swa-anneal-epochs`, `--swa-anneal-strategy` | SWALR annealing controls. |
 | `--ema-decay` | Enables exponential moving average when greater than `0`, for example `0.999`. Saved as `e3trans_ema_state_dict`. |
 | `--ema-start-step` | First global optimizer step eligible for EMA updates. |
-| `--swa-start-epoch` | `-1` disables SWA; otherwise starts arithmetic weight averaging from that epoch. |
-| `--swa-start-step` | `-1` disables SWA; otherwise starts arithmetic weight averaging from that global step. |
 | `--checkpoint-state-source` | `auto`, `raw`, `ema`, or `swa`. Deploy loaders use `default_state_source`; `auto` prefers EMA, then SWA, then raw. |
 
-The SWA implementation here is weight averaging and checkpoint selection. It does
-not by itself add a native MACE-style SWA training phase with a special SWA LR or
-changed loss weights; set those explicitly with the optimizer/loss flags if you need
-to reproduce such a schedule.
+This now mirrors the relevant mace-torch Stage Two behavior for this trainer:
+loss weights switch at the Stage Two boundary, the main LR scheduler is suspended,
+the optimizer LR is moved to `--swa-lr`, and averaged weights are saved as
+`e3trans_swa_state_dict`.
 
 ScaleShift behavior:
 

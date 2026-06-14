@@ -96,7 +96,10 @@ atoms.calc = MyE3NNCalculator(checkpoint="model.pt", device="cuda")
 python -m mace_ictd.cli.train \
     --data-dir DATA \                              # holds processed_train.h5 (+ optional processed_val.h5)
     --channels 64 --lmax 2 --num-interaction 2 \
-    --epochs 50 --batch-size 4 --device cuda --dtype float64 \
+    --epochs 50 --batch-size 4 --lr-scheduler plateau --min-lr 1e-6 \
+    --swa --start-swa 38 --swa-lr 1e-4 \
+    --swa-energy-weight 1000 --swa-force-weight 100 --swa-stress-weight 0 \
+    --device cuda --dtype float64 \
     --train-makefx-compile --makefx-buckets 6 \    # compile the force step; 6 size-buckets
     --checkpoint model.pth
 ```
@@ -109,7 +112,10 @@ auto-computed from the training H5. Training also uses MACE-style per-atom inter
 ScaleShift by default (`--scaling rms_forces_scaling`, with `--atomic-inter-scale/--atomic-inter-shift`
 overrides; use `--scaling no_scaling` for the old identity behavior). All of these values are written
 into the checkpoint, so the saved `.pth` rebuilds bit-for-bit via `LAMMPS_MLIAP_MFF.from_checkpoint` and
-drops straight into the AOTI / LAMMPS export above. Drop `--makefx-buckets` for global-pad make_fx,
+drops straight into the AOTI / LAMMPS export above. The trainer also supports mace-torch-style
+Stage Two/SWA (`--swa`): the loss weights switch at `--start-swa`, the LR moves to `--swa-lr`,
+and SWA averaged weights are saved for deployment. LR schedules include `plateau`, `exp`, and
+`cosine`, with LR clamped to `[--min-lr, --lr]`. Drop `--makefx-buckets` for global-pad make_fx,
 or `--train-makefx-compile` too for plain eager training. The input H5 is produced by
 `mace_ictd.data.preprocessing.save_to_h5_parallel` (xyz → `processed_<split>.h5` + a `.counts.npz`
 bucket sidecar). Programmatic API: `from mace_ictd.training import ForceTrainer`.

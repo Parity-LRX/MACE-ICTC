@@ -163,9 +163,12 @@ def run(device="cpu"):
     tr_avg = ForceTrainer(
         m_avg, loader, device=dev, config=cfg_avg, dtype=dtype, max_radius=5.0,
         learning_rate=1e-4, optimizer_type="adamw", adam_beta1=0.8, adam_beta2=0.95,
-        adam_eps=1e-7, amsgrad=True, lr_scheduler="none", epochs=1, max_steps=2,
+        adam_eps=1e-7, amsgrad=True, lr_scheduler="plateau", lr_factor=0.5,
+        scheduler_patience=0, epochs=1, max_steps=2,
         loss_type="mse", loss_beta=0.25, ema_decay=0.9, ema_start_step=1,
-        swa_start_step=1, checkpoint_state_source="ema", checkpoint_path=avg_ckpt,
+        stage_two_enabled=True, swa_start_step=1, swa_lr=5e-5,
+        swa_energy_weight=2.0, swa_force_weight=3.0, swa_stress_weight=0.0,
+        checkpoint_state_source="ema", checkpoint_path=avg_ckpt,
         extra_hparams=_extra_hparams(ann),
     )
     tr_avg.fit()
@@ -176,6 +179,10 @@ def run(device="cpu"):
     th = avg_blob["training_hyperparameters"]
     assert th["loss"] == "mse" and th["adam_beta1"] == 0.8 and th["adam_beta2"] == 0.95
     assert th["adam_eps"] == 1e-7 and th["amsgrad"] is True and th["max_steps"] == 2
+    assert th["lr_scheduler"] == "plateau" and th["lr_factor"] == 0.5
+    assert th["stage_two_active"] is True and th["stage_two_activated_step"] == 1
+    assert th["swa_lr"] == 5e-5 and th["swa_energy_weight"] == 2.0
+    assert th["swa_force_weight"] == 3.0 and th["swa_n_averaged"] == 1
     from mace_ictd.utils.checkpoint_metadata import get_checkpoint_e3_state_dict
     _, src = get_checkpoint_e3_state_dict(avg_blob)
     assert src == "ema"
