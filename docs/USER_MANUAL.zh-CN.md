@@ -8,6 +8,8 @@ English version: [USER_MANUAL.md](USER_MANUAL.md)
 
 MACE-ICTD 是一个独立的 MACE 实现：它把 MACE 的等变特征从原生 e3nn 球谐基表示改写到 ICTD（Irreducible Cartesian Tensor Decomposition，不可约笛卡尔张量分解）基中，并带有训练、转换、导出和 LAMMPS 部署栈。
 
+核心技术点是 ICTD basis construction：用固定的 `Q`/`U` 算子把 MACE/e3nn 的角向代数重写成不可约笛卡尔张量块，同时保留原始 MACE 的 interaction/readout 语义。这个仓库重点解决 basis conversion、原生 `mace-torch` 数值对应和部署。
+
 主要目录：
 
 - `mace_ictd/models/`：`PureCartesianICTDFix` 主模型、ICTD irreps、tensor product、MACE-compatible symmetric contraction、radial basis、ZBL、long-range 等。

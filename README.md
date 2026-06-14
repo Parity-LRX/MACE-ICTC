@@ -205,6 +205,12 @@ degree 16. The x-axis is converted from measured directed-edge counts to
 
 ## Relationship to original MACE
 
+The central point of this repository is the ICTD basis construction and its deployment path:
+fixed `Q`/`U` operators re-express MACE/e3nn angular algebra in irreducible Cartesian tensor blocks
+while preserving the original MACE interaction/readout semantics. The practical target is not a new
+chemical model family, but a numerically matched MACE representation that is dense-kernel friendly,
+convertible from native `mace-torch`, and exportable to AOTI/LAMMPS.
+
 The baseline `PureCartesianICTDFix` is **MACE in an irreducible Cartesian tensor basis**. Headline
 checks vs original `mace-torch` are covered by the converter and angular-basis regression tests:
 

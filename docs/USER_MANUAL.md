@@ -8,6 +8,8 @@ Chinese version: [USER_MANUAL.zh-CN.md](USER_MANUAL.zh-CN.md)
 
 MACE-ICTD is a standalone implementation of MACE in the Irreducible Cartesian Tensor Decomposition (ICTD) basis. It keeps the MACE model class and deployment stack independent of the original FSCETP tree.
 
+The central technical point is the ICTD basis construction: fixed `Q`/`U` operators re-express MACE/e3nn angular algebra in irreducible Cartesian tensor blocks while preserving the original MACE interaction/readout semantics. The repository focuses on basis conversion, native `mace-torch` parity, and deployment.
+
 The repository includes:
 
 - `mace_ictd/models/`: the `PureCartesianICTDFix` model, ICTD irreps, tensor product helpers, MACE-compatible symmetric contractions, radial basis functions, optional ZBL and long-range modules.
