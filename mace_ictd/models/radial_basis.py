@@ -71,7 +71,7 @@ def mace_radial_embedding(
     if sqrt_num_basis_norm:
         # Historical FSCETP sqrt(num_basis) scale -- a constant the first radial linear absorbs
         # during training. Set False for byte-literal correspondence with MACE's
-        # BesselBasis x PolynomialCutoff (identical otherwise; see docs/MACE_correspondence.md).
+        # BesselBasis x PolynomialCutoff.
         emb = emb.mul(math.sqrt(int(number_of_basis)))
     return emb
 

@@ -193,19 +193,26 @@ The extracted, slimmed package was checked on torch 2.5.1 / e3nn 0.5.9 (float64,
 Numerics and equivariance are preserved bit-for-bit relative to the FSCETP source; removing the
 fusion route did **not** perturb the baseline (verified bit-identical against a pre-removal reference).
 
+## Backend Throughput Benchmark
+
+Controlled fixed-edge throughput benchmark on an RTX 4090, FP32, 64 channels, average directed
+degree 16. The x-axis is converted from measured directed-edge counts to
+50-directed-neighbor-equivalent atom counts.
+
+![Backend throughput benchmark](docs/figures/backend_throughput_benchmark_channels64.png)
+
+![Backend speedup benchmark](docs/figures/backend_speedup_benchmark_channels64.png)
+
 ## Relationship to original MACE
 
-The baseline `PureCartesianICTDFix` is **MACE in an irreducible Cartesian tensor basis**. A
-granular, block-by-block correspondence (with reproducible numbers) is in
-[`docs/MACE_correspondence.md`](docs/MACE_correspondence.md); run
-[`docs/compare_to_mace.py`](docs/compare_to_mace.py) to regenerate it. Headline checks vs original
-`mace-torch` (float64):
+The baseline `PureCartesianICTDFix` is **MACE in an irreducible Cartesian tensor basis**. Headline
+checks vs original `mace-torch` are covered by the converter and angular-basis regression tests:
 
 | component | MACE ↔ ICTD-MACE agreement |
 |---|---|
 | radial (Bessel × polynomial cutoff) | identical (`3e-16`) |
 | angular basis (SH ↔ ICTD harmonics) | exact orthogonal change of basis `Q` (`~1e-15`) |
-| symmetric contraction (product basis) | same operation, two implementations agree to `~1e-9` (9 sig figs); `native-mace` backend *is* MACE's `MaceSymmetricContraction` |
+| symmetric contraction (product basis) | native MACE conversion parity is tested through `mace_ictd/test/test_mace_converter.py`; `native-mace` backend *is* MACE's `MaceSymmetricContraction` |
 
 i.e. any accuracy gap to a reference MACE is a training/framework matter, not architecture.
 

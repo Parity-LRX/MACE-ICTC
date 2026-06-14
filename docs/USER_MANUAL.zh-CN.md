@@ -702,4 +702,4 @@ Dynamic AOTI 和 make_fx 对 PyTorch/Inductor 版本敏感。如果 dynamic expo
 | `mace_ictd/training/makefx_compile.py` | `make_fx` force-step 编译。 |
 | `mace_ictd/training/train_loop.py` | Trainer、checkpoint metadata、ScaleShift/E0 loss 逻辑。 |
 | `mace_ictd/interfaces/lammps_mliap.py` | 部署端 checkpoint reload 和 wrapper 逻辑。 |
-| `docs/MACE_correspondence.md` | MACE 和 ICTD-MACE 的数学对应关系。 |
+| `mace_ictd/test/test_mace_converter.py` | 原生 MACE 到 MACE-ICTD 的转换 parity 测试。 |

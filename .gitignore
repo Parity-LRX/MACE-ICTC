@@ -20,6 +20,7 @@ dist/
 mace_ictd/models/_ictd_cache/
 
 # Model / run artifacts
+benchmark_results/
 *.pt2
 *.pth
 checkpoint/

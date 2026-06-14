@@ -705,4 +705,4 @@ Useful files:
 | `mace_ictd/training/makefx_compile.py` | `make_fx` force-step compilation. |
 | `mace_ictd/training/train_loop.py` | Trainer, checkpoint metadata, ScaleShift/E0 loss handling. |
 | `mace_ictd/interfaces/lammps_mliap.py` | Deployment checkpoint reload and wrapper logic. |
-| `docs/MACE_correspondence.md` | MACE-vs-ICTD mathematical correspondence. |
+| `mace_ictd/test/test_mace_converter.py` | Native MACE to MACE-ICTD conversion parity tests. |
