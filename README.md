@@ -1,5 +1,7 @@
 # MACE-ICTD
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20690950.svg)](https://doi.org/10.5281/zenodo.20690950)
+
 **MACE in the Irreducible Cartesian Tensor Decomposition (ICTD) basis** — a self-contained
 extraction from FSCETP of the ICTD-basis MACE model together with its full training and
 deployment stack:
