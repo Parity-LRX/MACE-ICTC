@@ -239,6 +239,21 @@ class ElementConditionedLinearSO3(nn.Module):
             out_blocks[l] = out_block
         return _merge_irreps(out_blocks, self.channels, self.lmax)
 
+    def forward_type_idx(self, x: torch.Tensor, node_type_idx: torch.Tensor) -> torch.Tensor:
+        idx = node_type_idx.to(device=x.device, dtype=torch.long)
+        blocks = _split_irreps(x, self.channels, self.lmax)
+        out_blocks: Dict[int, torch.Tensor] = {}
+        for l in range(self.lmax + 1):
+            weight = self.weights[str(l)].to(dtype=x.dtype, device=x.device)
+            mixed_weight = weight.index_select(0, idx)
+            out_block = torch.einsum("noi,nid->nod", mixed_weight, blocks[l])
+            if self.bias is not None:
+                bias = self.bias[str(l)].to(dtype=x.dtype, device=x.device)
+                mixed_bias = bias.index_select(0, idx)
+                out_block = out_block + mixed_bias.unsqueeze(-1)
+            out_blocks[l] = out_block
+        return _merge_irreps(out_blocks, self.channels, self.lmax)
+
 
 class PerLScaleSO3(nn.Module):
     def __init__(self, channels: int, lmax: int, init_scales: list[float] | tuple[float, ...]):
@@ -772,6 +787,321 @@ class NativeMACEProductBasisBlockSO3(nn.Module):
         return out
 
 
+def _cueq_o3_e3nn_group():
+    try:
+        from mace.tools.cg import O3_e3nn
+    except Exception:
+        try:
+            from mace_ictd.models._mace_cg import O3_e3nn
+        except Exception as exc:  # pragma: no cover - optional accelerator dependency
+            raise RuntimeError(
+                "ictd_fix_product_backend='cueq' requires the e3nn-compatible "
+                "cuequivariance O3 group from mace.tools.cg or mace_ictd.models._mace_cg"
+            ) from exc
+    return O3_e3nn
+
+
+def _cueq_o3_irreps(channels: int, lmax: int):
+    """Build a cuequivariance O3 irreps string matching the local MACE/e3nn convention."""
+    try:
+        import cuequivariance as cue
+    except Exception as exc:  # pragma: no cover - optional accelerator dependency
+        raise RuntimeError(
+            "ictd_fix_product_backend='cueq' requires cuequivariance and "
+            "cuequivariance_torch to be installed"
+        ) from exc
+    terms = []
+    for l in range(int(lmax) + 1):
+        parity = "e" if l % 2 == 0 else "o"
+        terms.append(f"{int(channels)}x{l}{parity}")
+    return cue.Irreps(_cueq_o3_e3nn_group(), " + ".join(terms))
+
+
+class CueqMaceSymmetricContractionSO3(nn.Module):
+    """MACE symmetric contraction accelerated by cuEquivariance.
+
+    The inner ``symmetric_contractions`` module keeps the exact MACE parameter
+    layout used by the converter and by existing checkpoints. The cuEquivariance
+    modules hold frozen mirror weights for eval/inference. CUDA training uses
+    cuEquivariance's contraction graph with weights computed differentiably from
+    the authoritative MACE parameters, so gradients still land on checkpoint-
+    compatible tensors.
+    """
+
+    def __init__(
+        self,
+        *,
+        num_elements: int,
+        channels: int,
+        lmax: int,
+        target_lmax: int,
+        correlation: int = 3,
+        use_reduced_cg: bool = False,
+    ):
+        super().__init__()
+        self.channels = int(channels)
+        self.lmax = int(lmax)
+        self.target_lmax = int(target_lmax)
+        self.correlation = int(correlation)
+        self.use_reduced_cg = bool(use_reduced_cg)
+        if self.correlation not in {1, 2, 3, 4}:
+            raise NotImplementedError(
+                "cuEquivariance product backend currently supports correlation=1,2,3,4"
+            )
+
+        try:
+            import cuequivariance as cue
+            import cuequivariance_torch as cuet
+        except Exception as exc:  # pragma: no cover - optional accelerator dependency
+            raise RuntimeError(
+                "ictd_fix_product_backend='cueq' requires cuequivariance and "
+                "cuequivariance_torch to be installed"
+            ) from exc
+
+        self.hidden_irreps = _hidden_irreps(self.channels, self.lmax)
+        self.target_irreps = _hidden_irreps(self.channels, self.target_lmax)
+        self.symmetric_contractions = MaceSymmetricContraction(
+            irreps_in=self.hidden_irreps,
+            irreps_out=self.target_irreps,
+            correlation=self.correlation,
+            num_elements=int(num_elements),
+            use_reduced_cg=self.use_reduced_cg,
+        )
+        self._cueq_weight_specs = [
+            self._make_cueq_weight_spec(ref)
+            for ref in self.symmetric_contractions.contractions
+        ]
+
+        irreps_in = _cueq_o3_irreps(self.channels, self.lmax)
+        method = "uniform_1d" if torch.cuda.is_available() else "naive"
+        self.cueq_contractions = nn.ModuleList()
+        self._cueq_weight_projection_names: list[str | None] = []
+        weight_projection_fn = None
+        if self.use_reduced_cg:
+            try:
+                from mace_ictd.models._cueq_cg_tools import symmetric_contraction_proj as weight_projection_fn
+            except Exception as exc:  # pragma: no cover - optional conversion dependency
+                raise RuntimeError(
+                    "ictd_fix_product_backend='cueq' with reduced CG requires "
+                    "mace_ictd.models._cueq_cg_tools.symmetric_contraction_proj to convert "
+                    "MACE/e3nn symmetric-contraction weights into cueq weight space"
+                ) from exc
+        for out_idx, (_mul, ir) in enumerate(self.target_irreps):
+            out_l = int(ir.l)
+            parity = "e" if out_l % 2 == 0 else "o"
+            irreps_out = cue.Irreps(_cueq_o3_e3nn_group(), f"{self.channels}x{out_l}{parity}")
+            projection_name = None
+            if weight_projection_fn is not None:
+                _, projection = weight_projection_fn(
+                    irreps_in,
+                    irreps_out,
+                    tuple(range(1, self.correlation + 1)),
+                )
+                projection_name = f"_cueq_weight_projection_{out_idx}"
+                self.register_buffer(
+                    projection_name,
+                    torch.tensor(projection, dtype=torch.get_default_dtype()),
+                    persistent=False,
+                )
+            self._cueq_weight_projection_names.append(projection_name)
+            self.cueq_contractions.append(
+                cuet.SymmetricContraction(
+                    irreps_in,
+                    irreps_out,
+                    contraction_degree=self.correlation,
+                    num_elements=int(num_elements),
+                    layout_in=cue.ir_mul,
+                    layout_out=cue.mul_ir,
+                    dtype=torch.get_default_dtype(),
+                    math_dtype=torch.get_default_dtype(),
+                    original_mace=not self.use_reduced_cg,
+                    method=method,
+                )
+            )
+            self.cueq_contractions[-1].weight.requires_grad_(False)
+        self.refresh_cueq_weights()
+        self.register_load_state_dict_post_hook(lambda module, _incompatible: module.refresh_cueq_weights())
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        if not mode:
+            self.refresh_cueq_weights()
+        return self
+
+    def _make_cueq_weight_spec(self, ref: nn.Module) -> list[int | str]:
+        spec: list[int | str] = ["max"]
+        spec.extend(range(len(ref.weights)))
+        if self.use_reduced_cg:
+            return spec
+        active: list[int | str] = []
+        for item in spec:
+            flag_name = "weights_max_zeroed" if item == "max" else f"weights_{int(item)}_zeroed"
+            zeroed = bool(getattr(ref, flag_name).detach().cpu().item()) if hasattr(ref, flag_name) else False
+            if not zeroed:
+                active.append(item)
+        return active
+
+    def _mace_weights_for_cueq(self, ref: nn.Module) -> torch.Tensor:
+        """Pack local MACE symmetric-contraction weights in cuEq path order."""
+        try:
+            spec_idx = list(self.symmetric_contractions.contractions).index(ref)
+            spec = self._cueq_weight_specs[spec_idx]
+        except ValueError:
+            spec = self._make_cueq_weight_spec(ref)
+        parts = [
+            ref.weights_max if item == "max" else ref.weights[int(item)]
+            for item in spec
+        ]
+        if parts:
+            return torch.cat(parts, dim=1)
+        return ref.weights_max.new_zeros((ref.weights_max.shape[0], 0, ref.weights_max.shape[-1]))
+
+    def refresh_cueq_weights(self) -> None:
+        """Mirror MACE-contraction weights into cuEquivariance path-weight tensors."""
+        with torch.no_grad():
+            for ref, fast, projection_name in zip(
+                self.symmetric_contractions.contractions,
+                self.cueq_contractions,
+                self._cueq_weight_projection_names,
+            ):
+                weights = self._mace_weights_for_cueq(ref)
+                weights = weights.to(dtype=fast.weight.dtype, device=fast.weight.device)
+                if projection_name is not None:
+                    projection = getattr(self, projection_name).to(
+                        dtype=fast.weight.dtype,
+                        device=fast.weight.device,
+                    )
+                    weights = torch.einsum("zau,ab->zbu", weights, projection)
+                if weights.shape == fast.weight.shape:
+                    fast.weight.copy_(weights)
+                    continue
+                raise ValueError(
+                    "Cannot mirror MACE contraction weights into cueq contraction: "
+                    f"source={tuple(weights.shape)} target={tuple(fast.weight.shape)} "
+                    f"projection={None if getattr(fast, 'projection', None) is None else tuple(fast.projection.shape)}"
+                )
+
+    def _cueq_forward_with_weight(
+        self,
+        fast: nn.Module,
+        flat: torch.Tensor,
+        idx: torch.Tensor,
+        weight: torch.Tensor,
+    ) -> torch.Tensor:
+        projection = getattr(fast, "projection", None)
+        if projection is not None:
+            projection = projection.to(dtype=weight.dtype, device=weight.device)
+            weight = torch.einsum("zau,ab->zbu", weight, projection)
+        output = fast.f([weight.flatten(1), fast.transpose_in(flat)], input_indices={0: idx})
+        return fast.transpose_out(output[0])
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        node_attrs: torch.Tensor | None,
+        node_type_idx: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if not x.is_cuda:
+            if node_attrs is None:
+                raise ValueError("node_attrs is required for the reference MACE contraction path")
+            return self.symmetric_contractions(x, node_attrs)
+        if node_type_idx is None:
+            if node_attrs is None:
+                raise ValueError("node_type_idx or node_attrs is required for cueq contraction")
+            idx = _node_type_indices(node_attrs).to(device=x.device, dtype=torch.int32)
+        else:
+            idx = node_type_idx.to(device=x.device, dtype=torch.int32)
+        flat = x.transpose(1, 2).reshape(x.shape[0], -1)
+        if self.training:
+            outs = []
+            for ref, fast, projection_name in zip(
+                self.symmetric_contractions.contractions,
+                self.cueq_contractions,
+                self._cueq_weight_projection_names,
+            ):
+                weights = self._mace_weights_for_cueq(ref).to(dtype=flat.dtype, device=flat.device)
+                if projection_name is not None:
+                    projection = getattr(self, projection_name).to(dtype=weights.dtype, device=weights.device)
+                    weights = torch.einsum("zau,ab->zbu", weights, projection)
+                outs.append(self._cueq_forward_with_weight(fast, flat, idx, weights))
+        else:
+            outs = [contraction(flat, idx) for contraction in self.cueq_contractions]
+        return torch.cat(outs, dim=-1) if len(outs) > 1 else outs[0]
+
+
+class CueqMACEProductBasisBlockSO3(nn.Module):
+    """Native-MACE product block using cuEquivariance for the contraction."""
+
+    def __init__(
+        self,
+        *,
+        num_elements: int,
+        channels: int,
+        lmax: int,
+        target_lmax: int,
+        correlation: int = 3,
+        use_reduced_cg: bool = False,
+    ):
+        super().__init__()
+        self.channels = int(channels)
+        self.lmax = int(lmax)
+        self.target_lmax = int(target_lmax)
+        self.use_reduced_cg = bool(use_reduced_cg)
+        self._e3nn_basis = False
+        self.target_irreps = _hidden_irreps(self.channels, self.target_lmax)
+        self.basis_bridge = SO3ToE3NNBasisBridge(self.channels, max(self.lmax, self.target_lmax))
+        self.symmetric_contractions = CueqMaceSymmetricContractionSO3(
+            num_elements=num_elements,
+            channels=channels,
+            lmax=lmax,
+            target_lmax=target_lmax,
+            correlation=correlation,
+            use_reduced_cg=self.use_reduced_cg,
+        )
+        self.linear = o3.Linear(self.target_irreps, self.target_irreps)
+
+    def refresh_cueq_weights(self) -> None:
+        self.symmetric_contractions.refresh_cueq_weights()
+
+    def enable_e3nn_basis(self, q_blocks: "List[torch.Tensor] | None" = None) -> None:
+        """Consume and return e3nn-basis features directly.
+
+        cuEquivariance's MACE contraction already uses the e3nn/O3 convention, so
+        when the rest of the model has folded its interaction CGs into that same
+        basis we can skip the per-l ICTD<->e3nn bridge around the product block.
+        """
+        del q_blocks
+        self._e3nn_basis = True
+
+    def forward(
+        self,
+        node_feats: torch.Tensor,
+        sc: torch.Tensor | None,
+        node_attrs: torch.Tensor | None,
+        node_type_idx: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if self._e3nn_basis:
+            x = _so3_flat_to_mace_features(node_feats, self.channels, self.lmax)
+        else:
+            x = self.basis_bridge.ictd_flat_to_e3nn_features(node_feats, self.lmax)
+        out = self.linear(self.symmetric_contractions(x, node_attrs, node_type_idx=node_type_idx))
+        if sc is not None:
+            if not self._e3nn_basis:
+                sc = self.basis_bridge.ictd_flat_to_e3nn_flat(sc, self.target_lmax)
+            if sc.shape[-1] == out.shape[-1]:
+                out = out + sc
+            elif self.target_lmax == 0:
+                if sc.shape[-1] == self.channels:
+                    out = out + sc
+                else:
+                    out = out + _split_irreps(sc, self.channels, self.lmax)[0].squeeze(-1)
+            else:
+                raise ValueError(f"Cannot add sc shape {tuple(sc.shape)} to cueq product output {tuple(out.shape)}")
+        if self.target_lmax > 0 and not self._e3nn_basis:
+            out = self.basis_bridge.e3nn_flat_to_ictd_flat(out, self.target_lmax)
+        return out
+
+
 class ICTDBridgeUSymmetricContractionSO3(nn.Module):
     """
     Bridge-U symmetric contraction expressed directly in the ICTD basis.
@@ -1268,6 +1598,8 @@ class ICTDResidualInteractionBlock(nn.Module):
         # forces stay continuous). The scalar alpha is shared across the 2l+1 m-components
         # of every l (=> equivariance preserved) and across the head's channels.
         self.interaction_attn_heads = int(interaction_attn_heads)
+        self._fused_selector_message_enabled = False
+        self._fused_selector_message_has_bias = False
         if self.interaction_attn_heads > 0:
             if self.channels % self.interaction_attn_heads != 0:
                 raise ValueError(
@@ -1297,6 +1629,59 @@ class ICTDResidualInteractionBlock(nn.Module):
             self.attn_radial_bias = None
             self.attn_z_bias_raw = None
             self.attn_logit_w = None
+
+    def enable_eval_fused_selector_message(self) -> bool:
+        """Precompose message_linear and element selector for eval/AOTI inference.
+
+        The first MACE residual block applies, per l:
+            scatter -> message_linear -> /avg_num_neighbors -> element selector -> output scale.
+        When the selector is present and all these maps are linear, precompose the
+        fixed weights into one element-conditioned linear map. This changes only
+        fp32 accumulation order and is disabled for training by default.
+        """
+        if self.interaction_attn_heads > 0 or self.message_selector is None:
+            self._fused_selector_message_enabled = False
+            return False
+        if self.avg_num_neighbors is None:
+            self._fused_selector_message_enabled = False
+            return False
+        if not isinstance(self.message_norm, nn.Identity):
+            self._fused_selector_message_enabled = False
+            return False
+
+        if isinstance(self.message_output_scale, nn.Identity):
+            scales = [1.0 for _ in range(self.target_lmax + 1)]
+        elif isinstance(self.message_output_scale, PerLScaleSO3):
+            scales = [
+                float(v)
+                for v in self.message_output_scale.log_scale.detach().exp().cpu().tolist()
+            ]
+        else:
+            self._fused_selector_message_enabled = False
+            return False
+
+        selector_bias = getattr(self.message_selector, "bias", None)
+        self._fused_selector_message_has_bias = selector_bias is not None
+        avg = float(self.avg_num_neighbors)
+        with torch.no_grad():
+            for l in range(self.target_lmax + 1):
+                msg_w = self.message_linear.weights[str(l)].detach()
+                sel_w = self.message_selector.weights[str(l)].detach()
+                fused = torch.einsum("eoj,jc->eoc", sel_w, msg_w) * (float(scales[l]) / avg)
+                name = f"_fused_selector_message_weight_{l}"
+                if name in self._buffers:
+                    self._buffers[name] = fused.contiguous()
+                else:
+                    self.register_buffer(name, fused.contiguous(), persistent=False)
+                if selector_bias is not None:
+                    bias = selector_bias[str(l)].detach() * float(scales[l])
+                    bias_name = f"_fused_selector_message_bias_{l}"
+                    if bias_name in self._buffers:
+                        self._buffers[bias_name] = bias.contiguous()
+                    else:
+                        self.register_buffer(bias_name, bias.contiguous(), persistent=False)
+        self._fused_selector_message_enabled = True
+        return True
 
     def _attention_alpha(
         self,
@@ -1342,13 +1727,14 @@ class ICTDResidualInteractionBlock(nn.Module):
     def forward(
         self,
         *,
-        node_attrs: torch.Tensor,
+        node_attrs: torch.Tensor | None,
         node_feats: torch.Tensor,
         edge_attrs: Dict[int, torch.Tensor],
         edge_feats: torch.Tensor,
         edge_index: torch.Tensor,
         edge_mask: torch.Tensor | None = None,
         edge_env: torch.Tensor | None = None,
+        node_type_idx: torch.Tensor | None = None,
         sync_after_scatter: callable | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         edge_src = edge_index[0]
@@ -1364,6 +1750,7 @@ class ICTDResidualInteractionBlock(nn.Module):
         if edge_mask is not None:
             mask = edge_mask.to(dtype=node_feats.dtype)
             edge_blocks = {l: block * mask.unsqueeze(-1) for l, block in edge_blocks.items()}
+        selector_message_fused = False
         if self.interaction_attn_heads > 0:
             if edge_env is None:
                 raise ValueError("interaction_attn_heads > 0 requires edge_env to be passed to forward()")
@@ -1386,20 +1773,65 @@ class ICTDResidualInteractionBlock(nn.Module):
                 l: scatter(edge_blocks[l], edge_dst, dim=0, dim_size=num_nodes, reduce="sum")
                 for l in range(self.target_lmax + 1)
             }
-            if self.avg_num_neighbors is None:
-                if edge_mask is not None:
-                    avg_num_neighbors = float(edge_mask.detach().sum().item()) / float(max(num_nodes, 1))
+            if getattr(self, "_fused_selector_message_enabled", False) and sync_after_scatter is None:
+                type_idx = (
+                    node_type_idx.to(device=node_feats.device, dtype=torch.long)
+                    if node_type_idx is not None
+                    else None
+                )
+                if type_idx is None:
+                    if node_attrs is None:
+                        raise ValueError("node_attrs is required when node_type_idx is not provided")
+                    attrs = node_attrs.to(dtype=node_feats.dtype)
                 else:
-                    avg_num_neighbors = float(edge_src.numel()) / float(max(num_nodes, 1))
+                    attrs = None
+                out_blocks: Dict[int, torch.Tensor] = {}
+                for l in range(self.target_lmax + 1):
+                    weight = getattr(self, f"_fused_selector_message_weight_{l}").to(
+                        dtype=message_blocks[l].dtype,
+                        device=message_blocks[l].device,
+                    )
+                    if type_idx is None:
+                        if attrs is None:
+                            raise ValueError("node_attrs is required when node_type_idx is not provided")
+                        mixed_weight = torch.einsum("ne,eoc->noc", attrs, weight)
+                        out_block = torch.einsum("noc,ncm->nom", mixed_weight, message_blocks[l])
+                    else:
+                        mixed_weight = weight.index_select(0, type_idx)
+                        out_block = torch.einsum("noc,ncm->nom", mixed_weight, message_blocks[l])
+                    if self._fused_selector_message_has_bias:
+                        bias = getattr(self, f"_fused_selector_message_bias_{l}").to(
+                            dtype=out_block.dtype,
+                            device=out_block.device,
+                        )
+                        if type_idx is None:
+                            if attrs is None:
+                                raise ValueError("node_attrs is required when node_type_idx is not provided")
+                            mixed_bias = torch.einsum("ne,eo->no", attrs, bias)
+                        else:
+                            mixed_bias = bias.index_select(0, type_idx)
+                        out_block = out_block + mixed_bias.unsqueeze(-1)
+                    out_blocks[l] = out_block
+                message = _merge_irreps(out_blocks, self.channels, self.target_lmax)
+                selector_message_fused = True
             else:
-                avg_num_neighbors = self.avg_num_neighbors
-            message = self.message_linear(message_blocks) / max(avg_num_neighbors, 1e-8)
+                if self.avg_num_neighbors is None:
+                    if edge_mask is not None:
+                        avg_num_neighbors = float(edge_mask.detach().sum().item()) / float(max(num_nodes, 1))
+                    else:
+                        avg_num_neighbors = float(edge_src.numel()) / float(max(num_nodes, 1))
+                else:
+                    avg_num_neighbors = self.avg_num_neighbors
+                message = self.message_linear(message_blocks) / max(avg_num_neighbors, 1e-8)
         if sync_after_scatter is not None:
             message = sync_after_scatter(message)
-        if not self.use_self_connection:
+        if not self.use_self_connection and not selector_message_fused:
+            if node_attrs is None:
+                raise ValueError("node_attrs is required for the unfused message selector path")
             message = self.message_selector(message, node_attrs)
-        message = self.message_norm(message)
-        message = self.message_output_scale(message)
+        if not selector_message_fused:
+            message = self.message_norm(message)
+            message = self.message_output_scale(message)
         sc = None
         if self.self_connection is not None:
             if self.sc_lmax == self.input_lmax:
@@ -1412,7 +1844,12 @@ class ICTDResidualInteractionBlock(nn.Module):
                 raise ValueError(
                     f"Unsupported ICTD self-connection projection input_lmax={self.input_lmax}, sc_lmax={self.sc_lmax}"
                 )
-            sc = self.self_connection(sc_input, node_attrs)
+            if (not self.training) and node_type_idx is not None:
+                sc = self.self_connection.forward_type_idx(sc_input, node_type_idx)
+            else:
+                if node_attrs is None:
+                    raise ValueError("node_attrs is required for the training self-connection path")
+                sc = self.self_connection(sc_input, node_attrs)
             sc = self.sc_norm(sc)
             sc = self.sc_output_scale(sc)
         return message, sc
@@ -1568,10 +2005,10 @@ class PureCartesianICTDFix(nn.Module):
         requested_product_backend = str(ictd_fix_product_backend)
         if requested_product_backend == "ictd-mace-u":
             requested_product_backend = "ictd-bridge-u"
-        if requested_product_backend not in {"ictd", "native-mace", "ictd-bridge-u", "ictd-pure-u"}:
+        if requested_product_backend not in {"ictd", "native-mace", "ictd-bridge-u", "ictd-pure-u", "cueq"}:
             raise ValueError(
                 "ictd_fix_product_backend must be 'ictd', 'native-mace', 'ictd-bridge-u', "
-                f"'ictd-mace-u' alias, or 'ictd-pure-u', got {ictd_fix_product_backend!r}"
+                f"'ictd-mace-u' alias, 'ictd-pure-u', or 'cueq', got {ictd_fix_product_backend!r}"
             )
         if ictd_fix_interaction_scale not in {"none", "mace-rms"}:
             raise ValueError(
@@ -1609,10 +2046,10 @@ class PureCartesianICTDFix(nn.Module):
         )
         self.ictd_fix_use_reduced_cg = bool(ictd_fix_use_reduced_cg)
         self.ictd_fix_product_backend_fallback = self.ictd_fix_product_backend != self.ictd_fix_requested_product_backend
-        if self.ictd_fix_edge_lmax != self.lmax and self.ictd_fix_product_backend not in {"native-mace", "ictd-bridge-u"}:
+        if self.ictd_fix_edge_lmax != self.lmax and self.ictd_fix_product_backend not in {"native-mace", "ictd-bridge-u", "cueq"}:
             raise NotImplementedError(
                 "ictd_fix_edge_lmax != lmax is currently supported only for exact MACE product "
-                "backends 'native-mace' and 'ictd-bridge-u'."
+                "backends 'native-mace', 'ictd-bridge-u', and 'cueq'."
             )
         self.ictd_fix_interaction_scale = str(ictd_fix_interaction_scale)
         self.ictd_fix_fusion_scale_init = float(ictd_fix_fusion_scale_init)
@@ -1749,6 +2186,17 @@ class PureCartesianICTDFix(nn.Module):
             elif effective_product_backend == "ictd-bridge-u":
                 self.products.append(
                     ICTDBridgeUProductBasisBlockSO3(
+                        num_elements=self.num_elements,
+                        channels=self.channels,
+                        lmax=self.ictd_fix_edge_lmax,
+                        target_lmax=target_lmax,
+                        correlation=save_contraction_order,
+                        use_reduced_cg=self.ictd_fix_use_reduced_cg,
+                    )
+                )
+            elif effective_product_backend == "cueq":
+                self.products.append(
+                    CueqMACEProductBasisBlockSO3(
                         num_elements=self.num_elements,
                         channels=self.channels,
                         lmax=self.ictd_fix_edge_lmax,
@@ -1961,21 +2409,26 @@ class PureCartesianICTDFix(nn.Module):
         if getattr(self, "_e3nn_folded", False):
             return
         from mace_ictd.mace_basis import orthogonal_Q_blocks
-        q_blocks = orthogonal_Q_blocks(max(self.lmax, self.ictd_fix_edge_lmax), dtype=torch.float64, device="cpu")
-        self._e3nn_q_blocks = q_blocks
+        ref = next(self.parameters())
+        q_blocks_cpu = orthogonal_Q_blocks(
+            max(self.lmax, self.ictd_fix_edge_lmax),
+            dtype=torch.float64,
+            device="cpu",
+        )
+        self._e3nn_q_blocks = [q.to(dtype=ref.dtype, device=ref.device) for q in q_blocks_cpu]
         folded_u = False
         for module in self.modules():
             if module is self:
                 continue
             if hasattr(module, "fold_cg_to_e3nn"):
-                module.fold_cg_to_e3nn(q_blocks)
+                module.fold_cg_to_e3nn(q_blocks_cpu)
             if hasattr(module, "enable_e3nn_basis"):
-                module.enable_e3nn_basis(q_blocks)
+                module.enable_e3nn_basis(self._e3nn_q_blocks)
                 folded_u = True
         if not folded_u:
             raise NotImplementedError(
                 "angular_basis='e3nn' currently requires the symmetric-contraction backend to "
-                "expose enable_e3nn_basis (currently product_backend='ictd-pure-u'). The "
+                "expose enable_e3nn_basis (currently product_backend='ictd-pure-u' or 'cueq'). The "
                 f"selected backend {getattr(self, 'ictd_fix_product_backend', '?')!r} has no e3nn fold.")
         self._e3nn_folded = True
 
@@ -2091,8 +2544,22 @@ class PureCartesianICTDFix(nn.Module):
                     f"Encountered atomic numbers without compact mapping: {bad}. "
                     f"Configured atomic_numbers={self.atomic_numbers}"
                 )
-        node_attrs = F.one_hot(compact_idx, num_classes=self.num_elements).to(dtype=dtype)
-        h = self.node_embedding(node_attrs)
+        type_idx_only_eval = (
+            (not self.training)
+            and all(type(product).__name__.startswith("Cueq") for product in self.products)
+            and all(
+                interaction.self_connection is not None
+                or getattr(interaction, "_fused_selector_message_enabled", False)
+                for interaction in self.interactions
+            )
+        )
+        if type_idx_only_eval:
+            node_attrs = None
+            embedding_weight = self.node_embedding.weight.t().to(dtype=dtype, device=pos.device)
+            h = embedding_weight.index_select(0, compact_idx)
+        else:
+            node_attrs = F.one_hot(compact_idx, num_classes=self.num_elements).to(dtype=dtype)
+            h = self.node_embedding(node_attrs)
 
         layer_states: List[torch.Tensor] = []
         last_preproduct_state: torch.Tensor | None = None
@@ -2106,9 +2573,13 @@ class PureCartesianICTDFix(nn.Module):
                 edge_index=edge_index,
                 edge_mask=edge_mask,
                 edge_env=edge_env,
+                node_type_idx=compact_idx,
                 sync_after_scatter=sync_after_scatter,
             )
-            h = product(node_feats=message, sc=sc, node_attrs=node_attrs)
+            if type(product).__name__.startswith("Cueq"):
+                h = product(node_feats=message, sc=sc, node_attrs=node_attrs, node_type_idx=compact_idx)
+            else:
+                h = product(node_feats=message, sc=sc, node_attrs=node_attrs)
             if layer_idx == 0 and self.mace_first_layer_sc0 is not None:
                 add = self.mace_first_layer_sc0.to(dtype=h.dtype, device=h.device)[compact_idx]
                 h = torch.cat((h[..., : self.channels] + add, h[..., self.channels :]), dim=-1)
@@ -2120,8 +2591,6 @@ class PureCartesianICTDFix(nn.Module):
                 e_layer = self.last_layer_energy_readout(h)
                 e_layer = self._readout_head_scale(1, e_layer) * e_layer
             total_energy = e_layer if total_energy is None else (total_energy + e_layer)
-
-        combined_features = torch.cat(layer_states, dim=-1)
 
         out = total_energy.sum(dim=-1, keepdim=True)
 
@@ -2159,6 +2628,7 @@ class PureCartesianICTDFix(nn.Module):
                 out = out + long_range_energy
 
         if return_combined_features:
+            combined_features = torch.cat(layer_states, dim=-1)
             if return_reciprocal_source:
                 rs = reciprocal_source if reciprocal_source is not None else out.new_empty((out.size(0), 0))
                 return out, combined_features, rs

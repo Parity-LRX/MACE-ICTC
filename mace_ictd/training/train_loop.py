@@ -87,6 +87,7 @@ class ForceTrainer:
         max_grad_norm: float | None = None,
         # make_fx
         train_makefx_compile: bool = False,
+        require_train_makefx_compile: bool = False,
         makefx_max_slots: int = 8,
         # plumbing
         train_sampler=None,
@@ -128,6 +129,7 @@ class ForceTrainer:
         # make_fx state (cache held outside the module tree so its duplicated flat
         # param views stay out of parameter discovery / DDP).
         self.train_makefx_compile = bool(train_makefx_compile)
+        self.require_train_makefx_compile = bool(require_train_makefx_compile)
         self._makefx_max_slots = int(makefx_max_slots)
         self._makefx_disabled = False
         object.__setattr__(self, "_makefx_cache", None)
@@ -293,6 +295,10 @@ class ForceTrainer:
                         pos, A, batch_idx, edge_src, edge_dst, edge_shifts, cell)
             except Exception as e:
                 object.__setattr__(self, "_makefx_disabled", True)
+                if self.require_train_makefx_compile:
+                    raise RuntimeError(
+                        "train_makefx_compile is required for this run, but tracing/compilation failed"
+                    ) from e
                 log.warning("train_makefx_compile failed (%s: %s); falling back to eager.",
                             type(e).__name__, e)
                 use_makefx = False

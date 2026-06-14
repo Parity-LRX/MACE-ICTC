@@ -122,8 +122,17 @@ void PairMFFTorchKokkos<DeviceType>::init_style() {
   const bool debug_bundle = std::getenv("MFF_DEBUG_BUNDLE") != nullptr;
   if (core_pt_path_.empty()) error->all(FLERR, "pair_coeff for mff/torch must specify core.pt path");
 
-  // Request a full neighbor list (same as base class).
-  neighbor->add_request(this, NeighConst::REQ_FULL);
+  fold_mode_ = (comm->nprocs == 1);
+  if (fold_mode_) {
+    if (atom->map_style == Atom::MAP_NONE)
+      error->all(FLERR, "pair_style mff/torch/kk (single-rank) needs an atom map to fold periodic ghosts "
+                        "to local atoms; add 'atom_modify map yes' (or array/hash) to your input.");
+    neighbor->add_request(this, NeighConst::REQ_FULL);
+  } else {
+    neighbor->add_request(this, NeighConst::REQ_FULL | NeighConst::REQ_GHOST);
+    const double halo = static_cast<double>(mp_depth_) * cut_global_;
+    if (comm->cutghostuser < halo) comm->cutghostuser = halo;
+  }
 
   neighflag = lmp->kokkos->neighflag;
   auto request = neighbor->find_request(this);
@@ -230,16 +239,29 @@ void PairMFFTorchKokkos<DeviceType>::compute(int eflag_in, int vflag_in) {
   ev_init(eflag, vflag);
   reset_physical_outputs();
 
-  atomKK->sync(execution_space, X_MASK | F_MASK | TYPE_MASK);
-  atomKK->modified(execution_space, F_MASK);
+  const bool fold = fold_mode_;
+  atomKK->sync(execution_space, X_MASK | F_MASK | TYPE_MASK | (fold ? TAG_MASK : 0));
+  const int map_style = atom->map_style;
+  auto k_map_array = atomKK->k_map_array;
+  auto k_map_hash = atomKK->k_map_hash;
+  if (fold) {
+    if (map_style == Atom::MAP_ARRAY) {
+      k_map_array.template sync<DeviceType>();
+    } else if (map_style == Atom::MAP_HASH) {
+      k_map_hash.template sync<DeviceType>();
+    }
+  }
 
   auto x = atomKK->k_x.template view<DeviceType>();
   auto f = atomKK->k_f.template view<DeviceType>();
   auto type = atomKK->k_type.template view<DeviceType>();
+  auto tag = atomKK->k_tag.template view<DeviceType>();
 
   nlocal = atom->nlocal;
   nall = atom->nlocal + atom->nghost;
+  const int nlocal_owned = nlocal;
   const int ntotal = nall;
+  const int nmodel = fold ? nlocal_owned : ntotal;
 
   NeighListKokkos<DeviceType> *k_list = static_cast<NeighListKokkos<DeviceType> *>(list);
   auto d_numneigh = k_list->d_numneigh;
@@ -333,17 +355,17 @@ void PairMFFTorchKokkos<DeviceType>::compute(int eflag_in, int vflag_in) {
     buf_edge_shifts_ = torch::empty({Etotal, 3}, torch::TensorOptions().dtype(torch::kFloat32).device(dev));
     cached_Etotal_ = Etotal;
   }
-  if (cached_ntotal_ != static_cast<int64_t>(ntotal)) {
-    buf_type_idx_ = torch::empty({ntotal}, torch::TensorOptions().dtype(torch::kInt64).device(dev));
-    buf_pos_ = torch::empty({ntotal, 3}, torch::TensorOptions().dtype(torch::kFloat32).device(dev));
-    cached_ntotal_ = ntotal;
+  if (cached_ntotal_ != static_cast<int64_t>(nmodel)) {
+    buf_type_idx_ = torch::empty({nmodel}, torch::TensorOptions().dtype(torch::kInt64).device(dev));
+    buf_pos_ = torch::empty({nmodel, 3}, torch::TensorOptions().dtype(torch::kFloat32).device(dev));
+    cached_ntotal_ = nmodel;
   }
 
   Kokkos::View<int64_t *, DeviceType, Unmanaged> edge_src_v(buf_edge_src_.data_ptr<int64_t>(), Etotal);
   Kokkos::View<int64_t *, DeviceType, Unmanaged> edge_dst_v(buf_edge_dst_.data_ptr<int64_t>(), Etotal);
-  Kokkos::View<int64_t *, DeviceType, Unmanaged> type_idx_v(buf_type_idx_.data_ptr<int64_t>(), ntotal);
+  Kokkos::View<int64_t *, DeviceType, Unmanaged> type_idx_v(buf_type_idx_.data_ptr<int64_t>(), nmodel);
   Kokkos::View<float **, Kokkos::LayoutRight, DeviceType, Unmanaged> edge_shifts_v(buf_edge_shifts_.data_ptr<float>(), Etotal, 3);
-  Kokkos::View<float **, Kokkos::LayoutRight, DeviceType, Unmanaged> pos_v(buf_pos_.data_ptr<float>(), ntotal, 3);
+  Kokkos::View<float **, Kokkos::LayoutRight, DeviceType, Unmanaged> pos_v(buf_pos_.data_ptr<float>(), nmodel, 3);
 
   const float i00 = geom.inv[0][0], i01 = geom.inv[0][1], i02 = geom.inv[0][2];
   const float i10 = geom.inv[1][0], i11 = geom.inv[1][1], i12 = geom.inv[1][2];
@@ -355,7 +377,7 @@ void PairMFFTorchKokkos<DeviceType>::compute(int eflag_in, int vflag_in) {
   const float cutsq = static_cast<float>(cutsq_global_);
 
   Kokkos::parallel_for(
-      "mfftorch::fill_pos_and_type", ntotal,
+      "mfftorch::fill_pos_and_type", nmodel,
       KOKKOS_LAMBDA(const int i) {
         pos_v(i, 0) = static_cast<float>(x(i, 0));
         pos_v(i, 1) = static_cast<float>(x(i, 1));
@@ -395,11 +417,34 @@ void PairMFFTorchKokkos<DeviceType>::compute(int eflag_in, int vflag_in) {
             edge_shifts_v(idx, 2) = 0.0f;
             continue;
           }
-          edge_src_v(idx) = static_cast<int64_t>(i);
-          edge_dst_v(idx) = static_cast<int64_t>(j);
-          edge_shifts_v(idx, 0) = static_cast<float>(sx);
-          edge_shifts_v(idx, 1) = static_cast<float>(sy);
-          edge_shifts_v(idx, 2) = static_cast<float>(sz);
+          int src = j;
+          int out_sx = sx;
+          int out_sy = sy;
+          int out_sz = sz;
+          if (fold) {
+            src = AtomKokkos::map_kokkos<DeviceType>(tag(j), map_style, k_map_array, k_map_hash);
+            if (src < 0 || src >= nlocal_owned) {
+              edge_src_v(idx) = static_cast<int64_t>(-1);
+              edge_dst_v(idx) = static_cast<int64_t>(-1);
+              edge_shifts_v(idx, 0) = 0.0f;
+              edge_shifts_v(idx, 1) = 0.0f;
+              edge_shifts_v(idx, 2) = 0.0f;
+              continue;
+            }
+            const float owner_dx = static_cast<float>(x(j, 0) - x(src, 0));
+            const float owner_dy = static_cast<float>(x(j, 1) - x(src, 1));
+            const float owner_dz = static_cast<float>(x(j, 2) - x(src, 2));
+            out_sx = nearest_int_device(owner_dx * i00 + owner_dy * i10 + owner_dz * i20);
+            out_sy = nearest_int_device(owner_dx * i01 + owner_dy * i11 + owner_dz * i21);
+            out_sz = nearest_int_device(owner_dx * i02 + owner_dy * i12 + owner_dz * i22);
+          }
+          // Match the CPU pair builder and model convention: edge_src is the
+          // neighbor/owner and edge_dst is the center that receives the message.
+          edge_src_v(idx) = static_cast<int64_t>(src);
+          edge_dst_v(idx) = static_cast<int64_t>(i);
+          edge_shifts_v(idx, 0) = static_cast<float>(-out_sx);
+          edge_shifts_v(idx, 1) = static_cast<float>(-out_sy);
+          edge_shifts_v(idx, 2) = static_cast<float>(-out_sz);
         }
       });
   finish_segment(fill_ms);
@@ -441,10 +486,10 @@ void PairMFFTorchKokkos<DeviceType>::compute(int eflag_in, int vflag_in) {
   try {
     Kokkos::fence();
     if (engine_->is_bundle_manifest() &&
-        (prepared_nlocal_ != nlocal || prepared_ntotal_ != ntotal || prepared_nedges_ != Etotal)) {
-      engine_->prepare_for_shape(nlocal, ntotal, Etotal);
+        (prepared_nlocal_ != nlocal || prepared_ntotal_ != nmodel || prepared_nedges_ != Etotal)) {
+      engine_->prepare_for_shape(nlocal, nmodel, Etotal);
       prepared_nlocal_ = nlocal;
-      prepared_ntotal_ = ntotal;
+      prepared_ntotal_ = nmodel;
       prepared_nedges_ = Etotal;
     }
     finish_segment(prepare_ms);
@@ -461,7 +506,7 @@ void PairMFFTorchKokkos<DeviceType>::compute(int eflag_in, int vflag_in) {
       auto fidelity_ids = current_fidelity_tensor(torch::kCPU);
       out = engine_->compute(
           nlocal,
-          ntotal,
+          nmodel,
           pos_cpu,
           A_cpu,
           edge_src_cpu,
@@ -481,7 +526,7 @@ void PairMFFTorchKokkos<DeviceType>::compute(int eflag_in, int vflag_in) {
       auto A = type2Z_cuda_.index_select(0, buf_type_idx_);
       auto external_tensor = current_external_tensor(dev);
       auto fidelity_ids = current_fidelity_tensor(dev);
-      out = engine_->compute(nlocal, ntotal, buf_pos_, A, buf_edge_src_, buf_edge_dst_, buf_edge_shifts_, cell_t, external_tensor,
+      out = engine_->compute(nlocal, nmodel, buf_pos_, A, buf_edge_src_, buf_edge_dst_, buf_edge_shifts_, cell_t, external_tensor,
                              fidelity_ids,
                              need_energy, need_atom_virial);
     }
@@ -530,9 +575,9 @@ void PairMFFTorchKokkos<DeviceType>::compute(int eflag_in, int vflag_in) {
 
   // Write forces on device (no host transfer).
   auto forces = out.forces.contiguous();
-  Kokkos::View<float **, Kokkos::LayoutRight, DeviceType, Unmanaged> forces_v(forces.data_ptr<float>(), ntotal, 3);
+  Kokkos::View<float **, Kokkos::LayoutRight, DeviceType, Unmanaged> forces_v(forces.data_ptr<float>(), nmodel, 3);
 
-  const int nwrite = force->newton_pair ? ntotal : nlocal;
+  const int nwrite = fold ? nlocal : (force->newton_pair ? ntotal : nlocal);
   Kokkos::parallel_for(
       "mfftorch::add_forces", nwrite, KOKKOS_LAMBDA(const int i) {
         f(i, 0) += forces_v(i, 0);
@@ -550,6 +595,8 @@ void PairMFFTorchKokkos<DeviceType>::compute(int eflag_in, int vflag_in) {
           f(i, 2) += reciprocal_forces_v(i, 2);
         });
   }
+  Kokkos::fence();
+  atomKK->modified(execution_space, F_MASK);
   finish_segment(force_ms);
 
   // Per-atom energy: copy NN atom_energy to LAMMPS eatom (local atoms only).
@@ -572,7 +619,7 @@ void PairMFFTorchKokkos<DeviceType>::compute(int eflag_in, int vflag_in) {
   if (vflag_atom && vatom && out.atom_virial.defined()) {
     auto avir = out.atom_virial.to(torch::kCPU, torch::kFloat64).contiguous();
     const double *vp = avir.data_ptr<double>();
-    const int nvir = force->newton_pair ? ntotal : nlocal;
+    const int nvir = fold ? nlocal : (force->newton_pair ? ntotal : nlocal);
     for (int i = 0; i < nvir; i++) {
       vatom[i][0] += vp[i * 6 + 0];
       vatom[i][1] += vp[i * 6 + 1];

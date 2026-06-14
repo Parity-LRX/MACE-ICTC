@@ -276,10 +276,10 @@ def convert_mace_to_ictd(mace_model, ictd_model) -> Dict[str, object]:
     C = int(ictd_model.channels)
     report: Dict[str, object] = {"blocks": {}, "conv_tp": {}}
     product_backend = str(getattr(ictd_model, "ictd_fix_product_backend", ""))
-    if product_backend not in {"native-mace", "ictd-bridge-u"}:
+    if product_backend not in {"native-mace", "ictd-bridge-u", "cueq"}:
         raise NotImplementedError(
             "convert_mace_to_ictd currently gives exact mace-torch parity only for "
-            "ictd_fix_product_backend='native-mace' or 'ictd-bridge-u'. "
+            "ictd_fix_product_backend='native-mace', 'ictd-bridge-u', or 'cueq'. "
             f"Got {product_backend!r}; the pure-U backend is close but not bit-exact to mace-torch."
         )
 
@@ -747,3 +747,5 @@ def _copy_symmetric_contraction(mace_sc, ictd_sc) -> None:
             assert len(mc.weights) == len(ic.weights), (len(mc.weights), len(ic.weights))
             for mw, iw in zip(mc.weights, ic.weights):
                 iw.copy_(mw.to(dtype=iw.dtype))
+    if hasattr(ictd_sc, "refresh_cueq_weights"):
+        ictd_sc.refresh_cueq_weights()

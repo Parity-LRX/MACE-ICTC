@@ -316,7 +316,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--mace-model", required=True, help="Path to a torch-saved mace-torch ScaleShiftMACE model.")
     ap.add_argument("--out", required=True, help="Output MACE-ICTD .pth checkpoint.")
-    ap.add_argument("--product-backend", default="ictd-bridge-u", choices=["ictd-bridge-u", "native-mace"])
+    ap.add_argument("--product-backend", default="ictd-bridge-u", choices=["ictd-bridge-u", "native-mace", "cueq"])
     ap.add_argument("--dtype", default="float64", choices=["float64", "float32"],
                     help="Stored MACE-ICTD checkpoint dtype. Use float64 for maximum parity.")
     ap.add_argument("--device", default="cpu", help="Device used while converting.")

@@ -138,6 +138,7 @@ def build_baseline_model(
     route: str,
     product_backend: str,
     correlation: int,
+    use_reduced_cg: bool = False,
     radial_sqrt_num_basis: bool,
     edge_lmax: int | None,
     attn_heads: int,
@@ -177,6 +178,7 @@ def build_baseline_model(
         ictd_save_tp_mode=ictd_save_tp_mode,
         ictd_fix_route=route,
         ictd_fix_product_backend=product_backend,
+        ictd_fix_use_reduced_cg=bool(use_reduced_cg),
         ictd_fix_interaction_attn_heads=attn_heads,
         save_contraction_order=correlation,
         radial_sqrt_num_basis=radial_sqrt_num_basis,
@@ -207,6 +209,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--correlation", type=int, default=2, help="save_contraction_order (body order - 1).")
     ap.add_argument("--route", default="baseline")
     ap.add_argument("--product-backend", default="ictd-bridge-u")
+    ap.add_argument("--use-reduced-cg", action="store_true",
+                    help="Use reduced-CG MACE/cuEq symmetric-contraction paths where supported.")
     ap.add_argument("--invariant-channels", type=int, default=32)
     ap.add_argument("--ictd-save-tp-mode", default="fully-connected")
     ap.add_argument("--function-type", default="gaussian", choices=["gaussian", "bessel"])
@@ -340,6 +344,7 @@ def main(argv=None):
     model = build_baseline_model(
         cfg, avg_num_neighbors=ann, num_interaction=args.num_interaction,
         route=args.route, product_backend=args.product_backend, correlation=args.correlation,
+        use_reduced_cg=args.use_reduced_cg,
         radial_sqrt_num_basis=args.radial_sqrt_num_basis, edge_lmax=args.max_ell,
         attn_heads=args.attn_heads,
         atomic_numbers=atomic_numbers, ictd_save_tp_mode=args.ictd_save_tp_mode,
@@ -377,6 +382,7 @@ def main(argv=None):
         invariant_channels=args.invariant_channels,
         ictd_fix_route=args.route,
         ictd_fix_product_backend=args.product_backend,
+        ictd_fix_use_reduced_cg=bool(args.use_reduced_cg),
         ictd_fix_edge_lmax=(args.lmax if args.max_ell is None else args.max_ell),
         save_contraction_order=args.correlation,
         ictd_save_tp_mode=args.ictd_save_tp_mode,
@@ -398,7 +404,9 @@ def main(argv=None):
         learning_rate=args.lr, min_learning_rate=args.min_lr, weight_decay=args.weight_decay,
         optimizer_type=args.optimizer, lr_scheduler=args.lr_scheduler,
         warmup_batches=args.warmup_batches, epochs=args.epochs, max_grad_norm=args.max_grad_norm,
-        train_makefx_compile=args.train_makefx_compile, makefx_max_slots=args.makefx_max_slots,
+        train_makefx_compile=args.train_makefx_compile,
+        require_train_makefx_compile=bool(args.train_makefx_compile and args.product_backend == "cueq"),
+        makefx_max_slots=args.makefx_max_slots,
         train_sampler=sampler, checkpoint_path=args.checkpoint, log_interval=args.log_interval,
         extra_hparams=extra_hparams,
     )

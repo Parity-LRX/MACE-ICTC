@@ -93,6 +93,137 @@ def force_compute_fn_factory(model, *, training: bool):
     return compute_fn
 
 
+def _inner_mace_contraction(module):
+    inner = getattr(module, "symmetric_contractions", module)
+    if hasattr(inner, "symmetric_contractions") and not hasattr(inner, "contractions"):
+        inner = inner.symmetric_contractions
+    return inner
+
+
+def _model_uses_cueq_product(model) -> bool:
+    return any(type(module).__name__.startswith("Cueq") for module in model.modules())
+
+
+def _replace_products_with_cueq(model, *, device: torch.device) -> None:
+    from mace_ictd.models.pure_cartesian_ictd_fix import CueqMACEProductBasisBlockSO3
+
+    if not hasattr(model, "products"):
+        raise TypeError("--cueq-product expects a model with a .products ModuleList")
+    new_products = torch.nn.ModuleList()
+    for product in model.products:
+        if type(product).__name__.startswith("Cueq"):
+            if hasattr(product, "refresh_cueq_weights"):
+                product.refresh_cueq_weights()
+            new_products.append(product)
+            continue
+        try:
+            ref = next(product.parameters())
+        except StopIteration:
+            ref = next(model.parameters())
+        fast = CueqMACEProductBasisBlockSO3(
+            num_elements=int(model.num_elements),
+            channels=int(product.channels),
+            lmax=int(product.lmax),
+            target_lmax=int(product.target_lmax),
+            correlation=int(_inner_mace_contraction(product.symmetric_contractions).contractions[0].correlation),
+            use_reduced_cg=bool(getattr(product, "use_reduced_cg", False)),
+        ).to(device=device, dtype=ref.dtype)
+        fast.linear.load_state_dict(product.linear.state_dict())
+        fast_inner = fast.symmetric_contractions.symmetric_contractions
+        old_inner = _inner_mace_contraction(product.symmetric_contractions)
+        fast_inner.load_state_dict(old_inner.state_dict(), strict=True)
+        fast.refresh_cueq_weights()
+        new_products.append(fast.eval())
+    model.products = new_products
+    if hasattr(model, "ictd_fix_product_backend"):
+        model.ictd_fix_product_backend = "cueq"
+    if hasattr(model, "ictd_fix_effective_product_backends"):
+        model.ictd_fix_effective_product_backends = ["cueq"] * len(model.products)
+
+
+def _enable_fused_selector_message_linears(model) -> int:
+    enabled = 0
+    for module in model.modules():
+        fn = getattr(module, "enable_eval_fused_selector_message", None)
+        if callable(fn) and fn():
+            enabled += 1
+    return enabled
+
+
+def _set_parameter(module: torch.nn.Module, name: str, value: torch.Tensor, *, like: torch.nn.Parameter) -> None:
+    param = torch.nn.Parameter(value.detach().clone().contiguous(), requires_grad=like.requires_grad)
+    if isinstance(module, torch.nn.ParameterDict):
+        module[name] = param
+    else:
+        setattr(module, name, param)
+
+
+def _prune_model_elements(model: torch.nn.Module, selected_z: list[int]) -> list[int]:
+    """Restrict element-conditioned weights to the exported element set.
+
+    Pretrained MACE checkpoints can contain many species while a LAMMPS export may
+    target a smaller subset.  This preserves exact numerics for ``selected_z`` and
+    reduces element-conditioned tensors before tracing/AOTI compilation.
+    """
+    old_z = [int(z) for z in getattr(model, "atomic_numbers")]
+    selected_z = [int(z) for z in selected_z]
+    old_index = {z: i for i, z in enumerate(old_z)}
+    missing = [z for z in selected_z if z not in old_index]
+    if missing:
+        raise ValueError(f"Cannot prune to elements absent from checkpoint atomic_numbers: {missing}")
+    keep = torch.tensor([old_index[z] for z in selected_z], dtype=torch.long)
+
+    ref_param = next(model.parameters())
+    keep_dev = keep.to(device=ref_param.device)
+
+    if hasattr(model, "node_embedding"):
+        old_embedding = model.node_embedding
+        new_embedding = torch.nn.Linear(len(selected_z), old_embedding.out_features, bias=False).to(
+            device=old_embedding.weight.device,
+            dtype=old_embedding.weight.dtype,
+        )
+        with torch.no_grad():
+            new_embedding.weight.copy_(old_embedding.weight.index_select(1, keep_dev))
+        model.node_embedding = new_embedding
+
+    for module in model.modules():
+        if type(module).__name__ == "ElementConditionedLinearSO3":
+            module.num_elements = len(selected_z)
+            for key, param in list(module.weights.items()):
+                _set_parameter(module.weights, key, param.index_select(0, keep_dev), like=param)
+            bias = getattr(module, "bias", None)
+            if bias is not None:
+                for key, param in list(bias.items()):
+                    _set_parameter(bias, key, param.index_select(0, keep_dev), like=param)
+        if type(module).__name__ == "MaceSymmetricContraction":
+            for contraction in module.contractions:
+                weights_max = getattr(contraction, "weights_max", None)
+                if isinstance(weights_max, torch.nn.Parameter):
+                    _set_parameter(contraction, "weights_max", weights_max.index_select(0, keep_dev), like=weights_max)
+                weights = getattr(contraction, "weights", None)
+                if isinstance(weights, torch.nn.ParameterList):
+                    for idx, param in enumerate(list(weights)):
+                        weights[idx] = torch.nn.Parameter(
+                            param.index_select(0, keep_dev).detach().clone().contiguous(),
+                            requires_grad=param.requires_grad,
+                        )
+                if getattr(contraction, "_use_scalar_corr3_fast", False):
+                    contraction.refresh_scalar_corr3_fast_buffers()
+
+    sc0 = getattr(model, "mace_first_layer_sc0", None)
+    if sc0 is not None:
+        model.mace_first_layer_sc0 = sc0.index_select(0, keep_dev).detach().clone().contiguous()
+
+    map_size = max(int(getattr(model, "atomic_number_to_index").numel()), max(selected_z) + 1)
+    mapping = torch.full((map_size,), -1, dtype=torch.long, device=ref_param.device)
+    for new_idx, z in enumerate(selected_z):
+        mapping[int(z)] = int(new_idx)
+    model.atomic_numbers = tuple(selected_z)
+    model.num_elements = len(selected_z)
+    model.atomic_number_to_index = mapping
+    return selected_z
+
+
 def _aoti_compile(exported, out_path):
     """torch 2.x AOTInductor compile+package; tolerate API moves across versions."""
     try:
@@ -170,6 +301,14 @@ def main() -> int:
     p.add_argument("--elements", default="H,C,N,O",
                    help="comma-separated element symbols for the checkpoint (from_checkpoint requires element_types; "
                         "the validation graph's species fall back to these if the model can't report its own)")
+    p.add_argument("--prune-to-elements", action="store_true",
+                   help="for checkpoint export, prune element-conditioned model weights to --elements before "
+                        "tracing. This preserves numerics for those elements and can reduce AOTI element-index "
+                        "work, but the exported model will reject other atomic numbers.")
+    p.add_argument("--angular-basis", choices=("checkpoint", "ictd", "e3nn"), default="checkpoint",
+                   help="override the checkpoint model's angular_basis before tracing. The default keeps the "
+                        "checkpoint setting. 'e3nn' lets compatible product backends (notably --cueq-product) "
+                        "consume e3nn-basis features directly and can remove ICTD<->e3nn bridge work.")
     p.add_argument("--avg-num-neighbors", dest="avg_num_neighbors", type=float, default=None,
                    help="message-normalization constant the weights were trained under (model divides messages "
                         "by it). For ictd-fix it is auto-computed from the training data and is NOT saved in the "
@@ -218,6 +357,17 @@ def main() -> int:
                         "mathematically the same scatter-sum graph but can change fp32 reduction order at "
                         "round-off level. Use only when the caller already supplies a stable/deployment "
                         "edge order or when fp32 round-off differences are acceptable.")
+    p.add_argument("--cueq-product", action="store_true",
+                   help="replace exact MACE product contractions with the experimental cuEquivariance "
+                        "backend before tracing. This preserves fp32-level numerics and can improve large-N "
+                        "throughput, but the resulting .pt2 requires cuEquivariance custom op registration "
+                        "before AOTI loading.")
+    p.add_argument("--fuse-selector-message-linear", action="store_true",
+                   help="for eval/AOTI export, precompose interaction message_linear + fixed "
+                        "avg-neighbor scaling + element selector (+ per-l output scale when present) "
+                        "into one element-conditioned linear map. This changes only fp32 accumulation "
+                        "order and is skipped automatically when the interaction uses attention or "
+                        "nonlinear message normalization.")
     p.add_argument("--no-equiv", dest="no_equiv", action="store_true",
                    help="skip the rotation-equivariance gate on the loaded .pt2")
     args = p.parse_args()
@@ -273,6 +423,15 @@ def main() -> int:
         model.preserve_edge_order = bool(args.preserve_edge_order)
         dtype = next(model.parameters()).dtype  # honor the trained dtype (likely float64)
         species_z = [int(z) for z in (getattr(model, "atomic_numbers", None) or SPECIES) if int(z) > 0] or list(SPECIES)
+        if args.prune_to_elements:
+            from ase.data import atomic_numbers as ase_atomic_numbers
+
+            selected_z = [int(ase_atomic_numbers.get(symbol, 0)) for symbol in element_types]
+            if any(z <= 0 for z in selected_z):
+                bad = [symbol for symbol, z in zip(element_types, selected_z) if int(z) <= 0]
+                raise ValueError(f"Cannot prune to unknown element symbols: {bad}")
+            species_z = _prune_model_elements(model, selected_z)
+            print(f"[aoti] pruned element-conditioned weights to species={species_z}")
         print(f"[aoti] loaded checkpoint {args.checkpoint}  trained_dtype={dtype}  species={species_z}  "
               f"avg_num_neighbors={getattr(model, 'avg_num_neighbors', None)}")
         if args.embed_e0:
@@ -296,11 +455,26 @@ def main() -> int:
         species_z = list(SPECIES)
     model.eval()
     model.skip_input_validation = True
+    if args.cueq_product:
+        _replace_products_with_cueq(model, device=device)
+        print("[aoti] cuEquivariance product backend enabled for export (experimental)")
+    if args.angular_basis != "checkpoint":
+        if not hasattr(model, "angular_basis"):
+            raise TypeError("--angular-basis requires a PureCartesianICTDFix-style model with angular_basis")
+        model.angular_basis = str(args.angular_basis)
+        if hasattr(model, "_e3nn_folded"):
+            model._e3nn_folded = False
+        print(f"[aoti] angular_basis override -> {model.angular_basis}")
+    if args.fuse_selector_message_linear:
+        n_fused = _enable_fused_selector_message_linears(model)
+        print(f"[aoti] fused selector/message interaction linears enabled for {n_fused} block(s)")
+    for param in model.parameters():
+        param.requires_grad_(False)
+    print("[aoti] model parameters frozen for force-only inference export")
     if args.assume_cutoff_edges:
         print("[aoti] assuming cutoff-filtered edges: model-side edge_mask skipped")
     if args.preserve_edge_order:
         print("[aoti] preserving caller edge order: model-side argsort(edge_dst) skipped")
-
     def _apply_species(g):
         # When the checkpoint's element set differs from the harness default, re-draw the species
         # vector A from it (deterministic seed, so positions/edges -- and thus the traced shapes --
@@ -359,9 +533,10 @@ def main() -> int:
             # ICTD layers via e3nn's scripted o3.Linear), so N stays static (one .pt2 per system size, padded
             # in LAMMPS). The EDGE count E stays symbolic (scatter/index_select) -- right for fixed-N NVE/NVT.
             dyn = (None, None, None, {0: Edim}, {0: Edim}, {0: Edim}, None)
+    export_strict = not _model_uses_cueq_product(model)
     try:
-        exported = torch.export.export(gm, tuple(example_inputs), dynamic_shapes=dyn)
-        print(f"[aoti] torch.export.export OK (dynamic={args.dynamic})")
+        exported = torch.export.export(gm, tuple(example_inputs), dynamic_shapes=dyn, strict=export_strict)
+        print(f"[aoti] torch.export.export OK (dynamic={args.dynamic}, strict={export_strict})")
     except Exception as ex:
         import traceback; traceback.print_exc()
         print(f"[aoti] torch.export FAILED: {type(ex).__name__}: {ex}")
@@ -387,9 +562,13 @@ def main() -> int:
             # nmax 0 signals "no padding" to the engine (aoti_nmax_==0 -> legacy/dynamic path).
             mf.write("dynamic 1\n")
             mf.write("nmax 0\n")
+            if _model_uses_cueq_product(model):
+                mf.write("requires_torch_ops cuequivariance_ops_torch\n")
         else:
             mf.write(f"nmax {args.atoms}\n")
             mf.write(f"pad_z {pad_z}\n")
+            if _model_uses_cueq_product(model):
+                mf.write("requires_torch_ops cuequivariance_ops_torch\n")
             if args.fallback:
                 mf.write(f"fallback {args.fallback}\n")
     print(f"[aoti] wrote {meta_path}  ("
