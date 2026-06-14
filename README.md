@@ -95,14 +95,15 @@ atoms.calc = MyE3NNCalculator(checkpoint="model.pt", device="cuda")
 ### Train a model from H5
 
 ```bash
+# DATA holds processed_train.h5 and optionally processed_val.h5.
 python -m mace_ictd.cli.train \
-    --data-dir DATA \                              # holds processed_train.h5 (+ optional processed_val.h5)
+    --data-dir DATA \
     --channels 64 --lmax 2 --num-interaction 2 \
     --epochs 50 --batch-size 4 --lr-scheduler plateau --min-lr 1e-6 \
     --swa --start-swa 38 --swa-lr 1e-4 \
     --swa-energy-weight 1000 --swa-force-weight 100 --swa-stress-weight 0 \
     --device cuda --dtype float64 \
-    --train-makefx-compile --makefx-buckets 6 \    # compile the force step; 6 size-buckets
+    --train-makefx-compile --makefx-buckets 6 \
     --checkpoint model.pth
 ```
 
@@ -121,6 +122,28 @@ and SWA averaged weights are saved for deployment. LR schedules include `plateau
 or `--train-makefx-compile` too for plain eager training. The input H5 is produced by
 `mace_ictd.data.preprocessing.save_to_h5_parallel` (xyz → `processed_<split>.h5` + a `.counts.npz`
 bucket sidecar). Programmatic API: `from mace_ictd.training import ForceTrainer`.
+
+Optional scalar reciprocal long-range correction (off by default):
+
+```bash
+python -m mace_ictd.cli.train \
+    --data-dir DATA \
+    --channels 64 --lmax 2 --num-interaction 2 \
+    --long-range-mode reciprocal-spectral-v1 \
+    --long-range-boundary periodic \
+    --long-range-reciprocal-backend direct_kspace \
+    --long-range-kmax 4 \
+    --long-range-source-channels 1 \
+    --checkpoint model_lr.pth
+```
+
+`reciprocal-spectral-v1` learns latent scalar sources from the final invariant descriptor and adds a
+reciprocal-space energy term. It is zero-initialized so enabling it starts near the short-range model.
+For larger periodic/slab systems, use `--long-range-reciprocal-backend mesh_fft` with
+`--long-range-mesh-size N` (`--long-range-boundary slab` also requires `mesh_fft`). This is a learned
+long-range correction trained from the same energy/force/stress losses, not an analytic fixed-charge
+Ewald term. Native MACE conversion preserves the source model; it does not add long-range terms to an
+already trained MACE checkpoint.
 
 Smoke test (CPU always; adds the make_fx + bucketing GPU checks when CUDA is present):
 
@@ -150,22 +173,49 @@ mff-export-aoti --help
 ### Convert a native `mace-torch` model
 
 ```bash
+# 1) Convert the torch-saved native mace-torch model.
+# The input is a torch.save(model) ScaleShiftMACE object, not a raw state_dict.
 python -m mace_ictd.cli.convert_mace \
     --mace-model mace.model \
     --out mace_ictd.pth \
     --product-backend ictd-bridge-u \
-    --dtype float64
+    --dtype float64 \
+    --device cpu
 
+# 2) Conservative deployment export: bridge-U, with E0 embedded into the .pt2.
 mff-export-aoti --checkpoint mace_ictd.pth --elements H,C,N,O --out mace_ictd.pt2 --dynamic --embed-e0
+
+# 3) Performance export: replace products with cuEq and fold to the e3nn convention.
+# This path requires cuEquivariance custom ops at load time. Keep E0 outside this core
+# if your exporter/runtime cannot combine --embed-e0 with --cueq-product.
+mff-export-aoti \
+    --checkpoint mace_ictd.pth \
+    --elements H,C,N,O \
+    --out mace_ictd_cueq_e3nn.pt2 \
+    --dynamic \
+    --cueq-product \
+    --angular-basis e3nn
 ```
 
 The converter loads a torch-saved `mace-torch` `ScaleShiftMACE`, copies weights into
 `PureCartesianICTDFix`, and writes a MACE-ICTD checkpoint that `LAMMPS_MLIAP_MFF.from_checkpoint`
-and `mff-export-aoti` can load directly. Current exact-conversion support is intentionally narrow:
-`num_interactions >= 2`, bessel radial basis, `radial_MLP=[64,64,64]`, uniform correlation across
-layers, no pair repulsion / distance transform, `MLP_irreps=16x0e`, and `max_ell >= hidden_irreps.lmax`.
-Unsupported variants are rejected rather than silently converted. From-scratch MACE-ICTD training uses
-`--lmax` for hidden irreps and optional `--max-ell` for the edge spherical-harmonics cutoff.
+and `mff-export-aoti` can load directly. It is validated against the `mace-torch`
+`ScaleShiftMACE` layout used in this repository's tests and benchmarks (`mace==0.3.16`,
+`e3nn<0.6`). Newer `mace-torch` releases may work if the saved object layout and
+`extract_config_mace_model` output remain compatible, but they are not automatically covered by this
+statement. Because MACE checkpoints are Python pickles, very old pretrained models may need the
+matching historical `mace-torch`/`e3nn` environment just to load before conversion.
+
+Current exact-conversion support is intentionally narrow and structure-based: `ScaleShiftMACE`,
+`num_interactions >= 2`, bessel radial basis, `radial_MLP=[64,64,64]`, MACE parity hidden irreps with
+uniform channels and contiguous `l=0..L`, uniform correlation across layers, no pair repulsion /
+distance transform, SiLU scalar readout with `MLP_irreps=16x0e`, and
+`max_ell >= hidden_irreps.lmax`. The converter reads the original `use_reduced_cg` flag and rebuilds
+MACE-ICTD with the same setting. Unsupported variants are rejected rather than silently converted.
+From-scratch MACE-ICTD training uses `--lmax` for hidden irreps and optional `--max-ell` for the edge
+spherical-harmonics cutoff. Conversion preserves the native MACE architecture; train or fine-tune a
+MACE-ICTD checkpoint with `--long-range-mode reciprocal-spectral-v1` if a learned long-range
+correction is required.
 
 ### LAMMPS
 

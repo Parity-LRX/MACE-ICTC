@@ -179,6 +179,21 @@ def build_baseline_model(
     energy_output_scale_enabled: bool = False,
     energy_output_shift: float = 0.0,
     energy_output_shift_enabled: bool = False,
+    long_range_mode: str = "none",
+    long_range_boundary: str = "periodic",
+    long_range_reciprocal_backend: str = "direct_kspace",
+    long_range_kmax: int = 2,
+    long_range_mesh_size: int = 16,
+    long_range_source_channels: int = 1,
+    long_range_hidden_dim: int = 64,
+    long_range_filter_hidden_dim: int = 64,
+    long_range_neutralize: bool = True,
+    long_range_include_k0: bool = False,
+    long_range_energy_partition: str = "potential",
+    long_range_green_mode: str = "poisson",
+    long_range_assignment: str = "cic",
+    long_range_slab_padding_factor: int = 2,
+    long_range_mesh_fft_full_ewald: bool = False,
 ) -> PureCartesianICTDFix:
     """Construct the model exactly the way from_checkpoint rebuilds it (so the saved
     weights reload into an identical module). All structural choices come from ``cfg``
@@ -216,6 +231,21 @@ def build_baseline_model(
         energy_output_scale_enabled=energy_output_scale_enabled,
         energy_output_shift=energy_output_shift,
         energy_output_shift_enabled=energy_output_shift_enabled,
+        long_range_mode=long_range_mode,
+        long_range_boundary=long_range_boundary,
+        long_range_reciprocal_backend=long_range_reciprocal_backend,
+        long_range_kmax=long_range_kmax,
+        long_range_mesh_size=long_range_mesh_size,
+        long_range_source_channels=long_range_source_channels,
+        long_range_hidden_dim=long_range_hidden_dim,
+        long_range_filter_hidden_dim=long_range_filter_hidden_dim,
+        long_range_neutralize=long_range_neutralize,
+        long_range_include_k0=long_range_include_k0,
+        long_range_energy_partition=long_range_energy_partition,
+        long_range_green_mode=long_range_green_mode,
+        long_range_assignment=long_range_assignment,
+        long_range_slab_padding_factor=long_range_slab_padding_factor,
+        long_range_mesh_fft_full_ewald=long_range_mesh_fft_full_ewald,
         internal_compute_dtype=cfg.internal_compute_dtype,
         device=device,
     ).to(device=device, dtype=dtype)
@@ -252,6 +282,33 @@ def build_arg_parser() -> argparse.ArgumentParser:
                     help="Use the sqrt(num_basis) radial scale (default OFF = byte-literal MACE radial).")
     ap.add_argument("--avg-num-neighbors", type=float, default=None,
                     help="Override the message normalizer (default: auto-computed from the train H5).")
+    # optional reciprocal-space long-range correction
+    ap.add_argument("--long-range-mode", default="none", choices=["none", "reciprocal-spectral-v1"],
+                    help="Optional scalar reciprocal-space long-range correction. Off by default.")
+    ap.add_argument("--long-range-boundary", default="periodic", choices=["periodic", "slab"],
+                    help="Boundary for reciprocal long-range mode. direct_kspace requires periodic.")
+    ap.add_argument("--long-range-reciprocal-backend", default="direct_kspace", choices=["direct_kspace", "mesh_fft"],
+                    help="direct_kspace keeps the long-range energy in the exported core; mesh_fft can export latent sources.")
+    ap.add_argument("--long-range-kmax", type=int, default=2,
+                    help="Integer reciprocal lattice cutoff for direct_kspace.")
+    ap.add_argument("--long-range-mesh-size", type=int, default=16,
+                    help="FFT mesh size for mesh_fft reciprocal backend.")
+    ap.add_argument("--long-range-source-channels", type=int, default=1,
+                    help="Number of learned latent scalar source channels.")
+    ap.add_argument("--long-range-hidden-dim", type=int, default=64)
+    ap.add_argument("--long-range-filter-hidden-dim", type=int, default=64)
+    ap.add_argument("--no-long-range-neutralize", dest="long_range_neutralize", action="store_false",
+                    help="Do not subtract per-graph mean latent source before reciprocal solve.")
+    ap.set_defaults(long_range_neutralize=True)
+    ap.add_argument("--long-range-include-k0", action="store_true",
+                    help="Include the k=0 mode. Usually keep off with neutralized sources.")
+    ap.add_argument("--long-range-energy-partition", default="potential", choices=["potential", "uniform"])
+    ap.add_argument("--long-range-green-mode", default="poisson", choices=["poisson", "learned_poisson"])
+    ap.add_argument("--long-range-assignment", default="cic", choices=["cic", "tsc", "pcs"],
+                    help="Mesh assignment rule for mesh_fft backend.")
+    ap.add_argument("--long-range-slab-padding-factor", type=int, default=2)
+    ap.add_argument("--long-range-mesh-fft-full-ewald", action="store_true",
+                    help="Use full-Ewald-style mesh FFT correction terms for mesh_fft.")
     # atomic-energy E0 offset
     ap.add_argument("--atomic-energy-keys", default=None, help='e.g. "1,6,7,8"')
     ap.add_argument("--atomic-energy-values", default=None, help='e.g. "-430.5,-821.0,-1488.2,-2044.4"')
@@ -419,6 +476,15 @@ def main(argv=None):
             "bridge-U has no e3nn-fold path; use bridge-U for canonical parity or cueq for the "
             "e3nn-folded product path."
         )
+    if args.long_range_mode != "none":
+        if args.long_range_reciprocal_backend == "direct_kspace" and args.long_range_boundary != "periodic":
+            raise ValueError("--long-range-reciprocal-backend direct_kspace requires --long-range-boundary periodic")
+        if args.long_range_kmax < 0:
+            raise ValueError("--long-range-kmax must be >= 0")
+        if args.long_range_mesh_size <= 0:
+            raise ValueError("--long-range-mesh-size must be > 0")
+        if args.long_range_source_channels <= 0:
+            raise ValueError("--long-range-source-channels must be > 0")
     energy_output_scale_enabled = args.scaling != "no_scaling" or args.atomic_inter_scale is not None
     energy_output_shift_enabled = (
         (args.scaling != "no_scaling" and not args.no_atomic_inter_shift)
@@ -457,6 +523,21 @@ def main(argv=None):
         energy_output_scale_enabled=energy_output_scale_enabled,
         energy_output_shift=shift,
         energy_output_shift_enabled=energy_output_shift_enabled,
+        long_range_mode=args.long_range_mode,
+        long_range_boundary=args.long_range_boundary,
+        long_range_reciprocal_backend=args.long_range_reciprocal_backend,
+        long_range_kmax=args.long_range_kmax,
+        long_range_mesh_size=args.long_range_mesh_size,
+        long_range_source_channels=args.long_range_source_channels,
+        long_range_hidden_dim=args.long_range_hidden_dim,
+        long_range_filter_hidden_dim=args.long_range_filter_hidden_dim,
+        long_range_neutralize=args.long_range_neutralize,
+        long_range_include_k0=args.long_range_include_k0,
+        long_range_energy_partition=args.long_range_energy_partition,
+        long_range_green_mode=args.long_range_green_mode,
+        long_range_assignment=args.long_range_assignment,
+        long_range_slab_padding_factor=args.long_range_slab_padding_factor,
+        long_range_mesh_fft_full_ewald=args.long_range_mesh_fft_full_ewald,
         device=device, dtype=dtype,
     )
     n_params = sum(p.numel() for p in model.parameters())
@@ -501,6 +582,21 @@ def main(argv=None):
         energy_output_scale=float(scale),
         energy_output_shift_enabled=bool(energy_output_shift_enabled),
         energy_output_shift=float(shift),
+        long_range_mode=args.long_range_mode,
+        long_range_boundary=args.long_range_boundary,
+        long_range_neutralize=bool(args.long_range_neutralize),
+        long_range_hidden_dim=int(args.long_range_hidden_dim),
+        long_range_filter_hidden_dim=int(args.long_range_filter_hidden_dim),
+        long_range_kmax=int(args.long_range_kmax),
+        long_range_mesh_size=int(args.long_range_mesh_size),
+        long_range_slab_padding_factor=int(args.long_range_slab_padding_factor),
+        long_range_include_k0=bool(args.long_range_include_k0),
+        long_range_source_channels=int(args.long_range_source_channels),
+        long_range_reciprocal_backend=args.long_range_reciprocal_backend,
+        long_range_energy_partition=args.long_range_energy_partition,
+        long_range_green_mode=args.long_range_green_mode,
+        long_range_assignment=args.long_range_assignment,
+        long_range_mesh_fft_full_ewald=bool(args.long_range_mesh_fft_full_ewald),
     )
 
     trainer = ForceTrainer(

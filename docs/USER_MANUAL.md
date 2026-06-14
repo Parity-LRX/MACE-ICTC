@@ -330,6 +330,7 @@ Key architecture arguments:
 | `--product-backend` | Product backend: usually `ictd-bridge-u` or `cueq`. |
 | `--angular-basis` | `ictd` or `e3nn`; use `e3nn` with `cueq` for the performance path. |
 | `--use-reduced-cg` | Enable reduced-CG product layout. Must match source MACE when converting. |
+| `--long-range-mode` | Optional learned scalar reciprocal correction. Use `reciprocal-spectral-v1` to enable; default is `none`. |
 
 Optimization, step, and seed controls:
 
@@ -398,9 +399,51 @@ E0 behavior:
 - If omitted, the training CLI uses its built-in H/C/N/O defaults.
 - Export can embed E0 into the deployed core with `--embed-e0`.
 
+Long-range correction:
+
+```bash
+python -m mace_ictd.cli.train \
+  --data-dir DATA \
+  --channels 64 --lmax 2 --num-interaction 2 \
+  --long-range-mode reciprocal-spectral-v1 \
+  --long-range-boundary periodic \
+  --long-range-reciprocal-backend direct_kspace \
+  --long-range-kmax 4 \
+  --long-range-source-channels 1 \
+  --checkpoint model_lr.pth
+```
+
+This enables the currently supported long-range module, `reciprocal-spectral-v1`. It maps the final
+per-atom invariant descriptor to learned latent scalar sources and adds a reciprocal-space energy
+term. The contribution is initialized near zero, so the model starts close to the short-range baseline
+and learns the correction from the same energy/force/stress losses. It is not a fixed-charge analytic
+Ewald term and it does not require explicit charge labels.
+
+Key options:
+
+| Argument | Meaning |
+|---|---|
+| `--long-range-boundary periodic` | Fully periodic reciprocal solve. Required by `direct_kspace`. |
+| `--long-range-boundary slab` | Slab boundary; use with `--long-range-reciprocal-backend mesh_fft`. |
+| `--long-range-reciprocal-backend direct_kspace` | Direct k-space sum inside the model/exported core. Best for small `kmax` tests. |
+| `--long-range-reciprocal-backend mesh_fft` | FFT mesh path for larger periodic/slab systems. |
+| `--long-range-kmax` | Integer k-lattice cutoff for `direct_kspace`. |
+| `--long-range-mesh-size` | Mesh resolution for `mesh_fft`. |
+| `--long-range-source-channels` | Number of latent scalar source channels. |
+| `--no-long-range-neutralize` | Disable per-graph source neutralization. Usually leave neutralization on. |
+| `--long-range-include-k0` | Include the k=0 mode. Usually leave off with neutralized sources. |
+| `--long-range-green-mode` | `poisson` or `learned_poisson`. |
+
+The checkpoint stores the long-range hyperparameters in `model_hyperparameters`, so
+`LAMMPS_MLIAP_MFF.from_checkpoint` and `mff-export-aoti --checkpoint model_lr.pth ...` rebuild the
+same architecture. Native MACE conversion does not add a long-range module to an already trained
+MACE checkpoint; train or fine-tune in MACE-ICTD with `--long-range-mode reciprocal-spectral-v1` when
+this correction is needed.
+
 ## 8. Native MACE Conversion
 
-Use this path for an existing `mace-torch` `ScaleShiftMACE` checkpoint:
+Use this path after training a model with native `mace-torch`. The input must be a torch-saved
+`ScaleShiftMACE` object, not only a raw `state_dict`:
 
 ```bash
 mff-convert-mace \
@@ -411,7 +454,12 @@ mff-convert-mace \
   --device cpu
 ```
 
-Then export:
+Recommended parity path:
+
+- Convert with `--product-backend ictd-bridge-u`.
+- Use `--dtype float64` for the tightest energy/force comparison.
+- Export the converted checkpoint without changing the product backend.
+- Use `--embed-e0` when the deployed `.pt2` should return absolute energies.
 
 ```bash
 mff-export-aoti \
@@ -422,7 +470,7 @@ mff-export-aoti \
   --embed-e0
 ```
 
-For faster cuEq product inference from a converted checkpoint:
+For faster cuEq product inference from the same converted checkpoint:
 
 ```bash
 mff-export-aoti \
@@ -430,22 +478,52 @@ mff-export-aoti \
   --elements H,C,N,O \
   --out mace_ictd_cueq_e3nn.pt2 \
   --dynamic \
-  --embed-e0 \
   --cueq-product \
   --angular-basis e3nn
 ```
+
+The cuEq export path replaces the product blocks and folds compatible angular operators to the e3nn
+convention. It requires cuEquivariance custom op registration in the deployment runtime. Keep E0
+outside this core if your exporter/runtime cannot combine `--embed-e0` with `--cueq-product`.
+
+Supported versions and model variants:
+
+- The converter targets the `mace-torch` `ScaleShiftMACE` object layout used by this repository's
+  tests and benchmarks, validated with `mace==0.3.16` and `e3nn<0.6`.
+- Newer `mace-torch` releases may work if the saved object layout and `extract_config_mace_model`
+  output remain compatible, but they are not automatically covered.
+- Checkpoint loading still depends on Python pickle compatibility. Very old pretrained MACE models
+  may need the matching historical `mace-torch`/`e3nn` environment to load; after a model object is
+  loadable, conversion is governed by the structural checks below.
+- This is not a converter for arbitrary native-MACE-like implementations, raw state dicts, or custom
+  research forks unless they save a compatible `ScaleShiftMACE`.
 
 Conversion constraints are intentionally strict. Unsupported variants are rejected rather than silently converted. Current supported assumptions include:
 
 - `ScaleShiftMACE`,
 - Bessel radial basis,
+- `radial_MLP=[64,64,64]`,
+- MACE parity hidden irreps with contiguous `l=0..L` and uniform channel count,
 - uniform correlation across layers,
 - no pair repulsion or distance transform,
-- MACE-style scalar readout,
+- SiLU MACE-style scalar readout with `MLP_irreps=16x0e`,
+- first interaction `RealAgnosticInteractionBlock` or `RealAgnosticResidualInteractionBlock`,
+- later interactions `RealAgnosticResidualInteractionBlock`,
 - `max_ell >= hidden_irreps.lmax`,
 - `num_interactions >= 2`.
 
+Backend differences:
+
+- `ictd-bridge-u`: recommended conversion backend; folds the MACE/e3nn U convention through the ICTD
+  basis bridge and is the main parity path.
+- `native-mace`: debug/reference backend; useful for diagnosing MACE-side contraction behavior.
+- `cueq`: performance-oriented product backend; use especially at export time with
+  `--cueq-product --angular-basis e3nn`.
+- `ictd-pure-u`: diagnostic ICTD-generated-U path; it is not the native MACE exact-conversion path.
+
 The converter reads `mace_model.use_reduced_cg` and rebuilds MACE-ICTD with the same reduced-CG setting.
+Users should not guess or override that flag for imported native MACE models.
+Conversion preserves the source MACE architecture; it does not add a learned long-range module.
 
 ## 9. AOTInductor Export
 
@@ -468,7 +546,6 @@ mff-export-aoti \
   --elements H,C,N,O \
   --out model_cueq_e3nn.pt2 \
   --dynamic \
-  --embed-e0 \
   --cueq-product \
   --angular-basis e3nn \
   --assume-cutoff-edges \
@@ -476,6 +553,10 @@ mff-export-aoti \
   --fuse-selector-message-linear \
   --inductor-max-autotune
 ```
+
+For the performance-oriented cuEq export, keep atomic E0 outside the exported core unless your current
+exporter/runtime supports combining `--embed-e0` with product replacement. The conservative bridge-U
+export above is the simplest path when an E0-embedded absolute-energy `.pt2` is required.
 
 Important export options:
 

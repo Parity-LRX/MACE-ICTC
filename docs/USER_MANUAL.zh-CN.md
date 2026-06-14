@@ -331,6 +331,7 @@ python -m mace_ictd.cli.train --help
 | `--product-backend` | product backend，常用 `ictd-bridge-u` 或 `cueq`。 |
 | `--angular-basis` | `ictd` 或 `e3nn`；性能路径中 `cueq` 可用 `e3nn`。 |
 | `--use-reduced-cg` | reduced-CG product layout；转换原生 MACE 时必须跟原模型一致。 |
+| `--long-range-mode` | 可选 learned scalar reciprocal correction；用 `reciprocal-spectral-v1` 打开，默认 `none`。 |
 
 优化、step 和 seed：
 
@@ -398,9 +399,49 @@ E0：
 - 如果省略，训练 CLI 使用内置 H/C/N/O 默认值。
 - 部署时如果需要绝对能量，AOTI export 用 `--embed-e0`。
 
+Long-range correction：
+
+```bash
+python -m mace_ictd.cli.train \
+  --data-dir DATA \
+  --channels 64 --lmax 2 --num-interaction 2 \
+  --long-range-mode reciprocal-spectral-v1 \
+  --long-range-boundary periodic \
+  --long-range-reciprocal-backend direct_kspace \
+  --long-range-kmax 4 \
+  --long-range-source-channels 1 \
+  --checkpoint model_lr.pth
+```
+
+这会打开当前支持的 long-range 模块 `reciprocal-spectral-v1`。它从最终逐原子的 invariant
+descriptor 预测 learned latent scalar sources，并添加 reciprocal-space energy term。贡献项接近
+zero-init，所以开启后初始行为接近 short-range baseline，再通过同一个 energy/force/stress loss 学到修正。
+它不是固定电荷的解析 Ewald 项，也不需要显式 charge label。
+
+常用选项：
+
+| 参数 | 含义 |
+|---|---|
+| `--long-range-boundary periodic` | 完全周期 reciprocal solve；`direct_kspace` 必须用这个。 |
+| `--long-range-boundary slab` | slab 边界；需要配合 `--long-range-reciprocal-backend mesh_fft`。 |
+| `--long-range-reciprocal-backend direct_kspace` | 直接 k-space sum，保留在模型/导出 core 内；适合小 `kmax` 测试。 |
+| `--long-range-reciprocal-backend mesh_fft` | FFT mesh 路径，适合更大 periodic/slab 系统。 |
+| `--long-range-kmax` | `direct_kspace` 的整数 k-lattice cutoff。 |
+| `--long-range-mesh-size` | `mesh_fft` 的 mesh resolution。 |
+| `--long-range-source-channels` | latent scalar source channel 数。 |
+| `--no-long-range-neutralize` | 关闭每个 graph 的 source neutralization；通常保持默认开启。 |
+| `--long-range-include-k0` | 包含 k=0 mode；neutralized source 下通常保持关闭。 |
+| `--long-range-green-mode` | `poisson` 或 `learned_poisson`。 |
+
+checkpoint 会把 long-range 超参数写进 `model_hyperparameters`，所以
+`LAMMPS_MLIAP_MFF.from_checkpoint` 和 `mff-export-aoti --checkpoint model_lr.pth ...` 会重建同一个架构。
+原生 MACE 转换不会给已经训练好的 MACE checkpoint 自动加 long-range module；需要这个修正时，应在
+MACE-ICTD 里用 `--long-range-mode reciprocal-spectral-v1` 训练或 fine-tune。
+
 ## 8. 原生 MACE 模型转换
 
-已有 `mace-torch` `ScaleShiftMACE` checkpoint 时使用：
+用原生 `mace-torch` 训练好模型后，走这个转换路径。输入必须是 torch 保存的
+`ScaleShiftMACE` 对象，不只是 raw `state_dict`：
 
 ```bash
 mff-convert-mace \
@@ -411,7 +452,12 @@ mff-convert-mace \
   --device cpu
 ```
 
-然后导出：
+推荐的数值对应路径：
+
+- 转换时使用 `--product-backend ictd-bridge-u`。
+- 用 `--dtype float64` 做最严格的 energy/force 对比。
+- 导出时不替换 product backend。
+- 如果部署的 `.pt2` 需要直接返回绝对能量，用 `--embed-e0`。
 
 ```bash
 mff-export-aoti \
@@ -430,22 +476,47 @@ mff-export-aoti \
   --elements H,C,N,O \
   --out mace_ictd_cueq_e3nn.pt2 \
   --dynamic \
-  --embed-e0 \
   --cueq-product \
   --angular-basis e3nn
 ```
+
+cuEq 导出路径会替换 product block，并把兼容的角向算子 fold 到 e3nn convention。部署时需要注册
+cuEquivariance custom ops。如果当前 exporter/runtime 不能把 `--embed-e0` 和 `--cueq-product`
+同时使用，就把 E0 留在 core 外部处理。
+
+支持的版本和模型变体：
+
+- converter 面向本仓库测试和 benchmark 使用的 `mace-torch` `ScaleShiftMACE` 对象结构；验证环境是
+  `mace==0.3.16` 和 `e3nn<0.6`。
+- 更新的 `mace-torch` 版本如果保存对象结构和 `extract_config_mace_model` 输出仍兼容，可能可以工作，
+  但这里不自动承诺覆盖。
+- checkpoint 加载本身受 Python pickle 兼容性影响。很老的 MACE 预训练模型可能需要对应历史版本的
+  `mace-torch`/`e3nn` 环境先成功 load；只要模型对象能 load，后续是否能转换由下面的结构检查决定。
+- 这不是任意 native-MACE-like 实现、raw state dict 或自定义 research fork 的通用转换器；它要求保存出来的是兼容的 `ScaleShiftMACE`。
 
 转换支持范围是故意收紧的；不支持的原生 MACE 变体会报错，而不是静默转换成错误模型。当前主要假设包括：
 
 - `ScaleShiftMACE`，
 - Bessel radial basis，
+- `radial_MLP=[64,64,64]`，
+- hidden irreps 使用 MACE parity，`l=0..L` 连续，且各 `l` channel 数一致，
 - 每层 correlation 一致，
 - 无 pair repulsion / distance transform，
-- MACE-style scalar readout，
+- SiLU MACE-style scalar readout，`MLP_irreps=16x0e`，
+- 第一层 interaction 是 `RealAgnosticInteractionBlock` 或 `RealAgnosticResidualInteractionBlock`，
+- 后续 interaction 是 `RealAgnosticResidualInteractionBlock`，
 - `max_ell >= hidden_irreps.lmax`，
 - `num_interactions >= 2`。
 
-converter 会读取 `mace_model.use_reduced_cg` 并用同样配置重建 MACE-ICTD。
+backend 差异：
+
+- `ictd-bridge-u`：推荐转换 backend；通过 ICTD/e3nn basis bridge fold MACE/e3nn 的 U convention，是主数值对应路径。
+- `native-mace`：debug/reference backend，用于诊断 MACE 侧 contraction 行为。
+- `cueq`：性能 product backend，尤其适合导出时配合 `--cueq-product --angular-basis e3nn`。
+- `ictd-pure-u`：直接用 ICTD 生成 U 的诊断路径，不是原生 MACE exact conversion 主路径。
+
+converter 会读取 `mace_model.use_reduced_cg` 并用同样配置重建 MACE-ICTD。用户转换原生 MACE 模型时不应该手动猜这个选项。
+转换会保留原生 MACE 架构，不会自动添加 learned long-range module。
 
 ## 9. AOTInductor 导出
 
@@ -468,7 +539,6 @@ mff-export-aoti \
   --elements H,C,N,O \
   --out model_cueq_e3nn.pt2 \
   --dynamic \
-  --embed-e0 \
   --cueq-product \
   --angular-basis e3nn \
   --assume-cutoff-edges \
@@ -476,6 +546,9 @@ mff-export-aoti \
   --fuse-selector-message-linear \
   --inductor-max-autotune
 ```
+
+性能导出的 cuEq 路径里，如果当前 exporter/runtime 不能把 `--embed-e0` 和 product replacement
+组合使用，就把 atomic E0 留在导出 core 外处理。需要 E0-embedded 绝对能量 `.pt2` 时，最简单稳妥的是使用上面的 bridge-U 保守导出。
 
 常用导出选项：
 
