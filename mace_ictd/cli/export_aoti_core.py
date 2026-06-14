@@ -104,6 +104,90 @@ def _model_uses_cueq_product(model) -> bool:
     return any(type(module).__name__.startswith("Cueq") for module in model.modules())
 
 
+def _model_supports_e3nn_basis_fold(model) -> bool:
+    return any(
+        module is not model and callable(getattr(module, "enable_e3nn_basis", None))
+        for module in model.modules()
+    )
+
+
+def _configure_angular_basis_for_export(model, requested: str) -> str:
+    """Apply the requested export angular basis without asking users to know backend limits.
+
+    ``angular_basis='e3nn'`` is only a real speed/graph optimization when the product
+    backend can fold its symmetric contraction into the e3nn basis.  Bridge-U is
+    already a bridge backend and intentionally has no e3nn fold hook, so keep the
+    model in ICTD basis instead of failing later during the first forward/export.
+    """
+    if not hasattr(model, "angular_basis"):
+        if requested != "checkpoint":
+            raise TypeError("--angular-basis requires a PureCartesianICTDFix-style model with angular_basis")
+        return "unavailable"
+
+    current = str(getattr(model, "angular_basis"))
+    target = current if requested == "checkpoint" else str(requested)
+    if target not in {"ictd", "e3nn"}:
+        raise ValueError(f"angular_basis must be 'ictd' or 'e3nn', got {target!r}")
+
+    if target == "e3nn" and not _model_supports_e3nn_basis_fold(model):
+        backend = getattr(model, "ictd_fix_product_backend", "?")
+        print(
+            "[aoti] WARNING: angular_basis='e3nn' requested but the selected product "
+            f"backend {backend!r} does not expose an e3nn fold (bridge-U has no e3nn-fold path). "
+            "Keeping angular_basis='ictd'. Use --cueq-product for the e3nn-folded product path."
+        )
+        target = "ictd"
+
+    if current != target:
+        model.angular_basis = target
+        if hasattr(model, "_e3nn_folded"):
+            model._e3nn_folded = False
+    return target
+
+
+def _torch_export_with_strict_fallback(gm, example_inputs, *, dynamic_shapes, prefer_strict: bool):
+    """Export with strict first when possible, then non-strict with mandatory downstream checks.
+
+    ``strict=False`` is a fallback for exporter limitations (for example symbolic
+    integer returns in optimized graphs).  It is not treated as proof of correctness:
+    the caller still compiles, loads, and numerically compares the produced .pt2.
+    """
+    import traceback
+
+    first_trace = None
+    attempts = [bool(prefer_strict)]
+    if prefer_strict:
+        attempts.append(False)
+
+    for strict in attempts:
+        try:
+            exported = torch.export.export(
+                gm,
+                tuple(example_inputs),
+                dynamic_shapes=dynamic_shapes,
+                strict=bool(strict),
+            )
+            if prefer_strict and not strict:
+                print(
+                    "[aoti] torch.export.export OK after strict=False fallback "
+                    "(dynamic numerics will still be checked)"
+                )
+            return exported, bool(strict)
+        except Exception as ex:
+            if strict and prefer_strict:
+                first_trace = traceback.format_exc()
+                print(f"[aoti] torch.export strict=True FAILED: {type(ex).__name__}: {ex}")
+                print("[aoti] retrying torch.export with strict=False")
+                continue
+            if first_trace is not None:
+                print("[aoti] original strict=True traceback:")
+                print(first_trace.rstrip())
+            traceback.print_exc()
+            raise
+
+    raise RuntimeError("unreachable torch.export strict fallback state")
+
+
 def _replace_products_with_cueq(model, *, device: torch.device) -> None:
     from mace_ictd.models.pure_cartesian_ictd_fix import CueqMACEProductBasisBlockSO3
 
@@ -131,7 +215,7 @@ def _replace_products_with_cueq(model, *, device: torch.device) -> None:
         fast.linear.load_state_dict(product.linear.state_dict())
         fast_inner = fast.symmetric_contractions.symmetric_contractions
         old_inner = _inner_mace_contraction(product.symmetric_contractions)
-        fast_inner.load_state_dict(old_inner.state_dict(), strict=True)
+        _copy_contraction_learnable_weights_only(old_inner, fast_inner)
         fast.refresh_cueq_weights()
         new_products.append(fast.eval())
     model.products = new_products
@@ -139,6 +223,34 @@ def _replace_products_with_cueq(model, *, device: torch.device) -> None:
         model.ictd_fix_product_backend = "cueq"
     if hasattr(model, "ictd_fix_effective_product_backends"):
         model.ictd_fix_effective_product_backends = ["cueq"] * len(model.products)
+
+
+def _copy_contraction_learnable_weights_only(src_sc, dst_sc) -> None:
+    """Copy MACE symmetric-contraction learnable weights without copying fixed U buffers.
+
+    Bridge-U folds the ICTD<->e3nn basis change into its inner ``U_matrix_*`` buffers
+    at construction time.  cuEq product contractions, however, must keep their own
+    e3nn/O3 U tensors.  A full ``load_state_dict`` would silently copy bridge-U's
+    folded U buffers into the cuEq backend.  Only the learned per-element weights
+    are model parameters and should move across backends.
+    """
+    src_contractions = src_sc.contractions
+    dst_contractions = dst_sc.contractions
+    if len(src_contractions) != len(dst_contractions):
+        raise ValueError(
+            f"Cannot copy contraction weights: source has {len(src_contractions)} contractions, "
+            f"destination has {len(dst_contractions)}"
+        )
+    with torch.no_grad():
+        for src, dst in zip(src_contractions, dst_contractions):
+            dst.weights_max.copy_(src.weights_max.to(dtype=dst.weights_max.dtype, device=dst.weights_max.device))
+            if len(src.weights) != len(dst.weights):
+                raise ValueError(
+                    f"Cannot copy contraction weights: source has {len(src.weights)} lower-order weights, "
+                    f"destination has {len(dst.weights)}"
+                )
+            for src_w, dst_w in zip(src.weights, dst.weights):
+                dst_w.copy_(src_w.to(dtype=dst_w.dtype, device=dst_w.device))
 
 
 def _enable_fused_selector_message_linears(model) -> int:
@@ -458,13 +570,9 @@ def main() -> int:
     if args.cueq_product:
         _replace_products_with_cueq(model, device=device)
         print("[aoti] cuEquivariance product backend enabled for export (experimental)")
-    if args.angular_basis != "checkpoint":
-        if not hasattr(model, "angular_basis"):
-            raise TypeError("--angular-basis requires a PureCartesianICTDFix-style model with angular_basis")
-        model.angular_basis = str(args.angular_basis)
-        if hasattr(model, "_e3nn_folded"):
-            model._e3nn_folded = False
-        print(f"[aoti] angular_basis override -> {model.angular_basis}")
+    export_angular_basis = _configure_angular_basis_for_export(model, args.angular_basis)
+    if args.angular_basis != "checkpoint" or export_angular_basis == "ictd":
+        print(f"[aoti] angular_basis for export -> {export_angular_basis}")
     if args.fuse_selector_message_linear:
         n_fused = _enable_fused_selector_message_linears(model)
         print(f"[aoti] fused selector/message interaction linears enabled for {n_fused} block(s)")
@@ -533,12 +641,16 @@ def main() -> int:
             # ICTD layers via e3nn's scripted o3.Linear), so N stays static (one .pt2 per system size, padded
             # in LAMMPS). The EDGE count E stays symbolic (scatter/index_select) -- right for fixed-N NVE/NVT.
             dyn = (None, None, None, {0: Edim}, {0: Edim}, {0: Edim}, None)
-    export_strict = not _model_uses_cueq_product(model)
+    prefer_export_strict = not _model_uses_cueq_product(model)
     try:
-        exported = torch.export.export(gm, tuple(example_inputs), dynamic_shapes=dyn, strict=export_strict)
+        exported, export_strict = _torch_export_with_strict_fallback(
+            gm,
+            example_inputs,
+            dynamic_shapes=dyn,
+            prefer_strict=prefer_export_strict,
+        )
         print(f"[aoti] torch.export.export OK (dynamic={args.dynamic}, strict={export_strict})")
     except Exception as ex:
-        import traceback; traceback.print_exc()
         print(f"[aoti] torch.export FAILED: {type(ex).__name__}: {ex}")
         return 1
 

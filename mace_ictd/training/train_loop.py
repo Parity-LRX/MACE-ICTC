@@ -2,7 +2,7 @@
 
 This is the baseline energy+force training path extracted from the FSCETP trainer,
 kept numerically faithful but stripped of the modes MACE-ICTD does not ship
-(physical-tensor heads / multi-fidelity / external field / EMA / SWA / CUDA-graph /
+(physical-tensor heads / multi-fidelity / external field / CUDA-graph /
 compiled-autograd). What it preserves, verbatim in math:
 
   * energy:  ``E_mol = scatter_sum(E_per_atom, batch_idx) + scatter_sum(E0[A], batch_idx)``
@@ -13,8 +13,8 @@ compiled-autograd). What it preserves, verbatim in math:
   * stress:  optional (``stress_weight > 0``) -- ``sigma = dE/dstrain / V`` via the
              strain-derivative trick: deform positions+cell by ``I + sym(strain)`` and
              differentiate w.r.t. ``strain`` at ``strain=0`` (FSCETP convention).
-  * loss:    per-atom-normalized ``SmoothL1(beta=0.5)`` on energy + ``SmoothL1(beta=0.5)``
-             on force (+ ``SmoothL1`` on stress), ``force_ref *= force_shift_value``;
+  * loss:    per-atom-normalized ``SmoothL1(beta=loss_beta)`` on energy/force/stress
+             by default (or MSE when requested), ``force_ref *= force_shift_value``;
              ``total = a*E + b*F (+ c*stress)``.
 
 The make_fx fast path flattens ``forward + inner force-autograd`` (and the strain
@@ -70,6 +70,8 @@ class ForceTrainer:
         force_weight: float = 10.0,
         stress_weight: float = 0.0,
         force_shift_value: float = 1.0,
+        loss_type: str = "smooth_l1",
+        loss_beta: float = 0.5,
         atomic_energy_keys=None,
         atomic_energy_values=None,
         # optimization
@@ -77,6 +79,9 @@ class ForceTrainer:
         min_learning_rate: float = 1e-6,
         weight_decay: float = 0.0,
         optimizer_type: str = "adamw",
+        adam_beta1: float = 0.9,
+        adam_beta2: float = 0.999,
+        adam_eps: float = 1e-8,
         amsgrad: bool = False,
         lr_scheduler: str = "cosine",
         warmup_batches: int = 0,
@@ -84,7 +89,14 @@ class ForceTrainer:
         lr_decay_step: int = 1000,
         lr_decay_factor: float = 0.98,
         epochs: int = 1,
+        max_steps: int | None = None,
         max_grad_norm: float | None = None,
+        # averaged weights
+        ema_decay: float = 0.0,
+        ema_start_step: int = 0,
+        swa_start_epoch: int = -1,
+        swa_start_step: int = -1,
+        checkpoint_state_source: str = "auto",
         # make_fx
         train_makefx_compile: bool = False,
         require_train_makefx_compile: bool = False,
@@ -108,6 +120,12 @@ class ForceTrainer:
         self.b = float(force_weight)
         self.c = float(stress_weight)  # stress/virial loss weight; 0 disables the stress path
         self.force_shift_value = float(force_shift_value)
+        self.loss_type = str(loss_type).lower()
+        if self.loss_type not in {"smooth_l1", "mse"}:
+            raise ValueError(f"unsupported loss_type {loss_type!r}; use 'smooth_l1' or 'mse'")
+        self.loss_beta = float(loss_beta)
+        if self.loss_type == "smooth_l1" and self.loss_beta <= 0:
+            raise ValueError("loss_beta must be positive for smooth_l1 loss")
 
         keys = atomic_energy_keys if atomic_energy_keys is not None else _DEFAULT_E0_KEYS
         values = atomic_energy_values if atomic_energy_values is not None else _DEFAULT_E0_VALUES
@@ -115,7 +133,27 @@ class ForceTrainer:
         self.values = torch.as_tensor(list(values), dtype=self.dtype, device=self.device)
         self.criterion_2 = RMSELoss()
 
+        self.learning_rate = float(learning_rate)
+        self.min_learning_rate = float(min_learning_rate)
+        self.weight_decay = float(weight_decay)
+        self.optimizer_type = str(optimizer_type).lower()
+        self.adam_beta1 = float(adam_beta1)
+        self.adam_beta2 = float(adam_beta2)
+        self.adam_eps = float(adam_eps)
+        if not (0.0 <= self.adam_beta1 < 1.0 and 0.0 <= self.adam_beta2 < 1.0):
+            raise ValueError("Adam betas must satisfy 0 <= beta < 1")
+        if self.adam_eps <= 0:
+            raise ValueError("adam_eps must be positive")
+        self.amsgrad = bool(amsgrad)
+        self.lr_scheduler_kind = str(lr_scheduler).lower()
+        self.warmup_batches = int(max(0, warmup_batches))
+        self.warmup_start_ratio = float(warmup_start_ratio)
+        self.lr_decay_step = int(lr_decay_step)
+        self.lr_decay_factor = float(lr_decay_factor)
+
         self.epochs = int(epochs)
+        self.max_steps = int(max_steps) if max_steps is not None and int(max_steps) > 0 else None
+        self.global_step = 0
         self.max_grad_norm = max_grad_norm
         self.log_interval = int(log_interval)
         self.checkpoint_path = checkpoint_path
@@ -134,17 +172,35 @@ class ForceTrainer:
         self._makefx_disabled = False
         object.__setattr__(self, "_makefx_cache", None)
 
-        self._build_optimizer(optimizer_type, learning_rate, weight_decay, amsgrad)
+        self.ema_decay = float(ema_decay)
+        if self.ema_decay < 0.0 or self.ema_decay >= 1.0:
+            raise ValueError("ema_decay must satisfy 0 <= ema_decay < 1")
+        self.ema_start_step = max(0, int(ema_start_step))
+        self._ema_state = None
+
+        self.swa_start_epoch = int(swa_start_epoch)
+        self.swa_start_step = int(swa_start_step)
+        if self.swa_start_epoch < -1:
+            raise ValueError("swa_start_epoch must be -1 (disabled) or >= 0")
+        if self.swa_start_step < -1:
+            raise ValueError("swa_start_step must be -1 (disabled) or >= 0")
+        self._swa_state = None
+        self._swa_n = 0
+        self.checkpoint_state_source = str(checkpoint_state_source or "auto").lower()
+        if self.checkpoint_state_source not in {"auto", "raw", "ema", "swa"}:
+            raise ValueError("checkpoint_state_source must be one of auto/raw/ema/swa")
+
+        self._build_optimizer(self.optimizer_type, self.learning_rate, self.weight_decay, self.amsgrad)
         self._build_scheduler(
-            lr_scheduler, warmup_batches, warmup_start_ratio,
-            lr_decay_step, lr_decay_factor, min_learning_rate,
+            self.lr_scheduler_kind, self.warmup_batches, self.warmup_start_ratio,
+            self.lr_decay_step, self.lr_decay_factor, self.min_learning_rate,
         )
 
     # ------------------------------------------------------------------ setup
     def _build_optimizer(self, optimizer_type, lr, weight_decay, amsgrad):
         params = list(self.model.parameters())
         kind = str(optimizer_type).lower()
-        common = dict(lr=lr, betas=(0.9, 0.999), eps=1e-8,
+        common = dict(lr=lr, betas=(self.adam_beta1, self.adam_beta2), eps=self.adam_eps,
                       weight_decay=weight_decay, amsgrad=bool(amsgrad))
         if kind == "adam":
             self.optimizer = torch.optim.Adam(params, **common)
@@ -155,7 +211,7 @@ class ForceTrainer:
                          decay_step, decay_factor, min_lr):
         kind = str(kind).lower()
         steps_per_epoch = max(1, len(self.train_loader))
-        total_steps = max(1, self.epochs * steps_per_epoch)
+        total_steps = max(1, self.max_steps or (self.epochs * steps_per_epoch))
         warmup_batches = int(max(0, warmup_batches))
 
         def _warmup_lambda(step):
@@ -340,11 +396,11 @@ class ForceTrainer:
             f_pred_l, force_ref_l = f_pred, force_ref_scaled
             num_atoms_per_mol = scatter(torch.ones_like(batch_idx), batch_idx, dim=0, reduce="sum")
 
-        force_loss = smooth_l1_loss_stats(f_pred_l, force_ref_l, beta=0.5)[0]
+        force_loss = self._loss_term(f_pred_l, force_ref_l)
 
         E_avg_pred = E_mean / num_atoms_per_mol
         target_energy_avg = target_energies / num_atoms_per_mol
-        energy_loss = smooth_l1_loss_stats(E_avg_pred, target_energy_avg, beta=0.5)[0]
+        energy_loss = self._loss_term(E_avg_pred, target_energy_avg)
 
         total_loss = self.a * energy_loss + self.b * force_loss
 
@@ -354,7 +410,7 @@ class ForceTrainer:
         if compute_stress:
             volume = torch.abs(torch.det(cell)).clamp(min=1e-10)
             stress_pred = grad_strain / volume.view(-1, 1, 1)  # [B,3,3]
-            stress_loss = smooth_l1_loss_stats(stress_pred, stress_ref, beta=0.5)[0]
+            stress_loss = self._loss_term(stress_pred, stress_ref)
             total_loss = total_loss + self.c * stress_loss
             with torch.no_grad():
                 stress_rmse = torch.sqrt(self.criterion_2(stress_pred.reshape(-1), stress_ref.reshape(-1)))
@@ -375,6 +431,66 @@ class ForceTrainer:
             "stress_rmse": stress_rmse,
         }
 
+    def _loss_term(self, pred, target):
+        if self.loss_type == "mse":
+            return F.mse_loss(pred, target)
+        return smooth_l1_loss_stats(pred, target, beta=self.loss_beta)[0]
+
+    @torch.no_grad()
+    def _update_ema_state(self):
+        state = self.model.state_dict()
+        if self._ema_state is None:
+            self._ema_state = {k: v.detach().clone() for k, v in state.items()}
+            return
+        decay = self.ema_decay
+        one_minus = 1.0 - decay
+        for key, val in state.items():
+            cur = val.detach()
+            old = self._ema_state.get(key)
+            if old is None or old.shape != cur.shape:
+                self._ema_state[key] = cur.clone()
+                continue
+            cur = cur.to(device=old.device, dtype=old.dtype)
+            if torch.is_floating_point(old):
+                old.mul_(decay).add_(cur, alpha=one_minus)
+            else:
+                old.copy_(cur)
+
+    @torch.no_grad()
+    def _update_swa_state(self):
+        state = self.model.state_dict()
+        if self._swa_state is None:
+            self._swa_state = {k: v.detach().clone() for k, v in state.items()}
+            self._swa_n = 1
+            return
+        self._swa_n += 1
+        n = float(self._swa_n)
+        for key, val in state.items():
+            cur = val.detach()
+            old = self._swa_state.get(key)
+            if old is None or old.shape != cur.shape:
+                self._swa_state[key] = cur.clone()
+                continue
+            cur = cur.to(device=old.device, dtype=old.dtype)
+            if torch.is_floating_point(old):
+                old.add_(cur - old, alpha=1.0 / n)
+            else:
+                old.copy_(cur)
+
+    def _swa_is_active(self, epoch: int) -> bool:
+        by_epoch = self.swa_start_epoch >= 0 and int(epoch) >= self.swa_start_epoch
+        by_step = self.swa_start_step >= 0 and self.global_step >= self.swa_start_step
+        return by_epoch or by_step
+
+    def _update_averaged_states(self, epoch: int):
+        if self.ema_decay > 0.0 and self.global_step >= self.ema_start_step:
+            self._update_ema_state()
+        if self._swa_is_active(epoch):
+            self._update_swa_state()
+
+    def _reached_max_steps(self) -> bool:
+        return self.max_steps is not None and self.global_step >= self.max_steps
+
     # ------------------------------------------------------------------- loops
     def train_epoch(self, epoch):
         if self.train_sampler is not None and hasattr(self.train_sampler, "set_epoch"):
@@ -386,6 +502,8 @@ class ForceTrainer:
         t0 = time.time()
         seen = 0
         for i, batch in enumerate(self.train_loader):
+            if self._reached_max_steps():
+                break
             self.optimizer.zero_grad(set_to_none=True)
             out = self._compute(batch, training=True)
             loss = out["total_loss"]
@@ -395,19 +513,22 @@ class ForceTrainer:
             self.optimizer.step()
             if self.scheduler is not None:
                 self.scheduler.step()
+            self.global_step += 1
+            self._update_averaged_states(epoch)
             for k in run:
                 run[k] += float(out[k])
             seen += 1
             if self.log_interval and (i % self.log_interval == 0):
                 lr = self.optimizer.param_groups[0]["lr"]
                 s = f" S={float(out['stress_loss']):.4f}" if self.c > 0 else ""
-                log.info("epoch %d batch %d/%d loss=%.4f E=%.4f F=%.4f%s Frmse=%.4f lr=%.2e",
-                         epoch, i, n_batches, float(out["total_loss"]),
+                log.info("epoch %d step %d batch %d/%d loss=%.4f E=%.4f F=%.4f%s Frmse=%.4f lr=%.2e",
+                         epoch, self.global_step, i, n_batches, float(out["total_loss"]),
                          float(out["energy_loss"]), float(out["force_loss"]), s,
                          float(out["force_rmse"]), lr)
         seen = max(seen, 1)
         avg = {k: v / seen for k, v in run.items()}
         avg["time"] = time.time() - t0
+        avg["steps"] = seen
         return avg
 
     @torch.no_grad()
@@ -430,9 +551,11 @@ class ForceTrainer:
         epochs = int(epochs) if epochs is not None else self.epochs
         best = math.inf
         for epoch in range(epochs):
+            if self._reached_max_steps():
+                break
             tr = self.train_epoch(epoch)
             sterm = f" S={tr['stress_loss']:.4f}" if self.c > 0 else ""
-            msg = (f"[epoch {epoch}] train loss={tr['total_loss']:.4f} "
+            msg = (f"[epoch {epoch} step {self.global_step}] train loss={tr['total_loss']:.4f} "
                    f"E={tr['energy_loss']:.4f} F={tr['force_loss']:.4f}{sterm} "
                    f"Frmse={tr['force_rmse']:.4f} ({tr['time']:.1f}s)")
             if self.val_loader is not None:
@@ -447,6 +570,8 @@ class ForceTrainer:
             if self.checkpoint_path is not None and cur < best:
                 best = cur
                 self.save_checkpoint(self.checkpoint_path, epoch=epoch)
+            if self._reached_max_steps():
+                break
         return best
 
     # -------------------------------------------------------------- checkpoint
@@ -494,12 +619,16 @@ class ForceTrainer:
                 "ictd_fix_interaction_attn_heads", "ictd_fix_interaction_scale",
                 "ictd_fix_fusion_scale_init", "ictd_fix_gmix_gate_init",
                 "ictd_fix_gmix_output_lmax", "avg_num_neighbors",
-                "polynomial_cutoff_p", "long_range_mode",
+                "polynomial_cutoff_p", "long_range_mode", "angular_basis",
             ):
                 if hasattr(base, attr):
                     val = getattr(base, attr)
                     if val is not None:
                         hp[attr] = val
+            hp["angular_basis_folded_in_state_dict"] = bool(
+                getattr(base, "angular_basis", "ictd") == "e3nn"
+                and getattr(base, "_e3nn_folded", False)
+            )
             hp["energy_output_scale_enabled"] = bool(
                 getattr(base, "energy_output_scale_enabled", False)
             )
@@ -520,10 +649,64 @@ class ForceTrainer:
             meta["model_hyperparameters"] = hp
         return meta
 
+    def _training_metadata(self):
+        return {
+            "loss": self.loss_type,
+            "loss_beta": self.loss_beta,
+            "energy_weight": self.a,
+            "force_weight": self.b,
+            "stress_weight": self.c,
+            "force_shift_value": self.force_shift_value,
+            "optimizer": self.optimizer_type,
+            "learning_rate": self.learning_rate,
+            "min_learning_rate": self.min_learning_rate,
+            "weight_decay": self.weight_decay,
+            "adam_beta1": self.adam_beta1,
+            "adam_beta2": self.adam_beta2,
+            "adam_eps": self.adam_eps,
+            "amsgrad": self.amsgrad,
+            "lr_scheduler": self.lr_scheduler_kind,
+            "warmup_batches": self.warmup_batches,
+            "warmup_start_ratio": self.warmup_start_ratio,
+            "lr_decay_step": self.lr_decay_step,
+            "lr_decay_factor": self.lr_decay_factor,
+            "epochs": self.epochs,
+            "max_steps": self.max_steps,
+            "max_grad_norm": self.max_grad_norm,
+            "ema_decay": self.ema_decay,
+            "ema_start_step": self.ema_start_step,
+            "swa_start_epoch": self.swa_start_epoch,
+            "swa_start_step": self.swa_start_step,
+            "swa_n_averaged": self._swa_n,
+            "checkpoint_state_source": self.checkpoint_state_source,
+            "train_makefx_compile": self.train_makefx_compile,
+            "makefx_max_slots": self._makefx_max_slots,
+        }
+
+    def _default_state_source(self):
+        have_ema = isinstance(self._ema_state, dict)
+        have_swa = isinstance(self._swa_state, dict)
+        requested = self.checkpoint_state_source
+        if requested == "auto":
+            if have_ema:
+                return "ema"
+            if have_swa:
+                return "swa"
+            return "raw"
+        if requested == "ema" and not have_ema:
+            log.warning("checkpoint_state_source=ema requested but no EMA state exists; using raw")
+            return "raw"
+        if requested == "swa" and not have_swa:
+            log.warning("checkpoint_state_source=swa requested but no SWA state exists; using raw")
+            return "raw"
+        return requested
+
     def save_checkpoint(self, path, *, epoch=0):
         os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+        default_state_source = self._default_state_source()
         ckpt = {
             "epoch": int(epoch),
+            "global_step": int(self.global_step),
             "e3trans_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "dtype": str(self.dtype).replace("torch.", ""),
@@ -532,7 +715,15 @@ class ForceTrainer:
             "atomic_energy_keys": self.keys.detach().cpu(),
             "atomic_energy_values": self.values.detach().cpu(),
             "a": self.a, "b": self.b, "c": self.c,
+            "training_hyperparameters": self._training_metadata(),
+            "default_state_source": default_state_source,
         }
+        if isinstance(self._ema_state, dict):
+            ckpt["e3trans_ema_state_dict"] = self._ema_state
+        if isinstance(self._swa_state, dict):
+            ckpt["e3trans_swa_state_dict"] = self._swa_state
+            ckpt["swa_n_averaged"] = int(self._swa_n)
         ckpt.update(self._collect_arch_metadata())
         torch.save(ckpt, path)
-        log.info("saved checkpoint -> %s (epoch %d)", path, epoch)
+        log.info("saved checkpoint -> %s (epoch %d step %d state=%s)",
+                 path, epoch, self.global_step, default_state_source)

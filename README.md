@@ -4,12 +4,14 @@
 extraction from FSCETP of the ICTD-basis MACE model together with its full training and
 deployment stack:
 
+Full bilingual manual:
+
+- English: [`docs/USER_MANUAL.md`](docs/USER_MANUAL.md)
+- 中文：[`docs/USER_MANUAL.zh-CN.md`](docs/USER_MANUAL.zh-CN.md)
+
 - **Model** — `PureCartesianICTDFix`, MACE expressed in an *irreducible Cartesian* basis. The
   Clebsch–Gordan couplings are precomputed into dense `U` projection matrices, so features are
   stored as `(channels, 2l+1)` blocks (polynomial `(L+1)²` scaling, dense / cuBLAS-friendly).
-  It is mathematically equivalent to spherical MACE. **This is a slimmed, baseline-only build:**
-  the `baseline` route is the only one shipped — the `fusion` route and all experimental variants
-  (SO(2) / eSCN / sparse / o3 zoo) have been removed.
 - **AOTInductor export** — one N-dynamic `.pt2` for *any* atom count (forces traced in-graph),
   loadable from C++ or Python.
 - **Training** — a from-H5 energy + force (+ optional stress/virial) trainer

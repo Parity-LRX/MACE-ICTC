@@ -25,6 +25,7 @@ import argparse
 import logging
 import math
 import os
+import random
 
 import h5py
 import numpy as np
@@ -35,6 +36,32 @@ from mace_ictd.data import H5Dataset, collate_fn_h5, BucketBatchSampler
 from mace_ictd.models.pure_cartesian_ictd_fix import PureCartesianICTDFix
 from mace_ictd.utils.config import ModelConfig
 from mace_ictd.training.train_loop import ForceTrainer, _DEFAULT_E0_KEYS, _DEFAULT_E0_VALUES
+
+
+def _set_global_seed(seed: int | None) -> torch.Generator | None:
+    if seed is None:
+        return None
+    seed = int(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    return generator
+
+
+def _make_worker_init_fn(seed: int | None):
+    if seed is None:
+        return None
+
+    def _seed_worker(worker_id: int):
+        worker_seed = int(seed) + int(worker_id)
+        random.seed(worker_seed)
+        np.random.seed(worker_seed)
+
+    return _seed_worker
 
 
 def _avg_num_neighbors_from_h5(path: str) -> float:
@@ -139,6 +166,7 @@ def build_baseline_model(
     product_backend: str,
     correlation: int,
     use_reduced_cg: bool = False,
+    angular_basis: str = "ictd",
     radial_sqrt_num_basis: bool,
     edge_lmax: int | None,
     attn_heads: int,
@@ -180,6 +208,7 @@ def build_baseline_model(
         ictd_fix_product_backend=product_backend,
         ictd_fix_use_reduced_cg=bool(use_reduced_cg),
         ictd_fix_interaction_attn_heads=attn_heads,
+        angular_basis=angular_basis,
         save_contraction_order=correlation,
         radial_sqrt_num_basis=radial_sqrt_num_basis,
         avg_num_neighbors=avg_num_neighbors,
@@ -209,6 +238,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--correlation", type=int, default=2, help="save_contraction_order (body order - 1).")
     ap.add_argument("--route", default="baseline")
     ap.add_argument("--product-backend", default="ictd-bridge-u")
+    ap.add_argument("--angular-basis", default="ictd", choices=["ictd", "e3nn"],
+                    help="Internal angular basis during training. Use e3nn only with fold-capable "
+                         "product backends such as cueq; bridge-U has no e3nn-fold path.")
     ap.add_argument("--use-reduced-cg", action="store_true",
                     help="Use reduced-CG MACE/cuEq symmetric-contraction paths where supported.")
     ap.add_argument("--invariant-channels", type=int, default=32)
@@ -233,20 +265,46 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--no-atomic-inter-shift", action="store_true",
                     help="Use a zero interaction-energy shift while keeping the selected scale statistic.")
     # optimization
+    ap.add_argument("--seed", type=int, default=0,
+                    help="Random seed for Python, NumPy, PyTorch, DataLoader shuffle, and bucket sampler.")
     ap.add_argument("--epochs", type=int, default=10)
+    ap.add_argument("--max-steps", type=int, default=None,
+                    help="Optional hard cap on optimizer steps. If omitted, train for --epochs.")
     ap.add_argument("--batch-size", type=int, default=4)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--min-lr", type=float, default=1e-6)
     ap.add_argument("--weight-decay", type=float, default=0.0)
     ap.add_argument("--optimizer", default="adamw", choices=["adamw", "adam"])
+    ap.add_argument("--adam-beta1", type=float, default=0.9)
+    ap.add_argument("--adam-beta2", type=float, default=0.999)
+    ap.add_argument("--adam-eps", type=float, default=1e-8)
+    ap.add_argument("--amsgrad", action="store_true")
     ap.add_argument("--lr-scheduler", default="cosine", choices=["cosine", "step", "none"])
     ap.add_argument("--warmup-batches", type=int, default=0)
+    ap.add_argument("--warmup-start-ratio", type=float, default=0.1)
+    ap.add_argument("--lr-decay-step", type=int, default=1000,
+                    help="StepLR step_size when --lr-scheduler step is selected.")
+    ap.add_argument("--lr-decay-factor", type=float, default=0.98,
+                    help="StepLR gamma when --lr-scheduler step is selected.")
+    ap.add_argument("--loss", default="smooth_l1", choices=["smooth_l1", "mse"],
+                    help="Loss kernel used for each enabled target.")
+    ap.add_argument("--loss-beta", type=float, default=0.5,
+                    help="SmoothL1 beta for energy/force/stress when --loss smooth_l1.")
     ap.add_argument("--energy-weight", type=float, default=1.0)
     ap.add_argument("--force-weight", type=float, default=10.0)
     ap.add_argument("--stress-weight", type=float, default=0.0,
                     help="Weight of the stress/virial loss (0 = energy+force only; >0 enables it).")
     ap.add_argument("--force-shift-value", type=float, default=1.0)
     ap.add_argument("--max-grad-norm", type=float, default=None)
+    ap.add_argument("--ema-decay", type=float, default=0.0,
+                    help="Enable EMA when >0. Example: 0.999. Saved as e3trans_ema_state_dict.")
+    ap.add_argument("--ema-start-step", type=int, default=0)
+    ap.add_argument("--swa-start-epoch", type=int, default=-1,
+                    help="-1 disables SWA; >=0 starts weight averaging from that epoch.")
+    ap.add_argument("--swa-start-step", type=int, default=-1,
+                    help="-1 disables SWA; >=0 starts weight averaging from that optimizer step.")
+    ap.add_argument("--checkpoint-state-source", default="auto", choices=["auto", "raw", "ema", "swa"],
+                    help="Which saved weights deploy loaders should use. auto prefers EMA, then SWA, then raw.")
     ap.add_argument("--no-shuffle", dest="shuffle", action="store_false")
     ap.set_defaults(shuffle=True)
     # make_fx + bucketing
@@ -273,6 +331,11 @@ def main(argv=None):
 
     dtype = torch.float64 if args.dtype == "float64" else torch.float32
     device = torch.device(args.device)
+    generator = _set_global_seed(args.seed)
+    worker_init_fn = _make_worker_init_fn(args.seed)
+    logging.info("seed = %s", args.seed)
+    if args.loss == "smooth_l1" and args.loss_beta <= 0:
+        raise ValueError("--loss-beta must be positive for --loss smooth_l1")
 
     # parse make_fx bucket spec: "6" -> int K, "64,128,256" -> explicit bounds
     makefx_buckets = None
@@ -316,6 +379,12 @@ def main(argv=None):
         scale = float(args.atomic_inter_scale)
     if args.atomic_inter_shift is not None:
         shift = float(args.atomic_inter_shift)
+    if args.angular_basis == "e3nn" and args.product_backend not in {"cueq", "ictd-pure-u"}:
+        raise ValueError(
+            "--angular-basis e3nn requires --product-backend cueq or ictd-pure-u. "
+            "bridge-U has no e3nn-fold path; use bridge-U for canonical parity or cueq for the "
+            "e3nn-folded product path."
+        )
     energy_output_scale_enabled = args.scaling != "no_scaling" or args.atomic_inter_scale is not None
     energy_output_shift_enabled = (
         (args.scaling != "no_scaling" and not args.no_atomic_inter_shift)
@@ -345,6 +414,7 @@ def main(argv=None):
         cfg, avg_num_neighbors=ann, num_interaction=args.num_interaction,
         route=args.route, product_backend=args.product_backend, correlation=args.correlation,
         use_reduced_cg=args.use_reduced_cg,
+        angular_basis=args.angular_basis,
         radial_sqrt_num_basis=args.radial_sqrt_num_basis, edge_lmax=args.max_ell,
         attn_heads=args.attn_heads,
         atomic_numbers=atomic_numbers, ictd_save_tp_mode=args.ictd_save_tp_mode,
@@ -363,17 +433,20 @@ def main(argv=None):
     if makefx_buckets is not None:
         sampler = BucketBatchSampler(
             train_ds.sample_bucket, batch_size=args.batch_size,
-            shuffle=args.shuffle, drop_last=True, seed=0)
+            shuffle=args.shuffle, drop_last=True, seed=args.seed)
         train_loader = DataLoader(train_ds, batch_sampler=sampler,
-                                  collate_fn=collate_fn_h5, num_workers=args.num_workers)
+                                  collate_fn=collate_fn_h5, num_workers=args.num_workers,
+                                  worker_init_fn=worker_init_fn)
         logging.info("bucketing ON: %d buckets, bounds=%s",
                      len(set(train_ds.sample_bucket)), getattr(train_ds, "_bucket_bounds", None))
     else:
         sampler = None
         train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=args.shuffle,
-                                  drop_last=False, collate_fn=collate_fn_h5, num_workers=args.num_workers)
+                                  drop_last=False, collate_fn=collate_fn_h5, num_workers=args.num_workers,
+                                  generator=generator, worker_init_fn=worker_init_fn)
     val_loader = (DataLoader(val_ds, batch_size=args.batch_size, shuffle=False,
-                             collate_fn=collate_fn_h5, num_workers=args.num_workers)
+                             collate_fn=collate_fn_h5, num_workers=args.num_workers,
+                             worker_init_fn=worker_init_fn)
                   if val_ds is not None else None)
 
     # the architecture choices from_checkpoint reads that are NOT ModelConfig fields
@@ -383,6 +456,7 @@ def main(argv=None):
         ictd_fix_route=args.route,
         ictd_fix_product_backend=args.product_backend,
         ictd_fix_use_reduced_cg=bool(args.use_reduced_cg),
+        angular_basis=args.angular_basis,
         ictd_fix_edge_lmax=(args.lmax if args.max_ell is None else args.max_ell),
         save_contraction_order=args.correlation,
         ictd_save_tp_mode=args.ictd_save_tp_mode,
@@ -400,10 +474,17 @@ def main(argv=None):
         dtype=dtype, max_radius=args.max_radius,
         energy_weight=args.energy_weight, force_weight=args.force_weight,
         stress_weight=args.stress_weight, force_shift_value=args.force_shift_value,
+        loss_type=args.loss, loss_beta=args.loss_beta,
         atomic_energy_keys=aek, atomic_energy_values=aev,
         learning_rate=args.lr, min_learning_rate=args.min_lr, weight_decay=args.weight_decay,
-        optimizer_type=args.optimizer, lr_scheduler=args.lr_scheduler,
-        warmup_batches=args.warmup_batches, epochs=args.epochs, max_grad_norm=args.max_grad_norm,
+        optimizer_type=args.optimizer, adam_beta1=args.adam_beta1, adam_beta2=args.adam_beta2,
+        adam_eps=args.adam_eps, amsgrad=args.amsgrad, lr_scheduler=args.lr_scheduler,
+        warmup_batches=args.warmup_batches, warmup_start_ratio=args.warmup_start_ratio,
+        lr_decay_step=args.lr_decay_step, lr_decay_factor=args.lr_decay_factor,
+        epochs=args.epochs, max_steps=args.max_steps, max_grad_norm=args.max_grad_norm,
+        ema_decay=args.ema_decay, ema_start_step=args.ema_start_step,
+        swa_start_epoch=args.swa_start_epoch, swa_start_step=args.swa_start_step,
+        checkpoint_state_source=args.checkpoint_state_source,
         train_makefx_compile=args.train_makefx_compile,
         require_train_makefx_compile=bool(args.train_makefx_compile and args.product_backend == "cueq"),
         makefx_max_slots=args.makefx_max_slots,

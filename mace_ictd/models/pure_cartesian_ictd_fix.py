@@ -2432,6 +2432,39 @@ class PureCartesianICTDFix(nn.Module):
                 f"selected backend {getattr(self, 'ictd_fix_product_backend', '?')!r} has no e3nn fold.")
         self._e3nn_folded = True
 
+    def activate_e3nn_basis_from_folded_state_dict(self) -> None:
+        """Restore runtime e3nn-basis state after loading already-folded buffers.
+
+        Training with ``angular_basis='e3nn'`` folds fixed interaction tensors on the
+        first forward. Those folded tensors are saved in ``state_dict``. Reload must
+        not fold them again, but forward still needs the Q blocks for edge harmonics
+        and product backends such as cuEq still need their e3nn-basis runtime flag.
+        """
+        if self.angular_basis != "e3nn":
+            raise ValueError("activate_e3nn_basis_from_folded_state_dict requires angular_basis='e3nn'")
+        if getattr(self, "_e3nn_folded", False):
+            return
+        from mace_ictd.mace_basis import orthogonal_Q_blocks
+        ref = next(self.parameters())
+        q_blocks_cpu = orthogonal_Q_blocks(
+            max(self.lmax, self.ictd_fix_edge_lmax),
+            dtype=torch.float64,
+            device="cpu",
+        )
+        self._e3nn_q_blocks = [q.to(dtype=ref.dtype, device=ref.device) for q in q_blocks_cpu]
+        enabled = False
+        for module in self.modules():
+            if module is self:
+                continue
+            if hasattr(module, "enable_e3nn_basis"):
+                module.enable_e3nn_basis(self._e3nn_q_blocks)
+                enabled = True
+        if not enabled:
+            raise NotImplementedError(
+                "Loaded angular_basis='e3nn' checkpoint requires a product backend with enable_e3nn_basis."
+            )
+        self._e3nn_folded = True
+
     def to_mace_basis(self, x: torch.Tensor) -> torch.Tensor:
         """Re-express an equivariant feature tensor in the *original-MACE / e3nn* basis.
 

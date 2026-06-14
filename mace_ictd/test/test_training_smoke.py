@@ -157,6 +157,29 @@ def run(device="cpu"):
         ed = md(*args); ed = ed[0] if isinstance(ed, tuple) else ed
     assert (e1 - ed).abs().max().item() < 1e-10, "deploy model diverges"
 
+    # 4b. exposed training controls are real checkpoint state, not CLI-only ---
+    avg_ckpt = os.path.join(tmp, "avg.pth")
+    cfg_avg, m_avg = _mk_model(ann, dtype, dev)
+    tr_avg = ForceTrainer(
+        m_avg, loader, device=dev, config=cfg_avg, dtype=dtype, max_radius=5.0,
+        learning_rate=1e-4, optimizer_type="adamw", adam_beta1=0.8, adam_beta2=0.95,
+        adam_eps=1e-7, amsgrad=True, lr_scheduler="none", epochs=1, max_steps=2,
+        loss_type="mse", loss_beta=0.25, ema_decay=0.9, ema_start_step=1,
+        swa_start_step=1, checkpoint_state_source="ema", checkpoint_path=avg_ckpt,
+        extra_hparams=_extra_hparams(ann),
+    )
+    tr_avg.fit()
+    avg_blob = torch.load(avg_ckpt, map_location="cpu", weights_only=False)
+    assert avg_blob["global_step"] == 2
+    assert "e3trans_ema_state_dict" in avg_blob and "e3trans_swa_state_dict" in avg_blob
+    assert avg_blob["default_state_source"] == "ema"
+    th = avg_blob["training_hyperparameters"]
+    assert th["loss"] == "mse" and th["adam_beta1"] == 0.8 and th["adam_beta2"] == 0.95
+    assert th["adam_eps"] == 1e-7 and th["amsgrad"] is True and th["max_steps"] == 2
+    from mace_ictd.utils.checkpoint_metadata import get_checkpoint_e3_state_dict
+    _, src = get_checkpoint_e3_state_dict(avg_blob)
+    assert src == "ema"
+
     # 5. make_fx (GPU only): force + stress parity + one-compile-per-bucket ----
     did_makefx = False
     if torch.cuda.is_available() and device != "cpu":

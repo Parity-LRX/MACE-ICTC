@@ -53,6 +53,7 @@ def run_case(*, use_reduced_cg: bool) -> dict[str, float | int | bool]:
         product_backend="cueq",
         correlation=2,
         use_reduced_cg=use_reduced_cg,
+        angular_basis="e3nn",
         radial_sqrt_num_basis=False,
         edge_lmax=None,
         attn_heads=0,
@@ -76,18 +77,61 @@ def run_case(*, use_reduced_cg: bool) -> dict[str, float | int | bool]:
         require_train_makefx_compile=True,
         makefx_max_slots=2,
         extra_hparams={
+            "num_interaction": 2,
+            "invariant_channels": 4,
             "ictd_fix_product_backend": "cueq",
             "ictd_fix_use_reduced_cg": bool(use_reduced_cg),
+            "ictd_fix_edge_lmax": int(cfg.lmax),
+            "save_contraction_order": 2,
+            "ictd_save_tp_mode": "fully-connected",
+            "avg_num_neighbors": float(avg_num_neighbors),
+            "angular_basis": "e3nn",
         },
     )
     out = trainer.train_epoch(0)
     cache_size = 0 if trainer._makefx_cache is None else len(trainer._makefx_cache._cache)
     if trainer._makefx_disabled or cache_size < 1:
         raise AssertionError("cuEq make_fx training fell back to eager")
+    meta = trainer._collect_arch_metadata()["model_hyperparameters"]
+    if model.angular_basis != "e3nn" or not getattr(model, "_e3nn_folded", False):
+        raise AssertionError("cuEq make_fx training did not activate angular_basis=e3nn")
+    if not bool(meta.get("angular_basis_folded_in_state_dict", False)):
+        raise AssertionError("checkpoint metadata did not record folded angular_basis=e3nn state")
+    ckpt = os.path.join(tmp, "model.pth")
+    trainer.save_checkpoint(ckpt, epoch=0)
+
+    from mace_ictd.interfaces.lammps_mliap import LAMMPS_MLIAP_MFF
+    loaded = LAMMPS_MLIAP_MFF.from_checkpoint(
+        ckpt,
+        element_types=["H", "C", "N", "O"],
+        device=device,
+    ).wrapper.model
+    loaded.eval()
+    if loaded.angular_basis != "e3nn" or not getattr(loaded, "_e3nn_folded", False):
+        raise AssertionError("from_checkpoint did not restore angular_basis=e3nn folded runtime state")
+    if not getattr(loaded.products[0], "_e3nn_basis", False):
+        raise AssertionError("from_checkpoint did not restore cuEq product e3nn-basis runtime flag")
+
+    batch = trainer._unpack(next(iter(loader)))
+    args = (
+        batch["pos"], batch["A"], batch["batch_idx"], batch["edge_src"],
+        batch["edge_dst"], batch["edge_shifts"], batch["cell"],
+    )
+    model.eval()
+    with torch.no_grad():
+        e_ref = model(*args)
+        e_ref = e_ref[0] if isinstance(e_ref, tuple) else e_ref
+        e_loaded = loaded(*args)
+        e_loaded = e_loaded[0] if isinstance(e_loaded, tuple) else e_loaded
+    reload_diff = (e_ref - e_loaded).abs().max().item()
+    if reload_diff > 1e-4:
+        raise AssertionError(f"from_checkpoint output diverged after e3nn reload: {reload_diff}")
     return {
         "use_reduced_cg": bool(use_reduced_cg),
         "loss": float(out["total_loss"]),
         "cache_size": int(cache_size),
+        "angular_basis": str(model.angular_basis),
+        "reload_diff": float(reload_diff),
     }
 
 
@@ -100,8 +144,10 @@ def main() -> None:
         print(
             "cueq makefx training PASS "
             f"reduced={result['use_reduced_cg']} "
+            f"basis={result['angular_basis']} "
             f"loss={result['loss']:.6g} "
-            f"cache={result['cache_size']}"
+            f"cache={result['cache_size']} "
+            f"reload_diff={result['reload_diff']:.3e}"
         )
 
 

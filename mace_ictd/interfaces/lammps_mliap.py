@@ -975,6 +975,8 @@ class LAMMPS_MLIAP_MFF(MLIAPUnified):
         selected_state_dict, state_source = get_checkpoint_e3_state_dict(ckpt)
         if state_source == "ema":
             print("[LAMMPS_MLIAP_MFF] Using EMA weights from checkpoint")
+        elif state_source == "swa":
+            print("[LAMMPS_MLIAP_MFF] Using SWA weights from checkpoint")
 
         arch_meta = ckpt.get("model_hyperparameters", {})
 
@@ -1193,6 +1195,10 @@ class LAMMPS_MLIAP_MFF(MLIAPUnified):
                     arch_meta.get("energy_output_shift_enabled", False),
                 )
             )
+            angular_basis = str(
+                ckpt.get("angular_basis")
+                or arch_meta.get("angular_basis", "ictd")
+            )
             atomic_numbers = aek.detach().cpu().to(dtype=torch.long).tolist() if aek is not None else None
             model = PureCartesianICTDFix(
                 max_embed_radius=config.max_radius,
@@ -1245,6 +1251,7 @@ class LAMMPS_MLIAP_MFF(MLIAPUnified):
                     ckpt.get("ictd_fix_product_backend")
                     or arch_meta.get("ictd_fix_product_backend", "ictd-pure-u")
                 ),
+                angular_basis=angular_basis,
                 ictd_fix_use_reduced_cg=bool(
                     ckpt.get(
                         "ictd_fix_use_reduced_cg",
@@ -1870,6 +1877,20 @@ class LAMMPS_MLIAP_MFF(MLIAPUnified):
                         )
         else:
             model.load_state_dict(selected_state_dict, strict=True)
+
+        if mode == "pure-cartesian-ictd-fix" and getattr(model, "angular_basis", "ictd") == "e3nn":
+            folded_in_state = bool(
+                ckpt.get(
+                    "angular_basis_folded_in_state_dict",
+                    arch_meta.get("angular_basis_folded_in_state_dict", False),
+                )
+            )
+            if folded_in_state:
+                if not hasattr(model, "activate_e3nn_basis_from_folded_state_dict"):
+                    raise RuntimeError(
+                        "checkpoint declares angular_basis=e3nn folded state, but model cannot restore it"
+                    )
+                model.activate_e3nn_basis_from_folded_state_dict()
 
         model = maybe_wrap_model_with_zbl(model, arch_meta)
 
