@@ -255,6 +255,10 @@ degree 16. The x-axis is converted from measured directed-edge counts to
 
 ![Backend speedup benchmark](docs/figures/backend_speedup_benchmark_channels64.png)
 
+The paper benchmark archive is kept under `benchmarks/paper/`. It contains the
+operator and whole-model benchmark scripts, selected and raw CSV/JSON/Markdown
+results, validation logs, and the PDF/PNG/SVG figures used by the manuscript.
+
 ## Relationship to original MACE
 
 The central point of this repository is the ICTD basis construction and its deployment path:

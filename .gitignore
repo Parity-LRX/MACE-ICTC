@@ -25,6 +25,7 @@ benchmark_results/
 *.pth
 checkpoint/
 *.log
+!benchmarks/paper/**/*.log
 
 # OS
 .DS_Store
