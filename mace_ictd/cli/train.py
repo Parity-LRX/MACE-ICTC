@@ -38,6 +38,101 @@ from mace_ictd.utils.config import ModelConfig
 from mace_ictd.training.train_loop import ForceTrainer, _DEFAULT_E0_KEYS, _DEFAULT_E0_VALUES
 
 
+def _mace_hidden_irreps(channels: int, lmax: int):
+    from e3nn import o3
+
+    return o3.Irreps(
+        " + ".join(f"{int(channels)}x{l}{'e' if l % 2 == 0 else 'o'}" for l in range(int(lmax) + 1))
+    )
+
+
+def _apply_mace_compatible_random_init(
+    model: PureCartesianICTDFix,
+    args: argparse.Namespace,
+    *,
+    atomic_numbers: list[int],
+    avg_num_neighbors: float,
+    scale: float,
+    shift: float,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> None:
+    """Initialize ICTD by building the matching random mace-torch model and converting it.
+
+    This gives a true MACE-compatible random initial function while keeping training in
+    the ICTD parameterization. Atomic E0 offsets stay outside the model in ForceTrainer,
+    so the temporary MACE model uses zero atomic energies and only contributes the
+    interaction network plus ScaleShift block.
+    """
+    if args.function_type != "bessel":
+        raise ValueError("--mace-compatible-random-init currently requires --function-type bessel")
+    if args.polynomial_cutoff_p <= 0:
+        raise ValueError("--mace-compatible-random-init requires --polynomial-cutoff-p > 0")
+    if args.product_backend not in {"ictd-bridge-u", "native-mace", "cueq"}:
+        raise ValueError(
+            "--mace-compatible-random-init currently supports --product-backend "
+            "ictd-bridge-u, native-mace, or cueq"
+        )
+    if args.angular_basis != "ictd":
+        raise ValueError("--mace-compatible-random-init requires --angular-basis ictd")
+    if args.num_interaction < 2:
+        raise ValueError("--mace-compatible-random-init requires --num-interaction >= 2")
+    if args.max_ell is not None and int(args.max_ell) < int(args.lmax):
+        raise ValueError("--mace-compatible-random-init requires --max-ell >= --lmax")
+
+    try:
+        from e3nn import o3
+        from mace.modules import ScaleShiftMACE, gate_dict, interaction_classes
+    except Exception as exc:  # pragma: no cover - optional mace-torch dependency
+        raise RuntimeError(
+            "--mace-compatible-random-init requires mace-torch and e3nn in the training environment"
+        ) from exc
+
+    from mace_ictd.interfaces.mace_converter import convert_mace_to_ictd
+
+    if args.seed is not None:
+        _set_global_seed(args.seed)
+    max_ell = int(args.lmax if args.max_ell is None else args.max_ell)
+    convert_dtype = torch.float64
+    model.to(device=device, dtype=convert_dtype)
+    torch.set_default_dtype(convert_dtype)
+    mace_model = ScaleShiftMACE(
+        r_max=float(args.max_radius),
+        num_bessel=int(args.num_basis),
+        num_polynomial_cutoff=int(args.polynomial_cutoff_p),
+        max_ell=max_ell,
+        interaction_cls=interaction_classes["RealAgnosticResidualInteractionBlock"],
+        interaction_cls_first=interaction_classes["RealAgnosticResidualInteractionBlock"],
+        num_interactions=int(args.num_interaction),
+        num_elements=len(atomic_numbers),
+        hidden_irreps=_mace_hidden_irreps(args.channels, args.lmax),
+        MLP_irreps=o3.Irreps(f"{int(args.readout_hidden_channels)}x0e"),
+        atomic_energies=np.zeros(len(atomic_numbers), dtype=np.float64),
+        avg_num_neighbors=float(avg_num_neighbors),
+        atomic_numbers=[int(z) for z in atomic_numbers],
+        correlation=int(args.correlation),
+        gate=gate_dict["silu"],
+        radial_type="bessel",
+        radial_MLP=[64, 64, 64],
+        atomic_inter_scale=float(scale) if args.scaling != "no_scaling" or args.atomic_inter_scale is not None else 1.0,
+        atomic_inter_shift=float(shift)
+        if (args.scaling != "no_scaling" and not args.no_atomic_inter_shift) or args.atomic_inter_shift is not None
+        else 0.0,
+        use_reduced_cg=bool(args.use_reduced_cg),
+    ).to(device=device, dtype=convert_dtype)
+    try:
+        report = convert_mace_to_ictd(mace_model.eval(), model)
+    finally:
+        model.to(device=device, dtype=dtype)
+        torch.set_default_dtype(dtype)
+    logging.info(
+        "initialized ICTD from matching random mace-torch model: avg_num_neighbors=%s scale=%s shift=%s",
+        report.get("avg_num_neighbors"),
+        report.get("scale"),
+        report.get("shift"),
+    )
+
+
 def _set_global_seed(seed: int | None) -> torch.Generator | None:
     if seed is None:
         return None
@@ -166,6 +261,13 @@ def build_baseline_model(
     product_backend: str,
     correlation: int,
     use_reduced_cg: bool = False,
+    first_layer_self_connection: bool = False,
+    interaction_scale: str = "none",
+    conv_tp_scale_init: str = "none",
+    freeze_conv_tp_weight: bool = False,
+    interaction_init: str = "identity",
+    readout_hidden_channels: int = 16,
+    polynomial_cutoff_p: int | None = 6,
     angular_basis: str = "ictd",
     radial_sqrt_num_basis: bool,
     edge_lmax: int | None,
@@ -222,10 +324,17 @@ def build_baseline_model(
         ictd_fix_route=route,
         ictd_fix_product_backend=product_backend,
         ictd_fix_use_reduced_cg=bool(use_reduced_cg),
+        ictd_fix_first_layer_self_connection=bool(first_layer_self_connection),
+        ictd_fix_interaction_scale=interaction_scale,
+        ictd_fix_conv_tp_scale_init=conv_tp_scale_init,
+        ictd_fix_freeze_conv_tp_weight=bool(freeze_conv_tp_weight),
+        ictd_fix_interaction_init=interaction_init,
+        ictd_fix_readout_hidden_channels=int(readout_hidden_channels),
         ictd_fix_interaction_attn_heads=attn_heads,
         angular_basis=angular_basis,
         save_contraction_order=correlation,
         radial_sqrt_num_basis=radial_sqrt_num_basis,
+        polynomial_cutoff_p=polynomial_cutoff_p,
         avg_num_neighbors=avg_num_neighbors,
         energy_output_scale=energy_output_scale,
         energy_output_scale_enabled=energy_output_scale_enabled,
@@ -273,9 +382,27 @@ def build_arg_parser() -> argparse.ArgumentParser:
                          "product backends such as cueq; bridge-U has no e3nn-fold path.")
     ap.add_argument("--use-reduced-cg", action="store_true",
                     help="Use reduced-CG MACE/cuEq symmetric-contraction paths where supported.")
+    ap.add_argument("--first-layer-self-connection", action="store_true",
+                    help="Use a MACE residual-style additive first-layer l=0 self-connection during ICTD training.")
+    ap.add_argument("--interaction-scale", default="none", choices=["none", "mace-rms"],
+                    help="Optional learnable per-l interaction/self-connection scale initialization.")
+    ap.add_argument("--conv-tp-scale-init", default="none", choices=["none", "e3nn"],
+                    help="Initialize ICTD convolution TP path weights to match e3nn/MACE path scales.")
+    ap.add_argument("--freeze-conv-tp-weight", action="store_true",
+                    help="Freeze ICTD convolution TP base path weights, matching MACE's external-weight parameterization more closely.")
+    ap.add_argument("--interaction-init", default="identity", choices=["identity", "mace-random"],
+                    help="Initialize ICTD interaction linear/skip maps as identity or MACE-like random maps.")
+    ap.add_argument("--mace-compatible-random-init", action="store_true",
+                    help="Build a matching random mace-torch ScaleShiftMACE model and convert it before training.")
     ap.add_argument("--invariant-channels", type=int, default=32)
     ap.add_argument("--ictd-save-tp-mode", default="fully-connected")
-    ap.add_argument("--function-type", default="gaussian", choices=["gaussian", "bessel"])
+    ap.add_argument("--function-type", default="bessel", choices=["gaussian", "bessel"])
+    ap.add_argument("--num-basis", type=int, default=8,
+                    help="Number of radial basis functions (MACE num_bessel for bessel radial basis).")
+    ap.add_argument("--polynomial-cutoff-p", type=int, default=6,
+                    help="MACE PolynomialCutoff order p. Use <=0 to disable the envelope.")
+    ap.add_argument("--readout-hidden-channels", type=int, default=16,
+                    help="Scalar hidden width of the final MACE-style readout (MACE MLP_irreps width).")
     ap.add_argument("--max-radius", type=float, default=5.0)
     ap.add_argument("--attn-heads", type=int, default=0)
     ap.add_argument("--radial-sqrt-num-basis", action="store_true",
@@ -332,6 +459,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--min-lr", type=float, default=1e-6)
     ap.add_argument("--weight-decay", type=float, default=0.0)
     ap.add_argument("--optimizer", default="adamw", choices=["adamw", "adam"])
+    ap.add_argument("--optimizer-param-groups", default="flat", choices=["flat", "mace"],
+                    help="Use flat AdamW groups or MACE-style decay/no-decay module groups.")
     ap.add_argument("--adam-beta1", type=float, default=0.9)
     ap.add_argument("--adam-beta2", type=float, default=0.999)
     ap.add_argument("--adam-eps", type=float, default=1e-8)
@@ -507,6 +636,8 @@ def main(argv=None):
     cfg.num_layers = args.num_layers
     cfg.max_radius = args.max_radius
     cfg.max_radius_main = args.max_radius
+    cfg.number_of_basis = args.num_basis
+    cfg.number_of_basis_main = args.num_basis
     cfg.function_type = args.function_type
     cfg.internal_compute_dtype = dtype
 
@@ -514,6 +645,13 @@ def main(argv=None):
         cfg, avg_num_neighbors=ann, num_interaction=args.num_interaction,
         route=args.route, product_backend=args.product_backend, correlation=args.correlation,
         use_reduced_cg=args.use_reduced_cg,
+        first_layer_self_connection=args.first_layer_self_connection,
+        interaction_scale=args.interaction_scale,
+        conv_tp_scale_init=args.conv_tp_scale_init,
+        freeze_conv_tp_weight=args.freeze_conv_tp_weight,
+        interaction_init=args.interaction_init,
+        readout_hidden_channels=args.readout_hidden_channels,
+        polynomial_cutoff_p=(None if args.polynomial_cutoff_p <= 0 else args.polynomial_cutoff_p),
         angular_basis=args.angular_basis,
         radial_sqrt_num_basis=args.radial_sqrt_num_basis, edge_lmax=args.max_ell,
         attn_heads=args.attn_heads,
@@ -540,6 +678,17 @@ def main(argv=None):
         long_range_mesh_fft_full_ewald=args.long_range_mesh_fft_full_ewald,
         device=device, dtype=dtype,
     )
+    if args.mace_compatible_random_init:
+        _apply_mace_compatible_random_init(
+            model,
+            args,
+            atomic_numbers=atomic_numbers,
+            avg_num_neighbors=ann,
+            scale=scale,
+            shift=shift,
+            device=device,
+            dtype=dtype,
+        )
     n_params = sum(p.numel() for p in model.parameters())
     logging.info("model: %s route=%s channels=%d lmax=%d num_interaction=%d params=%d",
                  type(model).__name__, args.route, args.channels, args.lmax, args.num_interaction, n_params)
@@ -571,12 +720,21 @@ def main(argv=None):
         ictd_fix_route=args.route,
         ictd_fix_product_backend=args.product_backend,
         ictd_fix_use_reduced_cg=bool(args.use_reduced_cg),
+        ictd_fix_first_layer_self_connection=bool(args.first_layer_self_connection),
+        ictd_fix_interaction_scale=args.interaction_scale,
+        ictd_fix_conv_tp_scale_init=args.conv_tp_scale_init,
+        ictd_fix_freeze_conv_tp_weight=bool(args.freeze_conv_tp_weight),
+        ictd_fix_interaction_init=args.interaction_init,
+        mace_compatible_random_init=bool(args.mace_compatible_random_init),
+        ictd_fix_readout_hidden_channels=int(args.readout_hidden_channels),
         angular_basis=args.angular_basis,
         ictd_fix_edge_lmax=(args.lmax if args.max_ell is None else args.max_ell),
         save_contraction_order=args.correlation,
         ictd_save_tp_mode=args.ictd_save_tp_mode,
         ictd_fix_interaction_attn_heads=args.attn_heads,
         radial_sqrt_num_basis=bool(args.radial_sqrt_num_basis),
+        polynomial_cutoff_p=(None if args.polynomial_cutoff_p <= 0 else int(args.polynomial_cutoff_p)),
+        optimizer_param_groups=args.optimizer_param_groups,
         avg_num_neighbors=float(ann),
         energy_output_scale_enabled=bool(energy_output_scale_enabled),
         energy_output_scale=float(scale),
@@ -607,7 +765,8 @@ def main(argv=None):
         loss_type=args.loss, loss_beta=args.loss_beta,
         atomic_energy_keys=aek, atomic_energy_values=aev,
         learning_rate=args.lr, min_learning_rate=args.min_lr, weight_decay=args.weight_decay,
-        optimizer_type=args.optimizer, adam_beta1=args.adam_beta1, adam_beta2=args.adam_beta2,
+        optimizer_type=args.optimizer, optimizer_param_groups=args.optimizer_param_groups,
+        adam_beta1=args.adam_beta1, adam_beta2=args.adam_beta2,
         adam_eps=args.adam_eps, amsgrad=args.amsgrad, lr_scheduler=args.lr_scheduler,
         warmup_batches=args.warmup_batches, warmup_start_ratio=args.warmup_start_ratio,
         lr_factor=args.lr_factor, scheduler_patience=args.scheduler_patience,

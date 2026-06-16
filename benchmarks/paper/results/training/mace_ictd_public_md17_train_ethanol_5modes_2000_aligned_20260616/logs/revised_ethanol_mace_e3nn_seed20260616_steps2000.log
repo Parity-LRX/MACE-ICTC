@@ -1,0 +1,143 @@
+2026-06-16 11:32:33.794 INFO: ===========VERIFYING SETTINGS===========
+2026-06-16 11:32:33.794 WARNING: All of hidden_irreps, num_channels and max_L are specified
+2026-06-16 11:32:33.794 WARNING: Using num_channels and max_L to create hidden_irreps: 64x0e+64x1o.
+2026-06-16 11:32:33.794 INFO: MACE version: 0.3.16
+2026-06-16 11:32:33.882 INFO: CUDA version: 12.8, CUDA device: 0
+2026-06-16 11:32:33.909 INFO: ===========LOADING INPUT DATA===========
+2026-06-16 11:32:33.909 INFO: Using heads: ['Default']
+2026-06-16 11:32:33.909 INFO: Using the key specifications to parse data:
+2026-06-16 11:32:33.909 INFO: Default: KeySpecification(info_keys={'energy': 'energy', 'stress': 'REF_stress', 'virials': 'REF_virials', 'dipole': 'dipole', 'head': 'head', 'elec_temp': 'elec_temp', 'total_charge': 'total_charge', 'polarizability': 'polarizability', 'total_spin': 'total_spin'}, arrays_keys={'forces': 'forces', 'charges': 'REF_charges'})
+2026-06-16 11:32:33.909 INFO: =============    Processing head Default     ===========
+2026-06-16 11:32:34.087 WARNING: Since ASE version 3.23.0b1, using energy_key 'energy' is no longer safe when communicating between MACE and ASE. We recommend using a different key, rewriting 'energy' to 'REF_energy'. You need to use --energy_key='REF_energy' to specify the chosen key name.
+2026-06-16 11:32:34.177 WARNING: Since ASE version 3.23.0b1, using forces_key 'forces' is no longer safe when communicating between MACE and ASE. We recommend using a different key, rewriting 'forces' to 'REF_forces'. You need to use --forces_key='REF_forces' to specify the chosen key name.
+2026-06-16 11:32:34.282 INFO: Training set 1/1 [energy: 1000, stress: 0, virials: 0, dipole components: 0, head: 1000, elec_temp: 0, total_charge: 0, polarizability: 0, total_spin: 0, forces: 1000, charges: 0]
+2026-06-16 11:32:34.285 INFO: Total Training set [energy: 1000, stress: 0, virials: 0, dipole components: 0, head: 1000, elec_temp: 0, total_charge: 0, polarizability: 0, total_spin: 0, forces: 1000, charges: 0]
+2026-06-16 11:32:34.458 WARNING: Since ASE version 3.23.0b1, using energy_key 'energy' is no longer safe when communicating between MACE and ASE. We recommend using a different key, rewriting 'energy' to 'REF_energy'. You need to use --energy_key='REF_energy' to specify the chosen key name.
+2026-06-16 11:32:34.547 WARNING: Since ASE version 3.23.0b1, using forces_key 'forces' is no longer safe when communicating between MACE and ASE. We recommend using a different key, rewriting 'forces' to 'REF_forces'. You need to use --forces_key='REF_forces' to specify the chosen key name.
+2026-06-16 11:32:34.650 INFO: Validation set 1/1 [energy: 1000, stress: 0, virials: 0, dipole components: 0, head: 1000, elec_temp: 0, total_charge: 0, polarizability: 0, total_spin: 0, forces: 1000, charges: 0]
+2026-06-16 11:32:34.653 INFO: Total Validation set [energy: 1000, stress: 0, virials: 0, dipole components: 0, head: 1000, elec_temp: 0, total_charge: 0, polarizability: 0, total_spin: 0, forces: 1000, charges: 0]
+2026-06-16 11:32:34.653 INFO: Total number of configurations: train=1000, valid=1000, tests=[],
+2026-06-16 11:32:34.653 INFO: Using atomic numbers from command line argument
+2026-06-16 11:32:34.653 INFO: Atomic Numbers used: [1, 6, 7, 8]
+2026-06-16 11:32:34.653 INFO: Isolated Atomic Energies (E0s) not in training file, using command line argument
+2026-06-16 11:32:34.653 INFO: Atomic Energies used (z: eV) for head Default: {1: 0.0, 6: 0.0, 7: 0.0, 8: 0.0}
+2026-06-16 11:32:34.653 INFO: Processing datasets for head 'Default'
+2026-06-16 11:32:35.133 INFO: Combining 1 list datasets for head 'Default'
+2026-06-16 11:32:35.611 INFO: Combining 1 list datasets for head 'Default_valid'
+2026-06-16 11:32:35.611 INFO: Combined validation datasets for Default
+2026-06-16 11:32:35.611 INFO: Head 'Default' training dataset size: 1000
+2026-06-16 11:32:35.612 INFO: Computing average number of neighbors
+2026-06-16 11:32:36.245 INFO: Average number of neighbors: 8.0
+2026-06-16 11:32:36.245 INFO: During training the following quantities will be reported: energy, forces
+2026-06-16 11:32:36.245 INFO: ===========MODEL DETAILS===========
+2026-06-16 11:32:36.811 INFO: Building model
+2026-06-16 11:32:36.811 INFO: Message passing with 64 channels and max_L=1 (64x0e+64x1o)
+2026-06-16 11:32:36.811 INFO: 2 layers, each with correlation order: 2 (body order: 3) and spherical harmonics up to: l=2
+2026-06-16 11:32:36.811 INFO: 8 radial and 6 basis functions
+2026-06-16 11:32:36.811 INFO: Radial cutoff: 4.5 A (total receptive field for each atom: 9.0 A)
+2026-06-16 11:32:36.812 INFO: Distance transform for radial basis functions: None
+2026-06-16 11:32:36.812 INFO: Hidden irreps: 64x0e+64x1o
+2026-06-16 11:32:37.775 INFO: ===========OPTIMIZER INFORMATION===========
+2026-06-16 11:32:37.775 INFO: Using ADAMW as parameter optimizer
+2026-06-16 11:32:37.775 INFO: Batch size: 16
+2026-06-16 11:32:37.776 INFO: Number of gradient updates: 2000
+2026-06-16 11:32:37.776 INFO: Learning rate: 0.001, weight decay: 5e-07
+2026-06-16 11:32:37.776 INFO: WeightedEnergyForcesLoss(energy_weight=1.000, forces_weight=100.000)
+2026-06-16 11:32:37.776 INFO: === Layer's learning rates ===
+2026-06-16 11:32:37.776 INFO: Param group 0: lr = 0.001
+2026-06-16 11:32:37.776 INFO: Param group 1: lr = 0.001
+2026-06-16 11:32:37.776 INFO: Param group 2: lr = 0.001
+2026-06-16 11:32:37.776 INFO: Param group 3: lr = 0.001
+2026-06-16 11:32:37.776 INFO: Param group 4: lr = 0.001
+2026-06-16 11:32:37.777 INFO: Using gradient clipping with tolerance=10.000
+2026-06-16 11:32:37.777 INFO: 
+2026-06-16 11:32:37.777 INFO: ===========TRAINING===========
+2026-06-16 11:32:37.777 INFO: Started training, reporting errors on validation set
+2026-06-16 11:32:37.777 INFO: Loss metrics on validation set
+2026-06-16 11:32:39.995 INFO: Initial: head: Default, loss=9.05188847, RMSE_E_per_atom=   20.11 meV, RMSE_F= 1198.76 meV / A
+2026-06-16 11:32:44.273 INFO: Epoch 0: head: Default, loss=8.57163334, RMSE_E_per_atom=   20.40 meV, RMSE_F= 1166.53 meV / A
+2026-06-16 11:32:47.940 INFO: Epoch 1: head: Default, loss=3.95402455, RMSE_E_per_atom=   69.17 meV, RMSE_F=  791.94 meV / A
+2026-06-16 11:32:51.665 INFO: Epoch 2: head: Default, loss=1.26593673, RMSE_E_per_atom=  267.41 meV, RMSE_F=  447.23 meV / A
+2026-06-16 11:32:55.375 INFO: Epoch 3: head: Default, loss=0.76950419, RMSE_E_per_atom=  266.84 meV, RMSE_F=  348.30 meV / A
+2026-06-16 11:32:59.080 INFO: Epoch 4: head: Default, loss=0.47553456, RMSE_E_per_atom=  257.85 meV, RMSE_F=  273.32 meV / A
+2026-06-16 11:33:02.740 INFO: Epoch 5: head: Default, loss=0.26620036, RMSE_E_per_atom=  261.42 meV, RMSE_F=  203.74 meV / A
+2026-06-16 11:33:06.365 INFO: Epoch 6: head: Default, loss=0.18802597, RMSE_E_per_atom=  264.17 meV, RMSE_F=  170.65 meV / A
+2026-06-16 11:33:10.043 INFO: Epoch 7: head: Default, loss=0.14687960, RMSE_E_per_atom=  263.19 meV, RMSE_F=  150.32 meV / A
+2026-06-16 11:33:13.683 INFO: Epoch 8: head: Default, loss=0.13654841, RMSE_E_per_atom=  251.01 meV, RMSE_F=  145.03 meV / A
+2026-06-16 11:33:17.354 INFO: Epoch 9: head: Default, loss=0.11035525, RMSE_E_per_atom=  238.51 meV, RMSE_F=  130.12 meV / A
+2026-06-16 11:33:21.062 INFO: Epoch 10: head: Default, loss=0.09874019, RMSE_E_per_atom=  237.12 meV, RMSE_F=  122.92 meV / A
+2026-06-16 11:33:24.799 INFO: Epoch 11: head: Default, loss=0.09603878, RMSE_E_per_atom=  231.69 meV, RMSE_F=  121.22 meV / A
+2026-06-16 11:33:28.517 INFO: Epoch 12: head: Default, loss=0.08266266, RMSE_E_per_atom=  218.03 meV, RMSE_F=  112.41 meV / A
+2026-06-16 11:33:32.244 INFO: Epoch 13: head: Default, loss=0.07492358, RMSE_E_per_atom=  212.06 meV, RMSE_F=  106.95 meV / A
+2026-06-16 11:33:35.966 INFO: Epoch 14: head: Default, loss=0.07032845, RMSE_E_per_atom=  200.36 meV, RMSE_F=  103.70 meV / A
+2026-06-16 11:33:39.660 INFO: Epoch 15: head: Default, loss=0.06772558, RMSE_E_per_atom=  191.76 meV, RMSE_F=  101.87 meV / A
+2026-06-16 11:33:43.387 INFO: Epoch 16: head: Default, loss=0.06222324, RMSE_E_per_atom=  188.73 meV, RMSE_F=   97.55 meV / A
+2026-06-16 11:33:47.103 INFO: Epoch 17: head: Default, loss=0.05920404, RMSE_E_per_atom=  183.49 meV, RMSE_F=   95.14 meV / A
+2026-06-16 11:33:50.815 INFO: Epoch 18: head: Default, loss=0.05914760, RMSE_E_per_atom=  173.88 meV, RMSE_F=   95.27 meV / A
+2026-06-16 11:33:54.520 INFO: Epoch 19: head: Default, loss=0.05616668, RMSE_E_per_atom=  167.53 meV, RMSE_F=   92.90 meV / A
+2026-06-16 11:33:58.250 INFO: Epoch 20: head: Default, loss=0.05275325, RMSE_E_per_atom=  167.20 meV, RMSE_F=   89.95 meV / A
+2026-06-16 11:34:01.906 INFO: Epoch 21: head: Default, loss=0.04986586, RMSE_E_per_atom=  157.36 meV, RMSE_F=   87.55 meV / A
+2026-06-16 11:34:05.566 INFO: Epoch 22: head: Default, loss=0.04643282, RMSE_E_per_atom=  153.65 meV, RMSE_F=   84.43 meV / A
+2026-06-16 11:34:09.242 INFO: Epoch 23: head: Default, loss=0.04339509, RMSE_E_per_atom=  148.80 meV, RMSE_F=   81.61 meV / A
+2026-06-16 11:34:12.877 INFO: Epoch 24: head: Default, loss=0.04245102, RMSE_E_per_atom=  146.20 meV, RMSE_F=   80.74 meV / A
+2026-06-16 11:34:16.567 INFO: Epoch 25: head: Default, loss=0.04156638, RMSE_E_per_atom=  138.16 meV, RMSE_F=   80.01 meV / A
+2026-06-16 11:34:20.223 INFO: Epoch 26: head: Default, loss=0.04119444, RMSE_E_per_atom=  134.67 meV, RMSE_F=   79.71 meV / A
+2026-06-16 11:34:23.906 INFO: Epoch 27: head: Default, loss=0.03779716, RMSE_E_per_atom=  130.12 meV, RMSE_F=   76.32 meV / A
+2026-06-16 11:34:27.598 INFO: Epoch 28: head: Default, loss=0.03681580, RMSE_E_per_atom=  122.51 meV, RMSE_F=   75.42 meV / A
+2026-06-16 11:34:31.298 INFO: Epoch 29: head: Default, loss=0.03411156, RMSE_E_per_atom=  119.56 meV, RMSE_F=   72.56 meV / A
+2026-06-16 11:34:34.973 INFO: Epoch 30: head: Default, loss=0.03337260, RMSE_E_per_atom=  116.62 meV, RMSE_F=   71.80 meV / A
+2026-06-16 11:34:38.618 INFO: Epoch 31: head: Default, loss=0.03364922, RMSE_E_per_atom=  111.06 meV, RMSE_F=   72.18 meV / A
+2026-06-16 11:34:38.618 INFO: Training complete
+2026-06-16 11:34:38.618 INFO: 
+2026-06-16 11:34:38.618 INFO: ===========RESULTS===========
+2026-06-16 11:34:38.618 INFO: Loading checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_aligned_20260616/checkpoints/revised_ethanol_mace_e3nn_seed20260616_steps2000_run-20260616_epoch-30.pt
+/tmp/mace_torch_0_3_16/mace/tools/checkpoint.py:187: UserWarning: Environment variable TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD detected, since the`weights_only` argument was not explicitly passed to `torch.load`, forcing weights_only=False.
+  torch.load(f=checkpoint_info.path, map_location=device),
+2026-06-16 11:34:38.637 INFO: Loaded Stage one model from epoch 30 for evaluation
+2026-06-16 11:34:38.637 INFO: Saving model to /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_aligned_20260616/checkpoints/revised_ethanol_mace_e3nn_seed20260616_steps2000_run-20260616.model
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/tmp/mace_torch_0_3_16/mace/cli/run_train.py", line 1181, in <module>
+    main()
+  File "/tmp/mace_torch_0_3_16/mace/cli/run_train.py", line 85, in main
+    run(args)
+  File "/tmp/mace_torch_0_3_16/mace/cli/run_train.py", line 1070, in run
+    model_to_save = deepcopy(model)
+                    ^^^^^^^^^^^^^^^
+  File "/home/ylzhang/micromamba/envs/FSCETP/lib/python3.11/copy.py", line 172, in deepcopy
+    y = _reconstruct(x, memo, *rv)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ylzhang/micromamba/envs/FSCETP/lib/python3.11/copy.py", line 271, in _reconstruct
+    state = deepcopy(state, memo)
+            ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ylzhang/micromamba/envs/FSCETP/lib/python3.11/copy.py", line 146, in deepcopy
+    y = copier(x, memo)
+        ^^^^^^^^^^^^^^^
+  File "/home/ylzhang/micromamba/envs/FSCETP/lib/python3.11/copy.py", line 231, in _deepcopy_dict
+    y[deepcopy(key, memo)] = deepcopy(value, memo)
+                             ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ylzhang/micromamba/envs/FSCETP/lib/python3.11/copy.py", line 146, in deepcopy
+    y = copier(x, memo)
+        ^^^^^^^^^^^^^^^
+  File "/home/ylzhang/micromamba/envs/FSCETP/lib/python3.11/copy.py", line 231, in _deepcopy_dict
+    y[deepcopy(key, memo)] = deepcopy(value, memo)
+                             ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ylzhang/micromamba/envs/FSCETP/lib/python3.11/copy.py", line 172, in deepcopy
+    y = _reconstruct(x, memo, *rv)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ylzhang/micromamba/envs/FSCETP/lib/python3.11/copy.py", line 271, in _reconstruct
+    state = deepcopy(state, memo)
+            ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ylzhang/micromamba/envs/FSCETP/lib/python3.11/copy.py", line 146, in deepcopy
+    y = copier(x, memo)
+        ^^^^^^^^^^^^^^^
+  File "/home/ylzhang/micromamba/envs/FSCETP/lib/python3.11/copy.py", line 231, in _deepcopy_dict
+    y[deepcopy(key, memo)] = deepcopy(value, memo)
+                             ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ylzhang/micromamba/envs/FSCETP/lib/python3.11/copy.py", line 161, in deepcopy
+    rv = reductor(4)
+         ^^^^^^^^^^^
+  File "/home/ylzhang/micromamba/envs/FSCETP/lib/python3.11/site-packages/torch/jit/_script.py", line 74, in _reduce
+    raise pickle.PickleError("ScriptFunction cannot be pickled")
+_pickle.PickleError: ScriptFunction cannot be pickled

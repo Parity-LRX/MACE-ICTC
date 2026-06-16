@@ -48,25 +48,41 @@ def mace_radial_embedding(
     polynomial_cutoff_p: int | None = None,
     sqrt_num_basis_norm: bool = True,
 ) -> torch.Tensor:
-    """e3nn radial basis, optionally multiplied by MACE polynomial envelope.
+    """MACE radial basis, optionally multiplied by the MACE polynomial envelope.
 
-    polynomial_cutoff_p=None (default): raw e3nn bessel basis. Best for
-        MD17 single-point regression accuracy (E sub-1 meV/atom).
+    ``function_type="bessel"`` follows mace-torch's ``BesselBasis``:
+    ``sqrt(2 / r_max) * sin(n*pi*r/r_max) / r``. ``function_type="gaussian"``
+    follows mace-torch's evenly-spaced Gaussian centers. Other basis names fall
+    back to e3nn's ``soft_one_hot_linspace`` for backward compatibility.
+
+    polynomial_cutoff_p=None: raw radial basis.
     polynomial_cutoff_p=int: apply MACE polynomial envelope of that order.
-        Adds C^(p-1) smoothness at r_max (useful for MD inference / energy
-        conservation in long NVE trajectories) at the cost of ~2x worse E MAE
-        in training due to plateau-schedule delay from gradient noise.
     """
-    emb = _e3nn_soft_one_hot_linspace(
-        edge_length,
-        0.0,
-        float(r_max),
-        int(number_of_basis),
-        basis=str(function_type),
-        cutoff=True,
-    )
+    kind = str(function_type).lower()
+    r_max_f = float(r_max)
+    n_basis = int(number_of_basis)
+    if kind == "bessel":
+        weights = (
+            math.pi
+            / r_max_f
+            * torch.linspace(1.0, float(n_basis), steps=n_basis, dtype=edge_length.dtype, device=edge_length.device)
+        )
+        emb = math.sqrt(2.0 / r_max_f) * torch.sin(edge_length.unsqueeze(-1) * weights) / edge_length.clamp_min(1e-12).unsqueeze(-1)
+    elif kind == "gaussian":
+        centers = torch.linspace(0.0, r_max_f, steps=n_basis, dtype=edge_length.dtype, device=edge_length.device)
+        coeff = -0.5 / (r_max_f / float(max(n_basis - 1, 1))) ** 2
+        emb = torch.exp(coeff * torch.pow(edge_length.unsqueeze(-1) - centers, 2))
+    else:
+        emb = _e3nn_soft_one_hot_linspace(
+            edge_length,
+            0.0,
+            r_max_f,
+            n_basis,
+            basis=str(function_type),
+            cutoff=True,
+        )
     if polynomial_cutoff_p is not None:
-        envelope = mace_polynomial_cutoff(edge_length, float(r_max), int(polynomial_cutoff_p))
+        envelope = mace_polynomial_cutoff(edge_length, r_max_f, int(polynomial_cutoff_p))
         emb = emb * envelope.unsqueeze(-1)
     if sqrt_num_basis_norm:
         # Historical FSCETP sqrt(num_basis) scale -- a constant the first radial linear absorbs

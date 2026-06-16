@@ -1,0 +1,96 @@
+2026-06-16 11:11:04.416 INFO: ===========VERIFYING SETTINGS===========
+2026-06-16 11:11:04.416 WARNING: All of hidden_irreps, num_channels and max_L are specified
+2026-06-16 11:11:04.416 WARNING: Using num_channels and max_L to create hidden_irreps: 64x0e+64x1o.
+2026-06-16 11:11:04.416 INFO: MACE version: 0.3.16
+2026-06-16 11:11:04.503 INFO: CUDA version: 12.8, CUDA device: 0
+2026-06-16 11:11:04.529 INFO: ===========LOADING INPUT DATA===========
+2026-06-16 11:11:04.530 INFO: Using heads: ['Default']
+2026-06-16 11:11:04.530 INFO: Using the key specifications to parse data:
+2026-06-16 11:11:04.530 INFO: Default: KeySpecification(info_keys={'energy': 'energy', 'stress': 'REF_stress', 'virials': 'REF_virials', 'dipole': 'dipole', 'head': 'head', 'elec_temp': 'elec_temp', 'total_charge': 'total_charge', 'polarizability': 'polarizability', 'total_spin': 'total_spin'}, arrays_keys={'forces': 'forces', 'charges': 'REF_charges'})
+2026-06-16 11:11:04.530 INFO: =============    Processing head Default     ===========
+2026-06-16 11:11:04.710 WARNING: Since ASE version 3.23.0b1, using energy_key 'energy' is no longer safe when communicating between MACE and ASE. We recommend using a different key, rewriting 'energy' to 'REF_energy'. You need to use --energy_key='REF_energy' to specify the chosen key name.
+2026-06-16 11:11:04.802 WARNING: Since ASE version 3.23.0b1, using forces_key 'forces' is no longer safe when communicating between MACE and ASE. We recommend using a different key, rewriting 'forces' to 'REF_forces'. You need to use --forces_key='REF_forces' to specify the chosen key name.
+2026-06-16 11:11:04.910 INFO: Training set 1/1 [energy: 1000, stress: 0, virials: 0, dipole components: 0, head: 1000, elec_temp: 0, total_charge: 0, polarizability: 0, total_spin: 0, forces: 1000, charges: 0]
+2026-06-16 11:11:04.914 INFO: Total Training set [energy: 1000, stress: 0, virials: 0, dipole components: 0, head: 1000, elec_temp: 0, total_charge: 0, polarizability: 0, total_spin: 0, forces: 1000, charges: 0]
+2026-06-16 11:11:05.089 WARNING: Since ASE version 3.23.0b1, using energy_key 'energy' is no longer safe when communicating between MACE and ASE. We recommend using a different key, rewriting 'energy' to 'REF_energy'. You need to use --energy_key='REF_energy' to specify the chosen key name.
+2026-06-16 11:11:05.181 WARNING: Since ASE version 3.23.0b1, using forces_key 'forces' is no longer safe when communicating between MACE and ASE. We recommend using a different key, rewriting 'forces' to 'REF_forces'. You need to use --forces_key='REF_forces' to specify the chosen key name.
+2026-06-16 11:11:05.288 INFO: Validation set 1/1 [energy: 1000, stress: 0, virials: 0, dipole components: 0, head: 1000, elec_temp: 0, total_charge: 0, polarizability: 0, total_spin: 0, forces: 1000, charges: 0]
+2026-06-16 11:11:05.291 INFO: Total Validation set [energy: 1000, stress: 0, virials: 0, dipole components: 0, head: 1000, elec_temp: 0, total_charge: 0, polarizability: 0, total_spin: 0, forces: 1000, charges: 0]
+2026-06-16 11:11:05.291 INFO: Total number of configurations: train=1000, valid=1000, tests=[],
+2026-06-16 11:11:05.291 INFO: Using atomic numbers from command line argument
+2026-06-16 11:11:05.292 INFO: Atomic Numbers used: [1, 6, 7, 8]
+2026-06-16 11:11:05.292 INFO: Isolated Atomic Energies (E0s) not in training file, using command line argument
+2026-06-16 11:11:05.292 INFO: Atomic Energies used (z: eV) for head Default: {1: 0.0, 6: 0.0, 7: 0.0, 8: 0.0}
+2026-06-16 11:11:05.292 INFO: Processing datasets for head 'Default'
+2026-06-16 11:11:05.766 INFO: Combining 1 list datasets for head 'Default'
+2026-06-16 11:11:06.239 INFO: Combining 1 list datasets for head 'Default_valid'
+2026-06-16 11:11:06.239 INFO: Combined validation datasets for Default
+2026-06-16 11:11:06.239 INFO: Head 'Default' training dataset size: 1000
+2026-06-16 11:11:06.239 INFO: Computing average number of neighbors
+2026-06-16 11:11:06.872 INFO: Average number of neighbors: 8.0
+2026-06-16 11:11:06.872 INFO: During training the following quantities will be reported: energy, forces
+2026-06-16 11:11:06.872 INFO: ===========MODEL DETAILS===========
+2026-06-16 11:11:07.435 INFO: Building model
+2026-06-16 11:11:07.435 INFO: Message passing with 64 channels and max_L=1 (64x0e+64x1o)
+2026-06-16 11:11:07.435 INFO: 2 layers, each with correlation order: 2 (body order: 3) and spherical harmonics up to: l=2
+2026-06-16 11:11:07.435 INFO: 8 radial and 6 basis functions
+2026-06-16 11:11:07.435 INFO: Radial cutoff: 4.5 A (total receptive field for each atom: 9.0 A)
+2026-06-16 11:11:07.435 INFO: Distance transform for radial basis functions: None
+2026-06-16 11:11:07.435 INFO: Hidden irreps: 64x0e+64x1o
+2026-06-16 11:11:07.435 INFO: Using only the backend of the model
+2026-06-16 11:11:08.209 INFO: ===========OPTIMIZER INFORMATION===========
+2026-06-16 11:11:08.209 INFO: Using ADAMW as parameter optimizer
+2026-06-16 11:11:08.209 INFO: Batch size: 16
+2026-06-16 11:11:08.209 INFO: Number of gradient updates: 2000
+2026-06-16 11:11:08.209 INFO: Learning rate: 0.001, weight decay: 5e-07
+2026-06-16 11:11:08.209 INFO: WeightedEnergyForcesLoss(energy_weight=1.000, forces_weight=100.000)
+2026-06-16 11:11:08.209 INFO: === Layer's learning rates ===
+2026-06-16 11:11:08.209 INFO: Param group 0: lr = 0.001
+2026-06-16 11:11:08.210 INFO: Param group 1: lr = 0.001
+2026-06-16 11:11:08.210 INFO: Param group 2: lr = 0.001
+2026-06-16 11:11:08.210 INFO: Param group 3: lr = 0.001
+2026-06-16 11:11:08.210 INFO: Param group 4: lr = 0.001
+2026-06-16 11:11:08.210 INFO: Using gradient clipping with tolerance=10.000
+2026-06-16 11:11:08.210 INFO: 
+2026-06-16 11:11:08.210 INFO: ===========TRAINING===========
+2026-06-16 11:11:08.210 INFO: Started training, reporting errors on validation set
+2026-06-16 11:11:08.210 INFO: Loss metrics on validation set
+2026-06-16 11:11:19.301 INFO: Initial: head: Default, loss=9.04817486, RMSE_E_per_atom=   20.02 meV, RMSE_F= 1198.52 meV / A
+2026-06-16 11:11:35.712 INFO: Epoch 0: head: Default, loss=8.15338516, RMSE_E_per_atom=   22.94 meV, RMSE_F= 1137.70 meV / A
+2026-06-16 11:11:39.803 INFO: Epoch 1: head: Default, loss=3.67908049, RMSE_E_per_atom=   62.66 meV, RMSE_F=  763.96 meV / A
+2026-06-16 11:11:43.918 INFO: Epoch 2: head: Default, loss=1.21478891, RMSE_E_per_atom=  280.52 meV, RMSE_F=  438.10 meV / A
+2026-06-16 11:11:48.017 INFO: Epoch 3: head: Default, loss=0.80169737, RMSE_E_per_atom=  284.35 meV, RMSE_F=  355.43 meV / A
+2026-06-16 11:11:52.125 INFO: Epoch 4: head: Default, loss=0.53139967, RMSE_E_per_atom=  275.02 meV, RMSE_F=  288.94 meV / A
+2026-06-16 11:11:56.253 INFO: Epoch 5: head: Default, loss=0.32301062, RMSE_E_per_atom=  270.95 meV, RMSE_F=  224.51 meV / A
+2026-06-16 11:12:00.365 INFO: Epoch 6: head: Default, loss=0.21498409, RMSE_E_per_atom=  234.84 meV, RMSE_F=  183.08 meV / A
+2026-06-16 11:12:04.477 INFO: Epoch 7: head: Default, loss=0.16458069, RMSE_E_per_atom=  222.48 meV, RMSE_F=  159.99 meV / A
+2026-06-16 11:12:08.615 INFO: Epoch 8: head: Default, loss=0.14987253, RMSE_E_per_atom=  200.01 meV, RMSE_F=  152.95 meV / A
+2026-06-16 11:12:12.728 INFO: Epoch 9: head: Default, loss=0.12485141, RMSE_E_per_atom=  189.87 meV, RMSE_F=  139.39 meV / A
+2026-06-16 11:12:16.866 INFO: Epoch 10: head: Default, loss=0.10958360, RMSE_E_per_atom=  185.38 meV, RMSE_F=  130.53 meV / A
+2026-06-16 11:12:20.943 INFO: Epoch 11: head: Default, loss=0.09514892, RMSE_E_per_atom=  180.81 meV, RMSE_F=  121.48 meV / A
+2026-06-16 11:12:25.021 INFO: Epoch 12: head: Default, loss=0.08706188, RMSE_E_per_atom=  178.24 meV, RMSE_F=  116.11 meV / A
+2026-06-16 11:12:29.072 INFO: Epoch 13: head: Default, loss=0.08147503, RMSE_E_per_atom=  172.01 meV, RMSE_F=  112.36 meV / A
+2026-06-16 11:12:33.152 INFO: Epoch 14: head: Default, loss=0.07651196, RMSE_E_per_atom=  164.18 meV, RMSE_F=  108.96 meV / A
+2026-06-16 11:12:37.231 INFO: Epoch 15: head: Default, loss=0.07228548, RMSE_E_per_atom=  159.70 meV, RMSE_F=  105.86 meV / A
+2026-06-16 11:12:41.311 INFO: Epoch 16: head: Default, loss=0.06833278, RMSE_E_per_atom=  155.28 meV, RMSE_F=  102.94 meV / A
+2026-06-16 11:12:45.600 INFO: Epoch 17: head: Default, loss=0.06361740, RMSE_E_per_atom=  149.13 meV, RMSE_F=   99.29 meV / A
+2026-06-16 11:12:49.704 INFO: Epoch 18: head: Default, loss=0.06160860, RMSE_E_per_atom=  147.50 meV, RMSE_F=   97.69 meV / A
+2026-06-16 11:12:53.781 INFO: Epoch 19: head: Default, loss=0.05764014, RMSE_E_per_atom=  137.34 meV, RMSE_F=   94.61 meV / A
+2026-06-16 11:12:58.877 INFO: Epoch 20: head: Default, loss=0.05573299, RMSE_E_per_atom=  131.34 meV, RMSE_F=   93.07 meV / A
+2026-06-16 11:13:02.978 INFO: Epoch 21: head: Default, loss=0.05964564, RMSE_E_per_atom=  126.76 meV, RMSE_F=   96.40 meV / A
+2026-06-16 11:13:07.074 INFO: Epoch 22: head: Default, loss=0.05100287, RMSE_E_per_atom=  123.49 meV, RMSE_F=   89.06 meV / A
+2026-06-16 11:13:11.172 INFO: Epoch 23: head: Default, loss=0.05075422, RMSE_E_per_atom=  124.17 meV, RMSE_F=   88.87 meV / A
+2026-06-16 11:13:15.239 INFO: Epoch 24: head: Default, loss=0.04904206, RMSE_E_per_atom=  116.08 meV, RMSE_F=   87.37 meV / A
+2026-06-16 11:13:19.338 INFO: Epoch 25: head: Default, loss=0.04798687, RMSE_E_per_atom=  110.94 meV, RMSE_F=   86.49 meV / A
+2026-06-16 11:13:23.419 INFO: Epoch 26: head: Default, loss=0.04820764, RMSE_E_per_atom=  111.35 meV, RMSE_F=   86.73 meV / A
+2026-06-16 11:13:27.504 INFO: Epoch 27: head: Default, loss=0.04454468, RMSE_E_per_atom=  104.83 meV, RMSE_F=   83.35 meV / A
+2026-06-16 11:13:31.593 INFO: Epoch 28: head: Default, loss=0.04138732, RMSE_E_per_atom=  102.68 meV, RMSE_F=   80.34 meV / A
+2026-06-16 11:13:35.623 INFO: Epoch 29: head: Default, loss=0.04058626, RMSE_E_per_atom=   99.72 meV, RMSE_F=   79.60 meV / A
+2026-06-16 11:13:39.721 INFO: Epoch 30: head: Default, loss=0.04083464, RMSE_E_per_atom=   96.68 meV, RMSE_F=   79.83 meV / A
+2026-06-16 11:13:43.857 INFO: Epoch 31: head: Default, loss=0.03936226, RMSE_E_per_atom=   92.73 meV, RMSE_F=   78.45 meV / A
+2026-06-16 11:13:43.868 INFO: Training complete
+2026-06-16 11:13:43.868 INFO: 
+2026-06-16 11:13:43.868 INFO: ===========RESULTS===========
+2026-06-16 11:13:43.868 INFO: Loading checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-31.pt
+2026-06-16 11:13:43.885 INFO: Loaded Stage one model from epoch 31 for evaluation
+2026-06-16 11:13:43.886 INFO: Saving model to /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616.model

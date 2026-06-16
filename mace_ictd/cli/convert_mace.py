@@ -70,6 +70,16 @@ def _infer_uniform_hidden(hidden_irreps: o3.Irreps) -> tuple[int, int]:
     return channels, lmax
 
 
+def _infer_scalar_mlp_hidden(mlp_irreps: o3.Irreps) -> int:
+    simplified = mlp_irreps.simplify()
+    if len(simplified) != 1:
+        raise ValueError(f"only a single scalar MLP_irreps block is supported, got {mlp_irreps}")
+    mul, ir = simplified[0]
+    if ir != o3.Irrep("0e"):
+        raise ValueError(f"only scalar even MLP_irreps are supported, got {mlp_irreps}")
+    return int(mul)
+
+
 def _extract_mace_config(mace_model) -> dict[str, Any]:
     try:
         from mace.tools.scripts_utils import extract_config_mace_model
@@ -108,9 +118,7 @@ def _validate_supported_config(cfg: dict[str, Any], *, channels: int, lmax: int)
         raise ValueError(f"distance_transform={distance_transform!r} is not supported")
     if "silu" not in _gate_name(cfg.get("gate", "")):
         raise ValueError(f"only silu final readout gate is supported, got {cfg.get('gate')!r}")
-    mlp_irreps = o3.Irreps(str(cfg["MLP_irreps"]))
-    if mlp_irreps != o3.Irreps("16x0e"):
-        raise ValueError(f"only MLP_irreps=16x0e is supported, got {mlp_irreps}")
+    _infer_scalar_mlp_hidden(o3.Irreps(str(cfg["MLP_irreps"])))
     first_name = cfg["interaction_cls_first"].__name__
     rest_name = cfg["interaction_cls"].__name__
     if first_name not in {"RealAgnosticInteractionBlock", "RealAgnosticResidualInteractionBlock"}:
@@ -146,6 +154,7 @@ def build_ictd_from_mace_config(
 ) -> PureCartesianICTDFix:
     hidden_irreps = o3.Irreps(str(cfg["hidden_irreps"]))
     channels, lmax = _infer_uniform_hidden(hidden_irreps)
+    readout_hidden_channels = _infer_scalar_mlp_hidden(o3.Irreps(str(cfg["MLP_irreps"])))
     _validate_supported_config(cfg, channels=channels, lmax=lmax)
 
     atomic_numbers = [int(z) for z in cfg["atomic_numbers"]]
@@ -176,6 +185,7 @@ def build_ictd_from_mace_config(
         ictd_fix_route="baseline",
         ictd_fix_product_backend=product_backend,
         ictd_fix_use_reduced_cg=_use_reduced_cg_from_config(cfg),
+        ictd_fix_readout_hidden_channels=readout_hidden_channels,
         save_contraction_order=correlation,
         radial_sqrt_num_basis=False,
         polynomial_cutoff_p=_as_int(cfg["num_polynomial_cutoff"]),
@@ -214,6 +224,10 @@ def _checkpoint_hparams_from_model(model: PureCartesianICTDFix, cfg: dict[str, A
         "ictd_fix_route": "baseline",
         "ictd_fix_product_backend": str(model.ictd_fix_product_backend),
         "ictd_fix_use_reduced_cg": bool(getattr(model, "ictd_fix_use_reduced_cg", False)),
+        "ictd_fix_conv_tp_scale_init": str(getattr(model, "ictd_fix_conv_tp_scale_init", "none")),
+        "ictd_fix_freeze_conv_tp_weight": bool(getattr(model, "ictd_fix_freeze_conv_tp_weight", False)),
+        "ictd_fix_interaction_init": str(getattr(model, "ictd_fix_interaction_init", "identity")),
+        "ictd_fix_readout_hidden_channels": int(getattr(model, "ictd_fix_readout_hidden_channels", 16)),
         "ictd_fix_edge_lmax": int(getattr(model, "ictd_fix_edge_lmax", model.lmax)),
         "save_contraction_order": _uniform_correlation_from_config(cfg, num_interactions=int(model.num_interaction)),
         "ictd_save_tp_mode": "fully-connected",

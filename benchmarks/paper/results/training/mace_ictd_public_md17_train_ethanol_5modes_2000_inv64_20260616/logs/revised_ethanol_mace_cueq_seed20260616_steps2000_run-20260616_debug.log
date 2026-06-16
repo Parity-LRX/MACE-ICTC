@@ -1,0 +1,209 @@
+2026-06-16 11:11:04.416 INFO: ===========VERIFYING SETTINGS===========
+2026-06-16 11:11:04.416 WARNING: All of hidden_irreps, num_channels and max_L are specified
+2026-06-16 11:11:04.416 WARNING: Using num_channels and max_L to create hidden_irreps: 64x0e+64x1o.
+2026-06-16 11:11:04.416 INFO: MACE version: 0.3.16
+2026-06-16 11:11:04.416 DEBUG: Configuration: Namespace(config=None, name='revised_ethanol_mace_cueq_seed20260616_steps2000', seed=20260616, work_dir='.', log_dir='/tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/logs', model_dir='/tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/models', checkpoints_dir='/tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints', results_dir='/tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/results', downloads_dir='./downloads', device='cuda', default_dtype='float32', distributed=False, launcher='slurm', log_level='INFO', plot=True, plot_frequency=0, plot_interaction_e=False, error_table='PerAtomRMSE', model='ScaleShiftMACE', r_max=4.5, radial_type='bessel', num_radial_basis=8, num_cutoff_basis=6, pair_repulsion=False, distance_transform='None', apply_cutoff=True, use_last_readout_only=False, use_embedding_readout=False, interaction='RealAgnosticResidualInteractionBlock', interaction_first='RealAgnosticResidualInteractionBlock', max_ell=2, correlation=2, use_reduced_cg=False, use_so3=False, use_agnostic_product=False, num_interactions=2, MLP_irreps='64x0e', radial_MLP='[64, 64, 64]', hidden_irreps=64x0e+64x1o, edge_irreps=None, use_edge_irreps_first=False, num_channels=64, max_L=1, gate='silu', kspace_cutoff_factor=1.5, atomic_multipoles_max_l=0, atomic_multipoles_smearing_width=1.0, field_feature_max_l=0, field_feature_widths='[1.0]', field_feature_norms=None, num_recursion_steps=1, field_si=False, include_electrostatic_self_interaction=False, add_local_electron_energy=False, quadrupole_feature_corrections=False, return_electrostatic_potentials=False, field_norm_factor=0.02, fixedpoint_update_config=None, field_readout_config=None, scaling='std_scaling', avg_num_neighbors=1, compute_avg_num_neighbors=True, compute_stress=False, compute_forces=True, compute_polarizability=False, compute_atomic_dipole=False, train_file='/tmp/mace_ictd_public_md17/revised_ethanol/train.extxyz', valid_file='/tmp/mace_ictd_public_md17/revised_ethanol/val.extxyz', valid_fraction=0.1, test_file=None, test_dir=None, multi_processed_test=False, num_workers=2, pin_memory=True, atomic_numbers='[1, 6, 7, 8]', mean=None, std=None, statistics_file=None, les_arguments=None, E0s='{1: 0.0, 6: 0.0, 7: 0.0, 8: 0.0}', pseudolabel_replay=False, pseudolabel_replay_compute_stress=False, foundation_filter_elements=True, heads=None, multiheads_finetuning=True, foundation_head=None, weight_pt_head=1.0, real_pt_data_ratio_threshold=0.1, num_samples_pt=10000, force_mh_ft_lr=False, subselect_pt='random', filter_type_pt='none', allow_random_padding_pt=True, pt_train_file=None, pt_valid_file=None, foundation_model_elements=False, keep_isolated_atoms=False, lora=False, lora_rank=4, lora_alpha=1.0, energy_key='energy', forces_key='forces', virials_key='REF_virials', stress_key='REF_stress', dipole_key='dipole', polarizability_key='polarizability', head_key='head', charges_key='REF_charges', elec_temp_key='elec_temp', total_spin_key='total_spin', total_charge_key='total_charge', embedding_specs=None, skip_evaluate_heads='pt_head', loss='weighted', forces_weight=100.0, swa_forces_weight=100.0, energy_weight=1.0, swa_energy_weight=1000.0, virials_weight=1.0, swa_virials_weight=10.0, stress_weight=1.0, swa_stress_weight=10.0, dipole_weight=1.0, swa_dipole_weight=1.0, swa_polarizability_weight=1.0, polarizability_weight=1.0, config_type_weights='{"Default":1.0}', huber_delta=0.01, optimizer='adamw', beta=0.9, beta1_schedulefree=0.9, beta2_schedulefree=0.98, batch_size=16, valid_batch_size=16, lr=0.001, swa_lr=0.001, weight_decay=5e-07, lr_params_factors='{"embedding_lr_factor": 1.0, "interactions_lr_factor": 1.0, "products_lr_factor": 1.0, "readouts_lr_factor": 1.0}', freeze=None, amsgrad=True, scheduler='ExponentialLR', lr_factor=0.8, scheduler_patience=50, lr_scheduler_gamma=0.9993, swa=False, start_swa=None, lbfgs=False, ema=False, ema_decay=0.99, max_num_epochs=32, patience=2048, foundation_model=None, foundation_model_kwargs='{}', foundation_model_readout=True, eval_interval=1, keep_checkpoints=False, save_all_checkpoints=False, restart_latest=False, save_cpu=False, clip_grad=10.0, dry_run=False, enable_cueq=True, only_cueq=True, enable_oeq=False, wandb=False, wandb_dir=None, wandb_project='', wandb_entity='', wandb_name='', wandb_log_hypers=['num_channels', 'max_L', 'correlation', 'lr', 'swa_lr', 'weight_decay', 'batch_size', 'max_num_epochs', 'start_swa', 'energy_weight', 'forces_weight'], key_specification=KeySpecification(info_keys={'energy': 'energy', 'stress': 'REF_stress', 'virials': 'REF_virials', 'dipole': 'dipole', 'head': 'head', 'elec_temp': 'elec_temp', 'total_charge': 'total_charge', 'polarizability': 'polarizability', 'total_spin': 'total_spin'}, arrays_keys={'forces': 'forces', 'charges': 'REF_charges'}))
+2026-06-16 11:11:04.503 INFO: CUDA version: 12.8, CUDA device: 0
+2026-06-16 11:11:04.527 DEBUG: Popen(['git', 'version'], cwd=/home/ylzhang/lrx/MACE-ICTD, stdin=None, shell=False, universal_newlines=False)
+2026-06-16 11:11:04.528 DEBUG: Popen(['git', 'version'], cwd=/home/ylzhang/lrx/MACE-ICTD, stdin=None, shell=False, universal_newlines=False)
+2026-06-16 11:11:04.529 DEBUG: sys.platform='linux', git_executable='git'
+2026-06-16 11:11:04.529 DEBUG: Error accessing Git repository: /home/ylzhang/lrx/MACE-ICTD
+2026-06-16 11:11:04.529 INFO: ===========LOADING INPUT DATA===========
+2026-06-16 11:11:04.530 INFO: Using heads: ['Default']
+2026-06-16 11:11:04.530 INFO: Using the key specifications to parse data:
+2026-06-16 11:11:04.530 INFO: Default: KeySpecification(info_keys={'energy': 'energy', 'stress': 'REF_stress', 'virials': 'REF_virials', 'dipole': 'dipole', 'head': 'head', 'elec_temp': 'elec_temp', 'total_charge': 'total_charge', 'polarizability': 'polarizability', 'total_spin': 'total_spin'}, arrays_keys={'forces': 'forces', 'charges': 'REF_charges'})
+2026-06-16 11:11:04.530 INFO: =============    Processing head Default     ===========
+2026-06-16 11:11:04.530 DEBUG: Loading training file: /tmp/mace_ictd_public_md17/revised_ethanol/train.extxyz
+2026-06-16 11:11:04.710 WARNING: Since ASE version 3.23.0b1, using energy_key 'energy' is no longer safe when communicating between MACE and ASE. We recommend using a different key, rewriting 'energy' to 'REF_energy'. You need to use --energy_key='REF_energy' to specify the chosen key name.
+2026-06-16 11:11:04.802 WARNING: Since ASE version 3.23.0b1, using forces_key 'forces' is no longer safe when communicating between MACE and ASE. We recommend using a different key, rewriting 'forces' to 'REF_forces'. You need to use --forces_key='REF_forces' to specify the chosen key name.
+2026-06-16 11:11:04.910 INFO: Training set 1/1 [energy: 1000, stress: 0, virials: 0, dipole components: 0, head: 1000, elec_temp: 0, total_charge: 0, polarizability: 0, total_spin: 0, forces: 1000, charges: 0]
+2026-06-16 11:11:04.914 INFO: Total Training set [energy: 1000, stress: 0, virials: 0, dipole components: 0, head: 1000, elec_temp: 0, total_charge: 0, polarizability: 0, total_spin: 0, forces: 1000, charges: 0]
+2026-06-16 11:11:05.089 WARNING: Since ASE version 3.23.0b1, using energy_key 'energy' is no longer safe when communicating between MACE and ASE. We recommend using a different key, rewriting 'energy' to 'REF_energy'. You need to use --energy_key='REF_energy' to specify the chosen key name.
+2026-06-16 11:11:05.181 WARNING: Since ASE version 3.23.0b1, using forces_key 'forces' is no longer safe when communicating between MACE and ASE. We recommend using a different key, rewriting 'forces' to 'REF_forces'. You need to use --forces_key='REF_forces' to specify the chosen key name.
+2026-06-16 11:11:05.288 INFO: Validation set 1/1 [energy: 1000, stress: 0, virials: 0, dipole components: 0, head: 1000, elec_temp: 0, total_charge: 0, polarizability: 0, total_spin: 0, forces: 1000, charges: 0]
+2026-06-16 11:11:05.291 INFO: Total Validation set [energy: 1000, stress: 0, virials: 0, dipole components: 0, head: 1000, elec_temp: 0, total_charge: 0, polarizability: 0, total_spin: 0, forces: 1000, charges: 0]
+2026-06-16 11:11:05.291 INFO: Total number of configurations: train=1000, valid=1000, tests=[],
+2026-06-16 11:11:05.291 INFO: Using atomic numbers from command line argument
+2026-06-16 11:11:05.292 INFO: Atomic Numbers used: [1, 6, 7, 8]
+2026-06-16 11:11:05.292 INFO: Isolated Atomic Energies (E0s) not in training file, using command line argument
+2026-06-16 11:11:05.292 INFO: Atomic Energies used (z: eV) for head Default: {1: 0.0, 6: 0.0, 7: 0.0, 8: 0.0}
+2026-06-16 11:11:05.292 INFO: Processing datasets for head 'Default'
+2026-06-16 11:11:05.766 DEBUG: Successfully loaded dataset from ASE files: ['/tmp/mace_ictd_public_md17/revised_ethanol/train.extxyz']
+2026-06-16 11:11:05.766 INFO: Combining 1 list datasets for head 'Default'
+2026-06-16 11:11:06.239 DEBUG: Successfully loaded validation dataset from ASE files: ['/tmp/mace_ictd_public_md17/revised_ethanol/val.extxyz']
+2026-06-16 11:11:06.239 INFO: Combining 1 list datasets for head 'Default_valid'
+2026-06-16 11:11:06.239 INFO: Combined validation datasets for Default
+2026-06-16 11:11:06.239 INFO: Head 'Default' training dataset size: 1000
+2026-06-16 11:11:06.239 INFO: Computing average number of neighbors
+2026-06-16 11:11:06.872 INFO: Average number of neighbors: 8.0
+2026-06-16 11:11:06.872 INFO: During training the following quantities will be reported: energy, forces
+2026-06-16 11:11:06.872 INFO: ===========MODEL DETAILS===========
+2026-06-16 11:11:07.435 INFO: Building model
+2026-06-16 11:11:07.435 INFO: Message passing with 64 channels and max_L=1 (64x0e+64x1o)
+2026-06-16 11:11:07.435 INFO: 2 layers, each with correlation order: 2 (body order: 3) and spherical harmonics up to: l=2
+2026-06-16 11:11:07.435 INFO: 8 radial and 6 basis functions
+2026-06-16 11:11:07.435 INFO: Radial cutoff: 4.5 A (total receptive field for each atom: 9.0 A)
+2026-06-16 11:11:07.435 INFO: Distance transform for radial basis functions: None
+2026-06-16 11:11:07.435 INFO: Hidden irreps: 64x0e+64x1o
+2026-06-16 11:11:07.435 INFO: Using only the backend of the model
+2026-06-16 11:11:07.436 DEBUG: Normalized paths for operand 2 in uv,iu,iv operands=[(4, 64)],[(1, 4)],[(1, 64)] paths=[op0[0]*op1[0]*op2[0]*1.]: got uv,iu,iv operands=[(4, 64)],[(1, 4)],[(1, 64)] paths=[op0[0]*op1[0]*op2[0]*0.5]
+2026-06-16 11:11:07.817 DEBUG: Normalized paths for operand 2 in uv,iu,iv operands=[(64, 64)],[(1, 64)],[(1, 64)] paths=[op0[0]*op1[0]*op2[0]*1.]: got uv,iu,iv operands=[(64, 64)],[(1, 64)],[(1, 64)] paths=[op0[0]*op1[0]*op2[0]*0.12]
+2026-06-16 11:11:07.837 DEBUG: Normalized paths for operand 3 in uv,iu,jv,kuv+ijk sizes=192,64,9,576 num_segments=3,1,3,3 num_paths=3 i=1 j={1, 3, 5} k={1, 3, 5} u=64 v=1: got uv,iu,jv,kuv+ijk sizes=192,64,9,576 num_segments=3,1,3,3 num_paths=3 i=1 j={1, 3, 5} k={1, 3, 5} u=64 v=1
+2026-06-16 11:11:07.837 DEBUG: Flattened ijk in uv,iu,jv,kuv+ijk sizes=192,64,9,576 num_segments=3,1,3,3 num_paths=3 i=1 j={1, 3, 5} k={1, 3, 5} u=64 v=1: got uv,u,v,uv sizes=192,64,9,576 num_segments=3,1,9,9 num_paths=9 u=64 v=1
+2026-06-16 11:11:07.838 DEBUG: Squeezed uv,u,v,uv sizes=192,64,9,576 num_segments=3,1,9,9 num_paths=9 u=64 v=1 to u,u,,u sizes=192,64,9,576 num_segments=3,1,9,9 num_paths=9 u=64
+2026-06-16 11:11:07.882 DEBUG: Normalized paths for operand 2 in uv,iu,iv sizes=12288,576,576 num_segments=3,3,3 num_paths=3 i={1, 3, 5} u=64 v=64: got uv,iu,iv sizes=12288,576,576 num_segments=3,3,3 num_paths=3 i={1, 3, 5} u=64 v=64
+2026-06-16 11:11:07.902 DEBUG: Normalized paths for operand 3 in uvw,iu,jv,kw+ijk sizes=16384,64,4,256 num_segments=1,1,1,2 num_paths=1 i=1 j=1 k={1, 3} u=64 v=4 w=64: got uvw,iu,jv,kw+ijk sizes=16384,64,4,256 num_segments=1,1,1,2 num_paths=1 i=1 j=1 k={1, 3} u=64 v=4 w=64
+2026-06-16 11:11:07.942 DEBUG: Flattened abiu in u,a,b,i+abui operands=[(3,)],[(9,)],[(9,)],[(1,)] paths=[op0[0]*op1[0]*op2[0]*op3[0]*c c.shape=(9, 9, 3, 1) c.nnz=9]: got ,,, sizes=3,9,9,1 num_segments=3,9,9,1 num_paths=9
+2026-06-16 11:11:07.943 DEBUG: Flattened aiu in u,a,i+aui operands=[(1,)],[(9,)],[(1,)] paths=[op0[0]*op1[0]*op2[0]*c c.shape=(9, 1, 1) c.nnz=1]: got ,, sizes=1,9,1 num_segments=1,9,1 num_paths=1
+2026-06-16 11:11:07.949 DEBUG: Flattened abiu in u,a,b,i+abui operands=[(4,)],[(9,)],[(9,)],[(3,)] paths=[op0[0]*op1[0]*op2[0]*op3[0]*c c.shape=(9, 9, 4, 3) c.nnz=28]: got ,,, sizes=4,9,9,3 num_segments=4,9,9,3 num_paths=28
+2026-06-16 11:11:07.950 DEBUG: Flattened aiu in u,a,i+aui operands=[(1,)],[(9,)],[(3,)] paths=[op0[0]*op1[0]*op2[0]*c c.shape=(9, 1, 3) c.nnz=3]: got ,, sizes=1,9,3 num_segments=1,9,3 num_paths=3
+2026-06-16 11:11:07.957 DEBUG: _reduced_tensor_product_basis (0e+1o+2e,), frozenset({(1, (0,))}), keep_ir=frozenset({0e, 1o})
+2026-06-16 11:11:07.958 DEBUG: Normalized paths for operand 2 in w,a,i+aiw sizes=2,9,4 num_segments=2,1,2 num_paths=2 a=9 i={1, 3} w=1: got w,a,i+aiw sizes=2,9,4 num_segments=2,1,2 num_paths=2 a=9 i={1, 3} w=1
+2026-06-16 11:11:07.959 DEBUG: Flattened aiw in w,a,i+aiw sizes=2,9,4 num_segments=2,1,2 num_paths=2 a=9 i={1, 3} w=1: got ,, sizes=2,9,4 num_segments=2,9,4 num_paths=4
+2026-06-16 11:11:07.959 DEBUG: _reduced_tensor_product_basis (0e+1o+2e, 0e+1o+2e), frozenset({(1, (0, 1)), (1, (1, 0))}), keep_ir=frozenset({0e, 1o}), use _optimized_reduced_symmetric_tensor_product_basis
+2026-06-16 11:11:07.959 DEBUG: _reduced_tensor_product_basis (0e,), frozenset({(1, (0,))}), keep_ir=frozenset({0e, 2o, 3o, 2e, 1e, 1o})
+2026-06-16 11:11:07.960 DEBUG: _reduced_tensor_product_basis (0e, 0e), frozenset({(1, (0, 1)), (1, (1, 0))}), keep_ir=frozenset({0e, 1o})
+2026-06-16 11:11:07.961 DEBUG: _reduced_tensor_product_basis (1o,), frozenset({(1, (0,))}), keep_ir=frozenset({0e, 2o, 3o, 2e, 1e, 1o})
+2026-06-16 11:11:07.961 DEBUG: _reduced_tensor_product_basis (1o, 1o), frozenset({(1, (0, 1)), (1, (1, 0))}), keep_ir=frozenset({0e, 1o})
+2026-06-16 11:11:07.962 DEBUG: _reduced_tensor_product_basis (2e,), frozenset({(1, (0,))}), keep_ir=frozenset({0e, 2o, 3o, 2e, 1e, 1o})
+2026-06-16 11:11:07.963 DEBUG: _reduced_tensor_product_basis (2e, 2e), frozenset({(1, (0, 1)), (1, (1, 0))}), keep_ir=frozenset({0e, 1o})
+2026-06-16 11:11:07.967 DEBUG: Normalized paths for operand 3 in w,a,b,i+abiw sizes=5,9,9,4 num_segments=2,1,1,2 num_paths=2 a=9 b=9 i={1, 3} w={2, 3}: got w,a,b,i+abiw sizes=5,9,9,4 num_segments=2,1,1,2 num_paths=2 a=9 b=9 i={1, 3} w={2, 3}
+2026-06-16 11:11:07.967 DEBUG: Flattened abiw in w,a,b,i+abiw sizes=5,9,9,4 num_segments=2,1,1,2 num_paths=2 a=9 b=9 i={1, 3} w={2, 3}: got ,,, sizes=5,9,9,4 num_segments=5,9,9,4 num_paths=37
+2026-06-16 11:11:07.981 DEBUG: Normalized paths for operand 2 in uv,iu,iv sizes=8192,256,256 num_segments=2,2,2 num_paths=2 i={1, 3} u=64 v=64: got uv,iu,iv sizes=8192,256,256 num_segments=2,2,2 num_paths=2 i={1, 3} u=64 v=64
+2026-06-16 11:11:07.996 DEBUG: Normalized paths for operand 2 in uv,iu,iv sizes=64,256,1 num_segments=1,2,1 num_paths=1 i={1, 3} u=64 v=1: got uv,iu,iv sizes=64,256,1 num_segments=1,2,1 num_paths=1 i={1, 3} u=64 v=1
+2026-06-16 11:11:08.004 DEBUG: Normalized paths for operand 2 in uv,iu,iv sizes=8192,256,256 num_segments=2,2,2 num_paths=2 i={1, 3} u=64 v=64: got uv,iu,iv sizes=8192,256,256 num_segments=2,2,2 num_paths=2 i={1, 3} u=64 v=64
+2026-06-16 11:11:08.020 DEBUG: Normalized paths for operand 3 in uv,iu,jv,kuv+ijk sizes=448,256,9,1344 num_segments=7,2,3,7 num_paths=7 i={1, 3} j={1, 3, 5} k={1, 3, 5} u=64 v=1: got uv,iu,jv,kuv+ijk sizes=448,256,9,1344 num_segments=7,2,3,7 num_paths=7 i={1, 3} j={1, 3, 5} k={1, 3, 5} u=64 v=1
+2026-06-16 11:11:08.021 DEBUG: Flattened ijk in uv,iu,jv,kuv+ijk sizes=448,256,9,1344 num_segments=7,2,3,7 num_paths=7 i={1, 3} j={1, 3, 5} k={1, 3, 5} u=64 v=1: got uv,u,v,uv sizes=448,256,9,1344 num_segments=7,4,9,21 num_paths=37 u=64 v=1
+2026-06-16 11:11:08.023 DEBUG: Squeezed uv,u,v,uv sizes=448,256,9,1344 num_segments=7,4,9,21 num_paths=37 u=64 v=1 to u,u,,u sizes=448,256,9,1344 num_segments=7,4,9,21 num_paths=37 u=64
+2026-06-16 11:11:08.066 DEBUG: Normalized paths for operand 2 in uv,iu,iv sizes=28672,1344,576 num_segments=7,7,3 num_paths=7 i={1, 3, 5} u=64 v=64: got uv,iu,iv sizes=28672,1344,576 num_segments=7,7,3 num_paths=7 i={1, 3, 5} u=64 v=64
+2026-06-16 11:11:08.100 DEBUG: Normalized paths for operand 3 in uvw,iu,jv,kw+ijk sizes=16384,256,4,64 num_segments=1,2,1,1 num_paths=1 i={1, 3} j=1 k=1 u=64 v=4 w=64: got uvw,iu,jv,kw+ijk sizes=16384,256,4,64 num_segments=1,2,1,1 num_paths=1 i={1, 3} j=1 k=1 u=64 v=4 w=64
+2026-06-16 11:11:08.115 DEBUG: Flattened abiu in u,a,b,i+abui operands=[(3,)],[(9,)],[(9,)],[(1,)] paths=[op0[0]*op1[0]*op2[0]*op3[0]*c c.shape=(9, 9, 3, 1) c.nnz=9]: got ,,, sizes=3,9,9,1 num_segments=3,9,9,1 num_paths=9
+2026-06-16 11:11:08.116 DEBUG: Flattened aiu in u,a,i+aui operands=[(1,)],[(9,)],[(1,)] paths=[op0[0]*op1[0]*op2[0]*c c.shape=(9, 1, 1) c.nnz=1]: got ,, sizes=1,9,1 num_segments=1,9,1 num_paths=1
+2026-06-16 11:11:08.119 DEBUG: _reduced_tensor_product_basis (0e+1o+2e,), frozenset({(1, (0,))}), keep_ir=frozenset({0e})
+2026-06-16 11:11:08.120 DEBUG: Normalized paths for operand 2 in w,a,i+aiw operands=[(1,)],[(9,)],[(1,)] paths=[op0[0]*op1[0]*op2[0]*c c.shape=(9, 1, 1) c.nnz=1]: got w,a,i+aiw operands=[(1,)],[(9,)],[(1,)] paths=[op0[0]*op1[0]*op2[0]*c c.shape=(9, 1, 1) c.nnz=1]
+2026-06-16 11:11:08.120 DEBUG: Flattened aiw in w,a,i+aiw operands=[(1,)],[(9,)],[(1,)] paths=[op0[0]*op1[0]*op2[0]*c c.shape=(9, 1, 1) c.nnz=1]: got ,, sizes=1,9,1 num_segments=1,9,1 num_paths=1
+2026-06-16 11:11:08.121 DEBUG: _reduced_tensor_product_basis (0e+1o+2e, 0e+1o+2e), frozenset({(1, (0, 1)), (1, (1, 0))}), keep_ir=frozenset({0e}), use _optimized_reduced_symmetric_tensor_product_basis
+2026-06-16 11:11:08.121 DEBUG: _reduced_tensor_product_basis (0e,), frozenset({(1, (0,))}), keep_ir=frozenset({0e, 1o, 2e})
+2026-06-16 11:11:08.121 DEBUG: _reduced_tensor_product_basis (0e, 0e), frozenset({(1, (0, 1)), (1, (1, 0))}), keep_ir=frozenset({0e})
+2026-06-16 11:11:08.122 DEBUG: _reduced_tensor_product_basis (1o,), frozenset({(1, (0,))}), keep_ir=frozenset({0e, 1o, 2e})
+2026-06-16 11:11:08.122 DEBUG: _reduced_tensor_product_basis (1o, 1o), frozenset({(1, (0, 1)), (1, (1, 0))}), keep_ir=frozenset({0e})
+2026-06-16 11:11:08.123 DEBUG: _reduced_tensor_product_basis (2e,), frozenset({(1, (0,))}), keep_ir=frozenset({0e, 1o, 2e})
+2026-06-16 11:11:08.123 DEBUG: _reduced_tensor_product_basis (2e, 2e), frozenset({(1, (0, 1)), (1, (1, 0))}), keep_ir=frozenset({0e})
+2026-06-16 11:11:08.128 DEBUG: Normalized paths for operand 3 in w,a,b,i+abiw operands=[(3,)],[(9,)],[(9,)],[(1,)] paths=[op0[0]*op1[0]*op2[0]*op3[0]*c c.shape=(9, 9, 1, 3) c.nnz=9]: got w,a,b,i+abiw operands=[(3,)],[(9,)],[(9,)],[(1,)] paths=[op0[0]*op1[0]*op2[0]*op3[0]*c c.shape=(9, 9, 1, 3) c.nnz=9]
+2026-06-16 11:11:08.129 DEBUG: Flattened abiw in w,a,b,i+abiw operands=[(3,)],[(9,)],[(9,)],[(1,)] paths=[op0[0]*op1[0]*op2[0]*op3[0]*c c.shape=(9, 9, 1, 3) c.nnz=9]: got ,,, sizes=3,9,9,1 num_segments=3,9,9,1 num_paths=9
+2026-06-16 11:11:08.135 DEBUG: Normalized paths for operand 2 in uv,iu,iv operands=[(64, 64)],[(1, 64)],[(1, 64)] paths=[op0[0]*op1[0]*op2[0]*1.]: got uv,iu,iv operands=[(64, 64)],[(1, 64)],[(1, 64)] paths=[op0[0]*op1[0]*op2[0]*0.12]
+2026-06-16 11:11:08.147 DEBUG: Normalized paths for operand 2 in uv,iu,iv operands=[(64, 64)],[(1, 64)],[(1, 64)] paths=[op0[0]*op1[0]*op2[0]*1.]: got uv,iu,iv operands=[(64, 64)],[(1, 64)],[(1, 64)] paths=[op0[0]*op1[0]*op2[0]*0.12]
+2026-06-16 11:11:08.200 DEBUG: Normalized paths for operand 2 in uv,iu,iv operands=[(64, 1)],[(1, 64)],[(1, 1)] paths=[op0[0]*op1[0]*op2[0]*1.]: got uv,iu,iv operands=[(64, 1)],[(1, 64)],[(1, 1)] paths=[op0[0]*op1[0]*op2[0]*0.12]
+2026-06-16 11:11:08.209 INFO: ===========OPTIMIZER INFORMATION===========
+2026-06-16 11:11:08.209 INFO: Using ADAMW as parameter optimizer
+2026-06-16 11:11:08.209 INFO: Batch size: 16
+2026-06-16 11:11:08.209 INFO: Number of gradient updates: 2000
+2026-06-16 11:11:08.209 INFO: Learning rate: 0.001, weight decay: 5e-07
+2026-06-16 11:11:08.209 INFO: WeightedEnergyForcesLoss(energy_weight=1.000, forces_weight=100.000)
+2026-06-16 11:11:08.209 INFO: === Layer's learning rates ===
+2026-06-16 11:11:08.209 INFO: Param group 0: lr = 0.001
+2026-06-16 11:11:08.210 INFO: Param group 1: lr = 0.001
+2026-06-16 11:11:08.210 INFO: Param group 2: lr = 0.001
+2026-06-16 11:11:08.210 INFO: Param group 3: lr = 0.001
+2026-06-16 11:11:08.210 INFO: Param group 4: lr = 0.001
+2026-06-16 11:11:08.210 INFO: Using gradient clipping with tolerance=10.000
+2026-06-16 11:11:08.210 INFO: 
+2026-06-16 11:11:08.210 INFO: ===========TRAINING===========
+2026-06-16 11:11:08.210 INFO: Started training, reporting errors on validation set
+2026-06-16 11:11:08.210 INFO: Loss metrics on validation set
+2026-06-16 11:11:19.301 INFO: Initial: head: Default, loss=9.04817486, RMSE_E_per_atom=   20.02 meV, RMSE_F= 1198.52 meV / A
+2026-06-16 11:11:35.712 INFO: Epoch 0: head: Default, loss=8.15338516, RMSE_E_per_atom=   22.94 meV, RMSE_F= 1137.70 meV / A
+2026-06-16 11:11:35.713 DEBUG: Saving checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-0.pt
+2026-06-16 11:11:39.803 INFO: Epoch 1: head: Default, loss=3.67908049, RMSE_E_per_atom=   62.66 meV, RMSE_F=  763.96 meV / A
+2026-06-16 11:11:39.804 DEBUG: Deleting old checkpoint file: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-0.pt
+2026-06-16 11:11:39.805 DEBUG: Saving checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-1.pt
+2026-06-16 11:11:43.918 INFO: Epoch 2: head: Default, loss=1.21478891, RMSE_E_per_atom=  280.52 meV, RMSE_F=  438.10 meV / A
+2026-06-16 11:11:43.919 DEBUG: Deleting old checkpoint file: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-1.pt
+2026-06-16 11:11:43.919 DEBUG: Saving checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-2.pt
+2026-06-16 11:11:48.017 INFO: Epoch 3: head: Default, loss=0.80169737, RMSE_E_per_atom=  284.35 meV, RMSE_F=  355.43 meV / A
+2026-06-16 11:11:48.018 DEBUG: Deleting old checkpoint file: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-2.pt
+2026-06-16 11:11:48.018 DEBUG: Saving checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-3.pt
+2026-06-16 11:11:52.125 INFO: Epoch 4: head: Default, loss=0.53139967, RMSE_E_per_atom=  275.02 meV, RMSE_F=  288.94 meV / A
+2026-06-16 11:11:52.126 DEBUG: Deleting old checkpoint file: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-3.pt
+2026-06-16 11:11:52.127 DEBUG: Saving checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-4.pt
+2026-06-16 11:11:56.253 INFO: Epoch 5: head: Default, loss=0.32301062, RMSE_E_per_atom=  270.95 meV, RMSE_F=  224.51 meV / A
+2026-06-16 11:11:56.254 DEBUG: Deleting old checkpoint file: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-4.pt
+2026-06-16 11:11:56.254 DEBUG: Saving checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-5.pt
+2026-06-16 11:12:00.365 INFO: Epoch 6: head: Default, loss=0.21498409, RMSE_E_per_atom=  234.84 meV, RMSE_F=  183.08 meV / A
+2026-06-16 11:12:00.366 DEBUG: Deleting old checkpoint file: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-5.pt
+2026-06-16 11:12:00.367 DEBUG: Saving checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-6.pt
+2026-06-16 11:12:04.477 INFO: Epoch 7: head: Default, loss=0.16458069, RMSE_E_per_atom=  222.48 meV, RMSE_F=  159.99 meV / A
+2026-06-16 11:12:04.478 DEBUG: Deleting old checkpoint file: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-6.pt
+2026-06-16 11:12:04.479 DEBUG: Saving checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-7.pt
+2026-06-16 11:12:08.615 INFO: Epoch 8: head: Default, loss=0.14987253, RMSE_E_per_atom=  200.01 meV, RMSE_F=  152.95 meV / A
+2026-06-16 11:12:08.616 DEBUG: Deleting old checkpoint file: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-7.pt
+2026-06-16 11:12:08.617 DEBUG: Saving checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-8.pt
+2026-06-16 11:12:12.728 INFO: Epoch 9: head: Default, loss=0.12485141, RMSE_E_per_atom=  189.87 meV, RMSE_F=  139.39 meV / A
+2026-06-16 11:12:12.729 DEBUG: Deleting old checkpoint file: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-8.pt
+2026-06-16 11:12:12.729 DEBUG: Saving checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-9.pt
+2026-06-16 11:12:16.866 INFO: Epoch 10: head: Default, loss=0.10958360, RMSE_E_per_atom=  185.38 meV, RMSE_F=  130.53 meV / A
+2026-06-16 11:12:16.867 DEBUG: Deleting old checkpoint file: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-9.pt
+2026-06-16 11:12:16.867 DEBUG: Saving checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-10.pt
+2026-06-16 11:12:20.943 INFO: Epoch 11: head: Default, loss=0.09514892, RMSE_E_per_atom=  180.81 meV, RMSE_F=  121.48 meV / A
+2026-06-16 11:12:20.944 DEBUG: Deleting old checkpoint file: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-10.pt
+2026-06-16 11:12:20.944 DEBUG: Saving checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-11.pt
+2026-06-16 11:12:25.021 INFO: Epoch 12: head: Default, loss=0.08706188, RMSE_E_per_atom=  178.24 meV, RMSE_F=  116.11 meV / A
+2026-06-16 11:12:25.022 DEBUG: Deleting old checkpoint file: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-11.pt
+2026-06-16 11:12:25.023 DEBUG: Saving checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-12.pt
+2026-06-16 11:12:29.072 INFO: Epoch 13: head: Default, loss=0.08147503, RMSE_E_per_atom=  172.01 meV, RMSE_F=  112.36 meV / A
+2026-06-16 11:12:29.073 DEBUG: Deleting old checkpoint file: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-12.pt
+2026-06-16 11:12:29.074 DEBUG: Saving checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-13.pt
+2026-06-16 11:12:33.152 INFO: Epoch 14: head: Default, loss=0.07651196, RMSE_E_per_atom=  164.18 meV, RMSE_F=  108.96 meV / A
+2026-06-16 11:12:33.153 DEBUG: Deleting old checkpoint file: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-13.pt
+2026-06-16 11:12:33.153 DEBUG: Saving checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-14.pt
+2026-06-16 11:12:37.231 INFO: Epoch 15: head: Default, loss=0.07228548, RMSE_E_per_atom=  159.70 meV, RMSE_F=  105.86 meV / A
+2026-06-16 11:12:37.232 DEBUG: Deleting old checkpoint file: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-14.pt
+2026-06-16 11:12:37.232 DEBUG: Saving checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-15.pt
+2026-06-16 11:12:41.311 INFO: Epoch 16: head: Default, loss=0.06833278, RMSE_E_per_atom=  155.28 meV, RMSE_F=  102.94 meV / A
+2026-06-16 11:12:41.312 DEBUG: Deleting old checkpoint file: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-15.pt
+2026-06-16 11:12:41.313 DEBUG: Saving checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-16.pt
+2026-06-16 11:12:45.600 INFO: Epoch 17: head: Default, loss=0.06361740, RMSE_E_per_atom=  149.13 meV, RMSE_F=   99.29 meV / A
+2026-06-16 11:12:45.600 DEBUG: Deleting old checkpoint file: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-16.pt
+2026-06-16 11:12:45.601 DEBUG: Saving checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-17.pt
+2026-06-16 11:12:49.704 INFO: Epoch 18: head: Default, loss=0.06160860, RMSE_E_per_atom=  147.50 meV, RMSE_F=   97.69 meV / A
+2026-06-16 11:12:49.705 DEBUG: Deleting old checkpoint file: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-17.pt
+2026-06-16 11:12:49.705 DEBUG: Saving checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-18.pt
+2026-06-16 11:12:53.781 INFO: Epoch 19: head: Default, loss=0.05764014, RMSE_E_per_atom=  137.34 meV, RMSE_F=   94.61 meV / A
+2026-06-16 11:12:53.782 DEBUG: Deleting old checkpoint file: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-18.pt
+2026-06-16 11:12:53.783 DEBUG: Saving checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-19.pt
+2026-06-16 11:12:58.877 INFO: Epoch 20: head: Default, loss=0.05573299, RMSE_E_per_atom=  131.34 meV, RMSE_F=   93.07 meV / A
+2026-06-16 11:12:58.878 DEBUG: Deleting old checkpoint file: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-19.pt
+2026-06-16 11:12:58.878 DEBUG: Saving checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-20.pt
+2026-06-16 11:13:02.978 INFO: Epoch 21: head: Default, loss=0.05964564, RMSE_E_per_atom=  126.76 meV, RMSE_F=   96.40 meV / A
+2026-06-16 11:13:07.074 INFO: Epoch 22: head: Default, loss=0.05100287, RMSE_E_per_atom=  123.49 meV, RMSE_F=   89.06 meV / A
+2026-06-16 11:13:07.075 DEBUG: Deleting old checkpoint file: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-20.pt
+2026-06-16 11:13:07.075 DEBUG: Saving checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-22.pt
+2026-06-16 11:13:11.172 INFO: Epoch 23: head: Default, loss=0.05075422, RMSE_E_per_atom=  124.17 meV, RMSE_F=   88.87 meV / A
+2026-06-16 11:13:11.173 DEBUG: Deleting old checkpoint file: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-22.pt
+2026-06-16 11:13:11.174 DEBUG: Saving checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-23.pt
+2026-06-16 11:13:15.239 INFO: Epoch 24: head: Default, loss=0.04904206, RMSE_E_per_atom=  116.08 meV, RMSE_F=   87.37 meV / A
+2026-06-16 11:13:15.240 DEBUG: Deleting old checkpoint file: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-23.pt
+2026-06-16 11:13:15.240 DEBUG: Saving checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-24.pt
+2026-06-16 11:13:19.338 INFO: Epoch 25: head: Default, loss=0.04798687, RMSE_E_per_atom=  110.94 meV, RMSE_F=   86.49 meV / A
+2026-06-16 11:13:19.339 DEBUG: Deleting old checkpoint file: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-24.pt
+2026-06-16 11:13:19.340 DEBUG: Saving checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-25.pt
+2026-06-16 11:13:23.419 INFO: Epoch 26: head: Default, loss=0.04820764, RMSE_E_per_atom=  111.35 meV, RMSE_F=   86.73 meV / A
+2026-06-16 11:13:27.504 INFO: Epoch 27: head: Default, loss=0.04454468, RMSE_E_per_atom=  104.83 meV, RMSE_F=   83.35 meV / A
+2026-06-16 11:13:27.505 DEBUG: Deleting old checkpoint file: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-25.pt
+2026-06-16 11:13:27.505 DEBUG: Saving checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-27.pt
+2026-06-16 11:13:31.593 INFO: Epoch 28: head: Default, loss=0.04138732, RMSE_E_per_atom=  102.68 meV, RMSE_F=   80.34 meV / A
+2026-06-16 11:13:31.594 DEBUG: Deleting old checkpoint file: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-27.pt
+2026-06-16 11:13:31.595 DEBUG: Saving checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-28.pt
+2026-06-16 11:13:35.623 INFO: Epoch 29: head: Default, loss=0.04058626, RMSE_E_per_atom=   99.72 meV, RMSE_F=   79.60 meV / A
+2026-06-16 11:13:35.624 DEBUG: Deleting old checkpoint file: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-28.pt
+2026-06-16 11:13:35.625 DEBUG: Saving checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-29.pt
+2026-06-16 11:13:39.721 INFO: Epoch 30: head: Default, loss=0.04083464, RMSE_E_per_atom=   96.68 meV, RMSE_F=   79.83 meV / A
+2026-06-16 11:13:43.857 INFO: Epoch 31: head: Default, loss=0.03936226, RMSE_E_per_atom=   92.73 meV, RMSE_F=   78.45 meV / A
+2026-06-16 11:13:43.858 DEBUG: Deleting old checkpoint file: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-29.pt
+2026-06-16 11:13:43.858 DEBUG: Saving checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-31.pt
+2026-06-16 11:13:43.868 INFO: Training complete
+2026-06-16 11:13:43.868 INFO: 
+2026-06-16 11:13:43.868 INFO: ===========RESULTS===========
+2026-06-16 11:13:43.868 INFO: Loading checkpoint: /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616_epoch-31.pt
+2026-06-16 11:13:43.885 INFO: Loaded Stage one model from epoch 31 for evaluation
+2026-06-16 11:13:43.886 INFO: Saving model to /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_inv64_20260616/checkpoints/revised_ethanol_mace_cueq_seed20260616_steps2000_run-20260616.model

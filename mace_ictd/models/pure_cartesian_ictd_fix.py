@@ -89,12 +89,50 @@ def _init_linear_identity_(module: nn.Module | None) -> None:
             module.bias.zero_()
 
 
+def _add_product_self_connection(
+    out: torch.Tensor,
+    sc: torch.Tensor,
+    *,
+    channels: int,
+    target_lmax: int,
+    input_lmax: int,
+) -> torch.Tensor:
+    """Add a MACE-style skip path to an SO(3) flattened product output.
+
+    MACE's first residual interaction can produce an l=0-only self connection from
+    scalar element embeddings, while the product output may still contain higher-l
+    blocks. In that case the skip is added only to the output l=0 block.
+    """
+    if sc.shape[-1] == out.shape[-1]:
+        return out + sc
+    if sc.shape[-1] == channels:
+        if target_lmax == 0:
+            return out + sc
+        out_blocks = _split_irreps(out, channels, target_lmax)
+        out_blocks[0] = out_blocks[0] + sc.reshape(*sc.shape[:-1], channels, 1)
+        return _merge_irreps(out_blocks, channels, target_lmax)
+    if target_lmax == 0:
+        return out + _split_irreps(sc, channels, input_lmax)[0].squeeze(-1)
+    raise ValueError(f"Cannot add sc shape {tuple(sc.shape)} to product output {tuple(out.shape)}")
+
+
 def _init_so3_linear_identity_(module: nn.Module | None) -> None:
     adapters = getattr(module, "adapters", None)
     if adapters is None:
         return
     for adapter in adapters.values():
         _init_linear_identity_(adapter)
+
+
+def _init_so3_linear_mace_style_(module: nn.Module | None) -> None:
+    adapters = getattr(module, "adapters", None)
+    if adapters is None:
+        return
+    for adapter in adapters.values():
+        with torch.no_grad():
+            nn.init.normal_(adapter.weight, mean=0.0, std=1.0 / math.sqrt(float(adapter.in_features)))
+            if adapter.bias is not None:
+                adapter.bias.zero_()
 
 
 def _init_element_conditioned_identity_(module: nn.Module | None) -> None:
@@ -114,8 +152,141 @@ def _init_element_conditioned_identity_(module: nn.Module | None) -> None:
                 value.zero_()
 
 
+def _init_element_conditioned_mace_style_(module: nn.Module | None) -> None:
+    weights = getattr(module, "weights", None)
+    if weights is None:
+        return
+    with torch.no_grad():
+        for weight in weights.values():
+            fan_in = float(weight.shape[-1])
+            nn.init.normal_(weight, mean=0.0, std=1.0 / math.sqrt(max(fan_in, 1.0)))
+        bias = getattr(module, "bias", None)
+        if bias is not None:
+            for value in bias.values():
+                value.zero_()
+
+
 def _hidden_irreps(channels: int, lmax: int) -> o3.Irreps:
     return o3.Irreps(" + ".join(f"{int(channels)}x{l}{'e' if l % 2 == 0 else 'o'}" for l in range(int(lmax) + 1)))
+
+
+def _mace_like_conv_tp_path_scales(
+    tp: EdgeWeightedPathPreservingTensorProduct,
+    *,
+    channels: int,
+    input_lmax: int,
+    edge_lmax: int,
+    n_probe: int = 6,
+    seed: int = 12345,
+) -> list[float]:
+    """Recover per-path scalars mapping ICTD conv-TP paths to e3nn/MACE paths.
+
+    MACE's convolution tensor product keeps every `(l_node, l_edge) -> l_out`
+    path as a separate multiplicity block and applies e3nn's internal path
+    normalization. ICTD's irreducible Cartesian CG tensors are equivalent but not
+    necessarily in the same scalar convention. The converter calibrates the same
+    constants from an actual MACE block; this helper builds the matching e3nn
+    TensorProduct directly so from-scratch ICTD training can start in the same
+    effective path scale.
+    """
+    from mace_ictd.mace_basis import orthogonal_Q_blocks
+
+    param_dtype = tp.weight.dtype
+    calib_dtype = torch.float64
+    device = tp.weight.device
+    C = int(channels)
+    paths = [tuple(int(v) for v in p) for p in tp.paths]
+    edge_lmax = int(edge_lmax)
+    input_lmax = int(input_lmax)
+
+    irreps_in1 = _hidden_irreps(C, input_lmax)
+    irreps_in2 = o3.Irreps.spherical_harmonics(edge_lmax)
+    irreps_out = o3.Irreps(
+        [
+            (
+                C,
+                o3.Irrep(int(l3), 1 if int(l3) % 2 == 0 else -1),
+            )
+            for _l1, _l2, l3 in paths
+        ]
+    )
+    instructions = []
+    for out_idx, (l1, l2, _l3) in enumerate(paths):
+        if l1 > input_lmax:
+            continue
+        instructions.append((int(l1), int(l2), int(out_idx), "uvu", True))
+    ref_tp = o3.TensorProduct(
+        irreps_in1,
+        irreps_in2,
+        irreps_out,
+        instructions,
+        irrep_normalization="component",
+        path_normalization="element",
+        internal_weights=False,
+        shared_weights=False,
+    ).to(device=device, dtype=calib_dtype)
+
+    g = torch.Generator(device="cpu").manual_seed(int(seed))
+    N = int(n_probe)
+    q_blocks = orthogonal_Q_blocks(edge_lmax, dtype=calib_dtype, device=device)
+    h_ictd = {
+        l: torch.randn(N, C, 2 * l + 1, generator=g, dtype=calib_dtype).to(device)
+        for l in range(input_lmax + 1)
+    }
+    h_e3nn = torch.cat(
+        [
+            torch.einsum("ncm,mp->ncp", h_ictd[l], q_blocks[l]).reshape(N, C * (2 * l + 1))
+            for l in range(input_lmax + 1)
+        ],
+        dim=-1,
+    )
+    ndir = torch.randn(N, 3, generator=g, dtype=calib_dtype).to(device)
+    ndir = ndir / ndir.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+    y_ictd = direction_harmonics_all(ndir, edge_lmax)
+    y_e3nn = torch.cat([y_ictd[l] @ q_blocks[l] for l in range(edge_lmax + 1)], dim=-1)
+
+    weights = torch.randn(N, len(paths), C, generator=g, dtype=calib_dtype).to(device)
+    ref_weights = weights.reshape(N, len(paths) * C)
+    old_weight = tp.weight.detach().clone()
+    old_compute_dtype = tp.internal_compute_dtype
+    with torch.no_grad():
+        try:
+            tp.internal_compute_dtype = calib_dtype
+            tp.weight.fill_(1.0)
+            ref_out = ref_tp(h_e3nn, y_e3nn, ref_weights)
+            edge_attrs = {l: y_ictd[l].unsqueeze(-2) for l in range(edge_lmax + 1)}
+            ictd_out = tp(h_ictd, edge_attrs, ref_weights)
+        finally:
+            tp.weight.copy_(old_weight.to(dtype=param_dtype, device=device))
+            tp.internal_compute_dtype = old_compute_dtype
+            tp._cg_cache_by_dev_dtype.clear()
+            tp._proj_group_cache_by_dev_dtype.clear()
+            tp._proj_group_view_cache_by_dev_dtype.clear()
+
+    scales = [1.0 for _ in paths]
+    idx = 0
+    max_resid = 0.0
+    for path_idx, (_l1, _l2, l3) in enumerate(paths):
+        d = C * (2 * int(l3) + 1)
+        if int(_l1) > input_lmax:
+            idx += d
+            continue
+        ref_block = ref_out[:, idx : idx + d].reshape(N, C, 2 * int(l3) + 1)
+        off = int(tp.path_offset[path_idx])
+        ictd_block = ictd_out[int(l3)][:, off * C : (off + 1) * C, :]
+        ictd_block = torch.einsum("ncm,mp->ncp", ictd_block, q_blocks[int(l3)])
+        num = (ref_block * ictd_block).sum()
+        den = (ictd_block * ictd_block).sum().clamp_min(1e-30)
+        scale = float((num / den).item())
+        scales[path_idx] = scale
+        max_resid = max(max_resid, float((ref_block - scale * ictd_block).abs().max().item()))
+        idx += d
+    if max_resid > 1e-6:
+        raise RuntimeError(
+            f"e3nn conv-TP path calibration residual too large ({max_resid:.2e}); "
+            "ICTD and e3nn path conventions do not match."
+        )
+    return scales
 
 
 def _so3_flat_to_mace_features(x: torch.Tensor, channels: int, lmax: int) -> torch.Tensor:
@@ -272,6 +443,20 @@ class PerLScaleSO3(nn.Module):
         for l in range(self.lmax + 1):
             out_blocks[l] = blocks[l] * scales[l]
         return _merge_irreps(out_blocks, self.channels, self.lmax)
+
+
+class _Normalize2MomSiLU(nn.Module):
+    _scale = 1.6791767923989418
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return F.silu(x) * self._scale
+
+
+def _init_mace_style_linear_(linear: nn.Linear) -> None:
+    with torch.no_grad():
+        nn.init.normal_(linear.weight, mean=0.0, std=1.0 / math.sqrt(float(linear.in_features)))
+        if linear.bias is not None:
+            linear.bias.zero_()
 
 
 class PathPreservingLinearSO3(nn.Module):
@@ -772,16 +957,15 @@ class NativeMACEProductBasisBlockSO3(nn.Module):
         x = self.basis_bridge.ictd_flat_to_e3nn_features(node_feats, self.lmax)
         out = self.linear(self.symmetric_contractions(x, node_attrs))
         if sc is not None:
-            sc = self.basis_bridge.ictd_flat_to_e3nn_flat(sc, self.target_lmax)
-            if sc.shape[-1] == out.shape[-1]:
-                out = out + sc
-            elif self.target_lmax == 0:
-                if sc.shape[-1] == self.channels:
-                    out = out + sc
-                else:
-                    out = out + _split_irreps(sc, self.channels, self.lmax)[0].squeeze(-1)
-            else:
-                raise ValueError(f"Cannot add sc shape {tuple(sc.shape)} to native product output {tuple(out.shape)}")
+            if sc.shape[-1] != self.channels:
+                sc = self.basis_bridge.ictd_flat_to_e3nn_flat(sc, self.target_lmax)
+            out = _add_product_self_connection(
+                out,
+                sc,
+                channels=self.channels,
+                target_lmax=self.target_lmax,
+                input_lmax=self.lmax,
+            )
         if self.target_lmax > 0:
             out = self.basis_bridge.e3nn_flat_to_ictd_flat(out, self.target_lmax)
         return out
@@ -1086,17 +1270,15 @@ class CueqMACEProductBasisBlockSO3(nn.Module):
             x = self.basis_bridge.ictd_flat_to_e3nn_features(node_feats, self.lmax)
         out = self.linear(self.symmetric_contractions(x, node_attrs, node_type_idx=node_type_idx))
         if sc is not None:
-            if not self._e3nn_basis:
+            if (not self._e3nn_basis) and sc.shape[-1] != self.channels:
                 sc = self.basis_bridge.ictd_flat_to_e3nn_flat(sc, self.target_lmax)
-            if sc.shape[-1] == out.shape[-1]:
-                out = out + sc
-            elif self.target_lmax == 0:
-                if sc.shape[-1] == self.channels:
-                    out = out + sc
-                else:
-                    out = out + _split_irreps(sc, self.channels, self.lmax)[0].squeeze(-1)
-            else:
-                raise ValueError(f"Cannot add sc shape {tuple(sc.shape)} to cueq product output {tuple(out.shape)}")
+            out = _add_product_self_connection(
+                out,
+                sc,
+                channels=self.channels,
+                target_lmax=self.target_lmax,
+                input_lmax=self.lmax,
+            )
         if self.target_lmax > 0 and not self._e3nn_basis:
             out = self.basis_bridge.e3nn_flat_to_ictd_flat(out, self.target_lmax)
         return out
@@ -1216,15 +1398,13 @@ class ICTDBridgeUProductBasisBlockSO3(nn.Module):
     def forward(self, node_feats: torch.Tensor, sc: torch.Tensor | None, node_attrs: torch.Tensor) -> torch.Tensor:
         out = self.linear(self.symmetric_contractions(node_feats, node_attrs))
         if sc is not None:
-            if sc.shape[-1] == out.shape[-1]:
-                out = out + sc
-            elif self.target_lmax == 0:
-                if sc.shape[-1] == self.channels:
-                    out = out + sc
-                else:
-                    out = out + _split_irreps(sc, self.channels, self.lmax)[0].squeeze(-1)
-            else:
-                raise ValueError(f"Cannot add sc shape {tuple(sc.shape)} to bridge-U output {tuple(out.shape)}")
+            out = _add_product_self_connection(
+                out,
+                sc,
+                channels=self.channels,
+                target_lmax=self.target_lmax,
+                input_lmax=self.lmax,
+            )
         return out
 
 
@@ -1444,31 +1624,29 @@ class ICTDPureUProductBasisBlockSO3(nn.Module):
     def forward(self, node_feats: torch.Tensor, sc: torch.Tensor | None, node_attrs: torch.Tensor) -> torch.Tensor:
         out = self.linear(self.symmetric_contractions(node_feats, node_attrs))
         if sc is not None:
-            if sc.shape[-1] == out.shape[-1]:
-                out = out + sc
-            elif self.target_lmax == 0:
-                if sc.shape[-1] == self.channels:
-                    out = out + sc
-                else:
-                    out = out + _split_irreps(sc, self.channels, self.lmax)[0].squeeze(-1)
-            else:
-                raise ValueError(f"Cannot add sc shape {tuple(sc.shape)} to ICTD pure-U output {tuple(out.shape)}")
+            out = _add_product_self_connection(
+                out,
+                sc,
+                channels=self.channels,
+                target_lmax=self.target_lmax,
+                input_lmax=self.lmax,
+            )
         return out
 
 
 class MACEStyleScalarReadoutSO3(nn.Module):
-    """Native MACE final readout shape for this config: Cx0e -> 16x0e -> 1x0e."""
+    """Native MACE final readout shape: Cx0e -> MLP_irreps scalar width -> 1x0e."""
 
     def __init__(self, channels: int, hidden_channels: int = 16, output_init_std: float = 0.003):
         """output_init_std: small value (0.003) so initial energy ≈ 0 (MLIP standard practice)."""
         super().__init__()
         self.channels = int(channels)
         self.hidden_channels = int(hidden_channels)
-        self.linear_1 = nn.Linear(self.channels, self.hidden_channels, bias=True)
-        self.activation = nn.SiLU()
-        self.linear_2 = nn.Linear(self.hidden_channels, 1, bias=True)
-        nn.init.normal_(self.linear_2.weight, mean=0.0, std=float(output_init_std))
-        nn.init.zeros_(self.linear_2.bias)
+        self.linear_1 = nn.Linear(self.channels, self.hidden_channels, bias=False)
+        self.activation = _Normalize2MomSiLU()
+        self.linear_2 = nn.Linear(self.hidden_channels, 1, bias=False)
+        _init_mace_style_linear_(self.linear_1)
+        _init_mace_style_linear_(self.linear_2)
 
     def forward(self, scalar_feats: torch.Tensor) -> torch.Tensor:
         return self.linear_2(self.activation(self.linear_1(scalar_feats)))
@@ -1504,6 +1682,9 @@ class ICTDResidualInteractionBlock(nn.Module):
         avg_num_neighbors: float | None = None,
         message_scale_init: list[float] | tuple[float, ...] | None = None,
         sc_scale_init: list[float] | tuple[float, ...] | None = None,
+        conv_tp_scale_init: str = "none",
+        freeze_conv_tp_weight: bool = False,
+        interaction_init: str = "identity",
         use_rms_norm: bool = False,
         interaction_attn_heads: int = 0,
     ):
@@ -1519,6 +1700,13 @@ class ICTDResidualInteractionBlock(nn.Module):
         self.equivariant_post_linear = bool(equivariant_post_linear)
         self.use_self_connection = bool(use_self_connection)
         self.avg_num_neighbors = None if avg_num_neighbors is None else float(avg_num_neighbors)
+        self.conv_tp_scale_init = str(conv_tp_scale_init)
+        if self.conv_tp_scale_init not in {"none", "e3nn"}:
+            raise ValueError(f"conv_tp_scale_init must be 'none' or 'e3nn', got {conv_tp_scale_init!r}")
+        self.freeze_conv_tp_weight = bool(freeze_conv_tp_weight)
+        self.interaction_init = str(interaction_init)
+        if self.interaction_init not in {"identity", "mace-random"}:
+            raise ValueError(f"interaction_init must be 'identity' or 'mace-random', got {interaction_init!r}")
         allowed_paths = _tp_allowed_paths_from_target_lmax(
             lmax_in1=self.input_lmax,
             lmax_in2=self.lmax,
@@ -1534,15 +1722,29 @@ class ICTDResidualInteractionBlock(nn.Module):
             internal_compute_dtype=internal_compute_dtype,
         )
         _init_path_tp_weight_to_one_(self.tp)
+        if self.conv_tp_scale_init == "e3nn":
+            scales = _mace_like_conv_tp_path_scales(
+                self.tp,
+                channels=self.channels,
+                input_lmax=self.input_lmax,
+                edge_lmax=self.lmax,
+            )
+            with torch.no_grad():
+                for path_idx, scale in enumerate(scales):
+                    self.tp.weight[path_idx].fill_(float(scale))
+        if self.freeze_conv_tp_weight:
+            self.tp.weight.requires_grad_(False)
         self.fc = nn.Sequential(
-            nn.Linear(self.number_of_basis, 64),
-            nn.SiLU(),
-            nn.Linear(64, 64),
-            nn.SiLU(),
-            nn.Linear(64, 64),
-            nn.SiLU(),
-            nn.Linear(64, self.tp.num_paths * self.channels),
+            nn.Linear(self.number_of_basis, 64, bias=False),
+            _Normalize2MomSiLU(),
+            nn.Linear(64, 64, bias=False),
+            _Normalize2MomSiLU(),
+            nn.Linear(64, 64, bias=False),
+            _Normalize2MomSiLU(),
+            nn.Linear(64, self.tp.num_paths * self.channels, bias=False),
         )
+        for idx in (0, 2, 4, 6):
+            _init_mace_style_linear_(self.fc[idx])
         self.message_linear = PathPreservingLinearSO3(
             {
                 l: self.channels * int(self.tp.path_counts_by_l.get(l, 0))
@@ -1551,7 +1753,10 @@ class ICTDResidualInteractionBlock(nn.Module):
             out_channels=self.channels,
             lmax=self.target_lmax,
         )
-        _init_so3_linear_identity_(self.linear_up)
+        if self.interaction_init == "mace-random":
+            _init_so3_linear_mace_style_(self.linear_up)
+        else:
+            _init_so3_linear_identity_(self.linear_up)
         self.message_selector = (
             ElementConditionedLinearSO3(
                 num_elements=num_elements,
@@ -1562,7 +1767,10 @@ class ICTDResidualInteractionBlock(nn.Module):
             if not self.use_self_connection
             else None
         )
-        _init_element_conditioned_identity_(self.message_selector)
+        if self.interaction_init == "mace-random":
+            _init_element_conditioned_mace_style_(self.message_selector)
+        else:
+            _init_element_conditioned_identity_(self.message_selector)
         self.self_connection = (
             ElementConditionedLinearSO3(
                 num_elements=num_elements,
@@ -1573,7 +1781,10 @@ class ICTDResidualInteractionBlock(nn.Module):
             if self.use_self_connection
             else None
         )
-        _init_element_conditioned_identity_(self.self_connection)
+        if self.interaction_init == "mace-random":
+            _init_element_conditioned_mace_style_(self.self_connection)
+        else:
+            _init_element_conditioned_identity_(self.self_connection)
         self.message_norm = (
             SO3BlockRMSNorm(self.channels, self.target_lmax) if self.use_rms_norm else nn.Identity()
         )
@@ -1942,6 +2153,10 @@ class PureCartesianICTDFix(nn.Module):
         ictd_fix_contraction_combine: str = "softmax",
         ictd_fix_product_backend: str = "ictd-bridge-u",
         ictd_fix_use_reduced_cg: bool = False,
+        ictd_fix_first_layer_self_connection: bool = False,
+        ictd_fix_conv_tp_scale_init: str = "none",
+        ictd_fix_freeze_conv_tp_weight: bool = False,
+        ictd_fix_interaction_init: str = "identity",
         ictd_fix_edge_lmax: int | None = None,
         angular_basis: str = "ictd",
         ictd_fix_interaction_scale: str = "none",
@@ -1966,6 +2181,7 @@ class PureCartesianICTDFix(nn.Module):
         ictd_fix_gmix_readout_scale_init: float | None = None,
         ictd_fix_gmix_readout_output_init_std: float = 0.003,
         ictd_fix_gmix_output_lmax: int | None = None,
+        ictd_fix_readout_hidden_channels: int = 16,
         ictd_fix_layer_readout_output_init_std: float = 0.003,
         polynomial_cutoff_p: int | None = 6,
         save_contraction_order: int = 3,
@@ -2014,6 +2230,16 @@ class PureCartesianICTDFix(nn.Module):
             raise ValueError(
                 f"ictd_fix_interaction_scale must be 'none' or 'mace-rms', got {ictd_fix_interaction_scale!r}"
             )
+        if ictd_fix_conv_tp_scale_init not in {"none", "e3nn"}:
+            raise ValueError(
+                "ictd_fix_conv_tp_scale_init must be 'none' or 'e3nn', "
+                f"got {ictd_fix_conv_tp_scale_init!r}"
+            )
+        if ictd_fix_interaction_init not in {"identity", "mace-random"}:
+            raise ValueError(
+                "ictd_fix_interaction_init must be 'identity' or 'mace-random', "
+                f"got {ictd_fix_interaction_init!r}"
+            )
         if ictd_fix_fusion_head_weight_mode not in {"softmax", "free"}:
             raise ValueError(
                 "ictd_fix_fusion_head_weight_mode must be 'softmax' or 'free', "
@@ -2045,6 +2271,10 @@ class PureCartesianICTDFix(nn.Module):
             else requested_product_backend
         )
         self.ictd_fix_use_reduced_cg = bool(ictd_fix_use_reduced_cg)
+        self.ictd_fix_first_layer_self_connection = bool(ictd_fix_first_layer_self_connection)
+        self.ictd_fix_conv_tp_scale_init = str(ictd_fix_conv_tp_scale_init)
+        self.ictd_fix_freeze_conv_tp_weight = bool(ictd_fix_freeze_conv_tp_weight)
+        self.ictd_fix_interaction_init = str(ictd_fix_interaction_init)
         self.ictd_fix_product_backend_fallback = self.ictd_fix_product_backend != self.ictd_fix_requested_product_backend
         if self.ictd_fix_edge_lmax != self.lmax and self.ictd_fix_product_backend not in {"native-mace", "ictd-bridge-u", "cueq"}:
             raise NotImplementedError(
@@ -2074,6 +2304,12 @@ class PureCartesianICTDFix(nn.Module):
         self.ictd_fix_gmix_energy_readout = bool(ictd_fix_gmix_energy_readout)
         self.ictd_fix_gmix_readout_output_init_std = float(ictd_fix_gmix_readout_output_init_std)
         self.ictd_fix_layer_readout_output_init_std = float(ictd_fix_layer_readout_output_init_std)
+        self.ictd_fix_readout_hidden_channels = int(ictd_fix_readout_hidden_channels)
+        if self.ictd_fix_readout_hidden_channels <= 0:
+            raise ValueError(
+                "ictd_fix_readout_hidden_channels must be positive, "
+                f"got {self.ictd_fix_readout_hidden_channels}"
+            )
         self.ictd_fix_gmix_readout_scale_init = (
             float(self.ictd_fix_readout_head_scale_init)
             if ictd_fix_gmix_readout_scale_init is None
@@ -2129,7 +2365,8 @@ class PureCartesianICTDFix(nn.Module):
             effective_product_backend = self.ictd_fix_product_backend
             self.ictd_fix_effective_product_backends.append(effective_product_backend)
             input_lmax = 0 if layer_idx == 0 else self.lmax
-            sc_lmax = target_lmax  # (fusion last-layer sc_lmax==lmax removed; baseline)
+            first_layer_sc = self.ictd_fix_first_layer_self_connection and layer_idx == 0
+            sc_lmax = 0 if first_layer_sc else target_lmax
             message_scale_init = None
             sc_scale_init = None
             if self.ictd_fix_interaction_scale == "mace-rms":
@@ -2164,10 +2401,13 @@ class PureCartesianICTDFix(nn.Module):
                     internal_compute_dtype=internal_compute_dtype,
                     ictd_tp_backend=ictd_tp_backend,
                     equivariant_post_linear=equivariant_post_linear,
-                    use_self_connection=(layer_idx > 0),
+                    use_self_connection=(layer_idx > 0) or first_layer_sc,
                     avg_num_neighbors=self.avg_num_neighbors,
                     message_scale_init=message_scale_init,
                     sc_scale_init=sc_scale_init,
+                    conv_tp_scale_init=self.ictd_fix_conv_tp_scale_init,
+                    freeze_conv_tp_weight=self.ictd_fix_freeze_conv_tp_weight,
+                    interaction_init=self.ictd_fix_interaction_init,
                     use_rms_norm=self.ictd_fix_interaction_rms_norm,
                     interaction_attn_heads=self.ictd_fix_interaction_attn_heads,
                 )
@@ -2248,7 +2488,7 @@ class PureCartesianICTDFix(nn.Module):
         )
         self.last_layer_energy_readout = MACEStyleScalarReadoutSO3(
             self.channels,
-            hidden_channels=16,
+            hidden_channels=self.ictd_fix_readout_hidden_channels,
             output_init_std=self.ictd_fix_layer_readout_output_init_std,
         )
         if self.ictd_fix_readout_head_scale_trainable:

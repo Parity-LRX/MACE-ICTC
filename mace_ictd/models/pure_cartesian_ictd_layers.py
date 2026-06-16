@@ -118,9 +118,8 @@ class EquivariantScalarReadoutSO3(nn.Module):
         super().__init__()
         self.channels = int(channels)
         self.lmax = int(lmax)
-        self.readout = nn.Linear(self.channels, 1, bias=True)
-        nn.init.normal_(self.readout.weight, mean=0.0, std=float(output_init_std))
-        nn.init.zeros_(self.readout.bias)
+        self.readout = nn.Linear(self.channels, 1, bias=False)
+        nn.init.normal_(self.readout.weight, mean=0.0, std=1.0 / (float(self.channels) ** 0.5))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         blocks = _split_irreps(x, self.channels, self.lmax)

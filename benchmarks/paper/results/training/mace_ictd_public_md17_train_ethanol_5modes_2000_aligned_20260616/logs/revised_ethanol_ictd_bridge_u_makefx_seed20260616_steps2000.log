@@ -1,0 +1,317 @@
+2026-06-16 11:28:55,817 INFO seed = 20260616
+2026-06-16 11:28:55,982 INFO avg_num_neighbors = 8.0000
+2026-06-16 11:28:56,301 INFO ScaleShiftMACE-style interaction scaling: mode=std_scaling scale=0.0211624 shift=-467.735
+2026-06-16 11:28:57,202 INFO model: PureCartesianICTDFix route=baseline channels=64 lmax=1 num_interaction=2 params=195810
+2026-06-16 11:28:57,202 INFO bucketing ON: 1 buckets, bounds=[9]
+2026-06-16 11:28:57,370 INFO makefx_compile: tracing+compiling force compute (training=True, shape_key=(144, 144, 144, 1152, 1152, 1152, 16), slot 1/8)
+2026-06-16 11:29:12,166 INFO epoch 0 step 1 batch 0/62 phase=stage1 loss=130.2170 E=0.0003 F=1.3022 Frmse=1.0682 lr=1.00e-03
+2026-06-16 11:29:12,297 INFO epoch 0 step 11 batch 10/62 phase=stage1 loss=173.5104 E=0.0007 F=1.7351 Frmse=1.1477 lr=1.00e-03
+2026-06-16 11:29:12,423 INFO epoch 0 step 21 batch 20/62 phase=stage1 loss=161.3822 E=0.0004 F=1.6138 Frmse=1.1271 lr=1.00e-03
+2026-06-16 11:29:12,549 INFO epoch 0 step 31 batch 30/62 phase=stage1 loss=145.1218 E=0.0004 F=1.4512 Frmse=1.0976 lr=1.00e-03
+2026-06-16 11:29:12,675 INFO epoch 0 step 41 batch 40/62 phase=stage1 loss=134.5055 E=0.0005 F=1.3450 Frmse=1.0769 lr=1.00e-03
+2026-06-16 11:29:12,801 INFO epoch 0 step 51 batch 50/62 phase=stage1 loss=119.8805 E=0.0005 F=1.1988 Frmse=1.0464 lr=1.00e-03
+2026-06-16 11:29:12,926 INFO epoch 0 step 61 batch 60/62 phase=stage1 loss=99.9061 E=0.0016 F=0.9990 Frmse=0.9998 lr=1.00e-03
+2026-06-16 11:29:14,035 INFO [epoch 0 step 62 stage1] train loss=132.8618 E=0.0006 F=1.3286 Frmse=1.0715 (15.8s) | val loss=110.3177 Frmse=1.0236 Ermse=0.1705
+[epoch 0 step 62 stage1] train loss=132.8618 E=0.0006 F=1.3286 Frmse=1.0715 (15.8s) | val loss=110.3177 Frmse=1.0236 Ermse=0.1705
+2026-06-16 11:29:14,050 INFO saved checkpoint -> /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_aligned_20260616/checkpoints/revised_ethanol_ictd_bridge_u_makefx_seed20260616_steps2000.pth (epoch 0 step 62 state=raw)
+2026-06-16 11:29:14,145 INFO epoch 1 step 63 batch 0/62 phase=stage1 loss=139.3756 E=0.0006 F=1.3938 Frmse=1.0865 lr=9.99e-04
+2026-06-16 11:29:14,280 INFO epoch 1 step 73 batch 10/62 phase=stage1 loss=126.4636 E=0.0018 F=1.2646 Frmse=1.0604 lr=9.99e-04
+2026-06-16 11:29:14,406 INFO epoch 1 step 83 batch 20/62 phase=stage1 loss=109.7367 E=0.0010 F=1.0974 Frmse=1.0235 lr=9.99e-04
+2026-06-16 11:29:14,532 INFO epoch 1 step 93 batch 30/62 phase=stage1 loss=86.2255 E=0.0050 F=0.8622 Frmse=0.9636 lr=9.99e-04
+2026-06-16 11:29:14,659 INFO epoch 1 step 103 batch 40/62 phase=stage1 loss=64.7690 E=0.0078 F=0.6476 Frmse=0.8971 lr=9.99e-04
+2026-06-16 11:29:14,785 INFO epoch 1 step 113 batch 50/62 phase=stage1 loss=49.8414 E=0.0052 F=0.4984 Frmse=0.8402 lr=9.99e-04
+2026-06-16 11:29:14,911 INFO epoch 1 step 123 batch 60/62 phase=stage1 loss=29.8849 E=0.0091 F=0.2988 Frmse=0.7393 lr=9.99e-04
+2026-06-16 11:29:16,042 INFO [epoch 1 step 124 stage1] train loss=75.8887 E=0.0047 F=0.7588 Frmse=0.9248 (0.9s) | val loss=44.8963 Frmse=0.8175 Ermse=0.2902
+[epoch 1 step 124 stage1] train loss=75.8887 E=0.0047 F=0.7588 Frmse=0.9248 (0.9s) | val loss=44.8963 Frmse=0.8175 Ermse=0.2902
+2026-06-16 11:29:16,057 INFO saved checkpoint -> /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_aligned_20260616/checkpoints/revised_ethanol_ictd_bridge_u_makefx_seed20260616_steps2000.pth (epoch 1 step 124 state=raw)
+2026-06-16 11:29:16,155 INFO epoch 2 step 125 batch 0/62 phase=stage1 loss=39.7333 E=0.0075 F=0.3973 Frmse=0.7939 lr=9.99e-04
+2026-06-16 11:29:16,289 INFO epoch 2 step 135 batch 10/62 phase=stage1 loss=29.6944 E=0.0409 F=0.2965 Frmse=0.7379 lr=9.99e-04
+2026-06-16 11:29:16,416 INFO epoch 2 step 145 batch 20/62 phase=stage1 loss=24.1780 E=0.0748 F=0.2410 Frmse=0.7007 lr=9.99e-04
+2026-06-16 11:29:16,542 INFO epoch 2 step 155 batch 30/62 phase=stage1 loss=24.7200 E=0.1365 F=0.2458 Frmse=0.7041 lr=9.99e-04
+2026-06-16 11:29:16,668 INFO epoch 2 step 165 batch 40/62 phase=stage1 loss=17.3231 E=0.1650 F=0.1716 Frmse=0.6436 lr=9.99e-04
+2026-06-16 11:29:16,793 INFO epoch 2 step 175 batch 50/62 phase=stage1 loss=17.5327 E=0.1746 F=0.1736 Frmse=0.6455 lr=9.99e-04
+2026-06-16 11:29:16,920 INFO epoch 2 step 185 batch 60/62 phase=stage1 loss=16.4396 E=0.2319 F=0.1621 Frmse=0.6345 lr=9.99e-04
+2026-06-16 11:29:18,054 INFO [epoch 2 step 186 stage1] train loss=25.1931 E=0.1153 F=0.2508 Frmse=0.6988 (0.9s) | val loss=14.6821 Frmse=0.6159 Ermse=0.6703
+[epoch 2 step 186 stage1] train loss=25.1931 E=0.1153 F=0.2508 Frmse=0.6988 (0.9s) | val loss=14.6821 Frmse=0.6159 Ermse=0.6703
+2026-06-16 11:29:18,069 INFO saved checkpoint -> /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_aligned_20260616/checkpoints/revised_ethanol_ictd_bridge_u_makefx_seed20260616_steps2000.pth (epoch 2 step 186 state=raw)
+2026-06-16 11:29:18,166 INFO epoch 3 step 187 batch 0/62 phase=stage1 loss=13.4226 E=0.2018 F=0.1322 Frmse=0.6030 lr=9.98e-04
+2026-06-16 11:29:18,300 INFO epoch 3 step 197 batch 10/62 phase=stage1 loss=14.1510 E=0.1955 F=0.1396 Frmse=0.6112 lr=9.98e-04
+2026-06-16 11:29:18,426 INFO epoch 3 step 207 batch 20/62 phase=stage1 loss=14.0629 E=0.2474 F=0.1382 Frmse=0.6097 lr=9.98e-04
+2026-06-16 11:29:18,553 INFO epoch 3 step 217 batch 30/62 phase=stage1 loss=9.8708 E=0.2184 F=0.0965 Frmse=0.5574 lr=9.98e-04
+2026-06-16 11:29:18,679 INFO epoch 3 step 227 batch 40/62 phase=stage1 loss=9.5658 E=0.2433 F=0.0932 Frmse=0.5526 lr=9.98e-04
+2026-06-16 11:29:18,806 INFO epoch 3 step 237 batch 50/62 phase=stage1 loss=13.8221 E=0.2479 F=0.1357 Frmse=0.6070 lr=9.98e-04
+2026-06-16 11:29:18,932 INFO epoch 3 step 247 batch 60/62 phase=stage1 loss=13.2298 E=0.2397 F=0.1299 Frmse=0.6003 lr=9.98e-04
+2026-06-16 11:29:20,055 INFO [epoch 3 step 248 stage1] train loss=11.6375 E=0.2311 F=0.1141 Frmse=0.5793 (0.9s) | val loss=10.0019 Frmse=0.5586 Ermse=0.6748
+[epoch 3 step 248 stage1] train loss=11.6375 E=0.2311 F=0.1141 Frmse=0.5793 (0.9s) | val loss=10.0019 Frmse=0.5586 Ermse=0.6748
+2026-06-16 11:29:20,070 INFO saved checkpoint -> /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_aligned_20260616/checkpoints/revised_ethanol_ictd_bridge_u_makefx_seed20260616_steps2000.pth (epoch 3 step 248 state=raw)
+2026-06-16 11:29:20,166 INFO epoch 4 step 249 batch 0/62 phase=stage1 loss=8.4658 E=0.2113 F=0.0825 Frmse=0.5360 lr=9.97e-04
+2026-06-16 11:29:20,300 INFO epoch 4 step 259 batch 10/62 phase=stage1 loss=7.8889 E=0.2087 F=0.0768 Frmse=0.5264 lr=9.97e-04
+2026-06-16 11:29:20,426 INFO epoch 4 step 269 batch 20/62 phase=stage1 loss=5.8792 E=0.1822 F=0.0570 Frmse=0.4886 lr=9.97e-04
+2026-06-16 11:29:20,552 INFO epoch 4 step 279 batch 30/62 phase=stage1 loss=6.2257 E=0.1729 F=0.0605 Frmse=0.4960 lr=9.97e-04
+2026-06-16 11:29:20,678 INFO epoch 4 step 289 batch 40/62 phase=stage1 loss=9.9740 E=0.1533 F=0.0982 Frmse=0.5598 lr=9.97e-04
+2026-06-16 11:29:20,804 INFO epoch 4 step 299 batch 50/62 phase=stage1 loss=6.9152 E=0.1529 F=0.0676 Frmse=0.5099 lr=9.97e-04
+2026-06-16 11:29:20,930 INFO epoch 4 step 309 batch 60/62 phase=stage1 loss=6.2562 E=0.1439 F=0.0611 Frmse=0.4972 lr=9.97e-04
+2026-06-16 11:29:22,054 INFO [epoch 4 step 310 stage1] train loss=8.0648 E=0.1740 F=0.0789 Frmse=0.5286 (0.9s) | val loss=7.1373 Frmse=0.5133 Ermse=0.6325
+[epoch 4 step 310 stage1] train loss=8.0648 E=0.1740 F=0.0789 Frmse=0.5286 (0.9s) | val loss=7.1373 Frmse=0.5133 Ermse=0.6325
+2026-06-16 11:29:22,070 INFO saved checkpoint -> /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_aligned_20260616/checkpoints/revised_ethanol_ictd_bridge_u_makefx_seed20260616_steps2000.pth (epoch 4 step 310 state=raw)
+2026-06-16 11:29:22,167 INFO epoch 5 step 311 batch 0/62 phase=stage1 loss=7.2018 E=0.1594 F=0.0704 Frmse=0.5151 lr=9.97e-04
+2026-06-16 11:29:22,301 INFO epoch 5 step 321 batch 10/62 phase=stage1 loss=6.4452 E=0.1812 F=0.0626 Frmse=0.5003 lr=9.97e-04
+2026-06-16 11:29:22,428 INFO epoch 5 step 331 batch 20/62 phase=stage1 loss=5.9181 E=0.1415 F=0.0578 Frmse=0.4903 lr=9.97e-04
+2026-06-16 11:29:22,554 INFO epoch 5 step 341 batch 30/62 phase=stage1 loss=4.8086 E=0.1424 F=0.0467 Frmse=0.4648 lr=9.97e-04
+2026-06-16 11:29:22,681 INFO epoch 5 step 351 batch 40/62 phase=stage1 loss=8.7098 E=0.1073 F=0.0860 Frmse=0.5416 lr=9.97e-04
+2026-06-16 11:29:22,807 INFO epoch 5 step 361 batch 50/62 phase=stage1 loss=6.0293 E=0.1121 F=0.0592 Frmse=0.4932 lr=9.97e-04
+2026-06-16 11:29:22,933 INFO epoch 5 step 371 batch 60/62 phase=stage1 loss=4.5769 E=0.0988 F=0.0448 Frmse=0.4600 lr=9.97e-04
+2026-06-16 11:29:24,058 INFO [epoch 5 step 372 stage1] train loss=5.9371 E=0.1340 F=0.0580 Frmse=0.4892 (0.9s) | val loss=6.8256 Frmse=0.5089 Ermse=0.5441
+[epoch 5 step 372 stage1] train loss=5.9371 E=0.1340 F=0.0580 Frmse=0.4892 (0.9s) | val loss=6.8256 Frmse=0.5089 Ermse=0.5441
+2026-06-16 11:29:24,073 INFO saved checkpoint -> /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_aligned_20260616/checkpoints/revised_ethanol_ictd_bridge_u_makefx_seed20260616_steps2000.pth (epoch 5 step 372 state=raw)
+2026-06-16 11:29:24,169 INFO epoch 6 step 373 batch 0/62 phase=stage1 loss=6.0014 E=0.0897 F=0.0591 Frmse=0.4931 lr=9.96e-04
+2026-06-16 11:29:24,303 INFO epoch 6 step 383 batch 10/62 phase=stage1 loss=4.7384 E=0.0861 F=0.0465 Frmse=0.4644 lr=9.96e-04
+2026-06-16 11:29:24,430 INFO epoch 6 step 393 batch 20/62 phase=stage1 loss=4.8291 E=0.0924 F=0.0474 Frmse=0.4665 lr=9.96e-04
+2026-06-16 11:29:24,556 INFO epoch 6 step 403 batch 30/62 phase=stage1 loss=5.2931 E=0.0935 F=0.0520 Frmse=0.4775 lr=9.96e-04
+2026-06-16 11:29:24,683 INFO epoch 6 step 413 batch 40/62 phase=stage1 loss=3.8264 E=0.0862 F=0.0374 Frmse=0.4398 lr=9.96e-04
+2026-06-16 11:29:24,809 INFO epoch 6 step 423 batch 50/62 phase=stage1 loss=4.6146 E=0.1124 F=0.0450 Frmse=0.4606 lr=9.96e-04
+2026-06-16 11:29:24,936 INFO epoch 6 step 433 batch 60/62 phase=stage1 loss=3.5263 E=0.1011 F=0.0343 Frmse=0.4302 lr=9.96e-04
+2026-06-16 11:29:26,061 INFO [epoch 6 step 434 stage1] train loss=4.7313 E=0.0941 F=0.0464 Frmse=0.4625 (0.9s) | val loss=3.6688 Frmse=0.4337 Ermse=0.5620
+[epoch 6 step 434 stage1] train loss=4.7313 E=0.0941 F=0.0464 Frmse=0.4625 (0.9s) | val loss=3.6688 Frmse=0.4337 Ermse=0.5620
+2026-06-16 11:29:26,077 INFO saved checkpoint -> /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_aligned_20260616/checkpoints/revised_ethanol_ictd_bridge_u_makefx_seed20260616_steps2000.pth (epoch 6 step 434 state=raw)
+2026-06-16 11:29:26,173 INFO epoch 7 step 435 batch 0/62 phase=stage1 loss=4.2226 E=0.1013 F=0.0412 Frmse=0.4506 lr=9.95e-04
+2026-06-16 11:29:26,307 INFO epoch 7 step 445 batch 10/62 phase=stage1 loss=4.6603 E=0.0887 F=0.0457 Frmse=0.4624 lr=9.95e-04
+2026-06-16 11:29:26,434 INFO epoch 7 step 455 batch 20/62 phase=stage1 loss=6.6335 E=0.0866 F=0.0655 Frmse=0.5058 lr=9.95e-04
+2026-06-16 11:29:26,561 INFO epoch 7 step 465 batch 30/62 phase=stage1 loss=4.7672 E=0.0868 F=0.0468 Frmse=0.4651 lr=9.95e-04
+2026-06-16 11:29:26,687 INFO epoch 7 step 475 batch 40/62 phase=stage1 loss=3.1571 E=0.0663 F=0.0309 Frmse=0.4193 lr=9.95e-04
+2026-06-16 11:29:26,814 INFO epoch 7 step 485 batch 50/62 phase=stage1 loss=6.0965 E=0.0617 F=0.0603 Frmse=0.4956 lr=9.95e-04
+2026-06-16 11:29:26,940 INFO epoch 7 step 495 batch 60/62 phase=stage1 loss=2.6161 E=0.0526 F=0.0256 Frmse=0.4001 lr=9.95e-04
+2026-06-16 11:29:28,051 INFO [epoch 7 step 496 stage1] train loss=3.9169 E=0.0725 F=0.0384 Frmse=0.4408 (0.9s) | val loss=3.0653 Frmse=0.4155 Ermse=0.4868
+[epoch 7 step 496 stage1] train loss=3.9169 E=0.0725 F=0.0384 Frmse=0.4408 (0.9s) | val loss=3.0653 Frmse=0.4155 Ermse=0.4868
+2026-06-16 11:29:28,066 INFO saved checkpoint -> /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_aligned_20260616/checkpoints/revised_ethanol_ictd_bridge_u_makefx_seed20260616_steps2000.pth (epoch 7 step 496 state=raw)
+2026-06-16 11:29:28,164 INFO epoch 8 step 497 batch 0/62 phase=stage1 loss=5.6196 E=0.0555 F=0.0556 Frmse=0.4857 lr=9.94e-04
+2026-06-16 11:29:28,298 INFO epoch 8 step 507 batch 10/62 phase=stage1 loss=3.2125 E=0.0516 F=0.0316 Frmse=0.4217 lr=9.94e-04
+2026-06-16 11:29:28,424 INFO epoch 8 step 517 batch 20/62 phase=stage1 loss=3.4208 E=0.0553 F=0.0337 Frmse=0.4283 lr=9.94e-04
+2026-06-16 11:29:28,550 INFO epoch 8 step 527 batch 30/62 phase=stage1 loss=3.9144 E=0.0465 F=0.0387 Frmse=0.4435 lr=9.94e-04
+2026-06-16 11:29:28,676 INFO epoch 8 step 537 batch 40/62 phase=stage1 loss=3.4953 E=0.0480 F=0.0345 Frmse=0.4309 lr=9.94e-04
+2026-06-16 11:29:28,803 INFO epoch 8 step 547 batch 50/62 phase=stage1 loss=2.2294 E=0.0431 F=0.0219 Frmse=0.3845 lr=9.94e-04
+2026-06-16 11:29:28,929 INFO epoch 8 step 557 batch 60/62 phase=stage1 loss=2.7732 E=0.0578 F=0.0272 Frmse=0.4059 lr=9.94e-04
+2026-06-16 11:29:30,056 INFO [epoch 8 step 558 stage1] train loss=3.2124 E=0.0514 F=0.0316 Frmse=0.4199 (0.9s) | val loss=2.4798 Frmse=0.3939 Ermse=0.4812
+[epoch 8 step 558 stage1] train loss=3.2124 E=0.0514 F=0.0316 Frmse=0.4199 (0.9s) | val loss=2.4798 Frmse=0.3939 Ermse=0.4812
+2026-06-16 11:29:30,072 INFO saved checkpoint -> /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_aligned_20260616/checkpoints/revised_ethanol_ictd_bridge_u_makefx_seed20260616_steps2000.pth (epoch 8 step 558 state=raw)
+2026-06-16 11:29:30,170 INFO epoch 9 step 559 batch 0/62 phase=stage1 loss=1.9743 E=0.0556 F=0.0192 Frmse=0.3722 lr=9.94e-04
+2026-06-16 11:29:30,303 INFO epoch 9 step 569 batch 10/62 phase=stage1 loss=2.4318 E=0.0491 F=0.0238 Frmse=0.3929 lr=9.94e-04
+2026-06-16 11:29:30,429 INFO epoch 9 step 579 batch 20/62 phase=stage1 loss=2.2197 E=0.0431 F=0.0218 Frmse=0.3841 lr=9.94e-04
+2026-06-16 11:29:30,556 INFO epoch 9 step 589 batch 30/62 phase=stage1 loss=4.1497 E=0.0444 F=0.0411 Frmse=0.4501 lr=9.94e-04
+2026-06-16 11:29:30,682 INFO epoch 9 step 599 batch 40/62 phase=stage1 loss=3.0180 E=0.0446 F=0.0297 Frmse=0.4153 lr=9.94e-04
+2026-06-16 11:29:30,809 INFO epoch 9 step 609 batch 50/62 phase=stage1 loss=1.8910 E=0.0408 F=0.0185 Frmse=0.3688 lr=9.94e-04
+2026-06-16 11:29:30,935 INFO epoch 9 step 619 batch 60/62 phase=stage1 loss=2.8667 E=0.0389 F=0.0283 Frmse=0.4101 lr=9.94e-04
+2026-06-16 11:29:32,065 INFO [epoch 9 step 620 stage1] train loss=2.6470 E=0.0445 F=0.0260 Frmse=0.3997 (0.9s) | val loss=2.4624 Frmse=0.3938 Ermse=0.4380
+[epoch 9 step 620 stage1] train loss=2.6470 E=0.0445 F=0.0260 Frmse=0.3997 (0.9s) | val loss=2.4624 Frmse=0.3938 Ermse=0.4380
+2026-06-16 11:29:32,081 INFO saved checkpoint -> /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_aligned_20260616/checkpoints/revised_ethanol_ictd_bridge_u_makefx_seed20260616_steps2000.pth (epoch 9 step 620 state=raw)
+2026-06-16 11:29:32,178 INFO epoch 10 step 621 batch 0/62 phase=stage1 loss=2.4381 E=0.0367 F=0.0240 Frmse=0.3937 lr=9.93e-04
+2026-06-16 11:29:32,312 INFO epoch 10 step 631 batch 10/62 phase=stage1 loss=2.3993 E=0.0406 F=0.0236 Frmse=0.3919 lr=9.93e-04
+2026-06-16 11:29:32,439 INFO epoch 10 step 641 batch 20/62 phase=stage1 loss=2.1626 E=0.0399 F=0.0212 Frmse=0.3817 lr=9.93e-04
+2026-06-16 11:29:32,565 INFO epoch 10 step 651 batch 30/62 phase=stage1 loss=2.6210 E=0.0396 F=0.0258 Frmse=0.4008 lr=9.93e-04
+2026-06-16 11:29:32,691 INFO epoch 10 step 661 batch 40/62 phase=stage1 loss=1.9331 E=0.0375 F=0.0190 Frmse=0.3711 lr=9.93e-04
+2026-06-16 11:29:32,817 INFO epoch 10 step 671 batch 50/62 phase=stage1 loss=2.4853 E=0.0539 F=0.0243 Frmse=0.3949 lr=9.93e-04
+2026-06-16 11:29:32,943 INFO epoch 10 step 681 batch 60/62 phase=stage1 loss=2.7129 E=0.0394 F=0.0267 Frmse=0.4044 lr=9.93e-04
+2026-06-16 11:29:34,071 INFO [epoch 10 step 682 stage1] train loss=2.4893 E=0.0401 F=0.0245 Frmse=0.3933 (0.9s) | val loss=2.2291 Frmse=0.3841 Ermse=0.4379
+[epoch 10 step 682 stage1] train loss=2.4893 E=0.0401 F=0.0245 Frmse=0.3933 (0.9s) | val loss=2.2291 Frmse=0.3841 Ermse=0.4379
+2026-06-16 11:29:34,087 INFO saved checkpoint -> /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_aligned_20260616/checkpoints/revised_ethanol_ictd_bridge_u_makefx_seed20260616_steps2000.pth (epoch 10 step 682 state=raw)
+2026-06-16 11:29:34,183 INFO epoch 11 step 683 batch 0/62 phase=stage1 loss=2.2560 E=0.0366 F=0.0222 Frmse=0.3860 lr=9.92e-04
+2026-06-16 11:29:34,317 INFO epoch 11 step 693 batch 10/62 phase=stage1 loss=2.3466 E=0.0526 F=0.0229 Frmse=0.3892 lr=9.92e-04
+2026-06-16 11:29:34,443 INFO epoch 11 step 703 batch 20/62 phase=stage1 loss=2.0030 E=0.0416 F=0.0196 Frmse=0.3742 lr=9.92e-04
+2026-06-16 11:29:34,570 INFO epoch 11 step 713 batch 30/62 phase=stage1 loss=2.3732 E=0.0409 F=0.0233 Frmse=0.3908 lr=9.92e-04
+2026-06-16 11:29:34,697 INFO epoch 11 step 723 batch 40/62 phase=stage1 loss=1.9762 E=0.0355 F=0.0194 Frmse=0.3732 lr=9.92e-04
+2026-06-16 11:29:34,823 INFO epoch 11 step 733 batch 50/62 phase=stage1 loss=2.1105 E=0.0436 F=0.0207 Frmse=0.3792 lr=9.92e-04
+2026-06-16 11:29:34,949 INFO epoch 11 step 743 batch 60/62 phase=stage1 loss=3.0727 E=0.0450 F=0.0303 Frmse=0.4171 lr=9.92e-04
+2026-06-16 11:29:36,074 INFO [epoch 11 step 744 stage1] train loss=2.1792 E=0.0420 F=0.0214 Frmse=0.3811 (0.9s) | val loss=3.5239 Frmse=0.4312 Ermse=0.4702
+[epoch 11 step 744 stage1] train loss=2.1792 E=0.0420 F=0.0214 Frmse=0.3811 (0.9s) | val loss=3.5239 Frmse=0.4312 Ermse=0.4702
+2026-06-16 11:29:36,171 INFO epoch 12 step 745 batch 0/62 phase=stage1 loss=3.5009 E=0.0479 F=0.0345 Frmse=0.4311 lr=9.92e-04
+2026-06-16 11:29:36,305 INFO epoch 12 step 755 batch 10/62 phase=stage1 loss=3.3089 E=0.0429 F=0.0327 Frmse=0.4251 lr=9.92e-04
+2026-06-16 11:29:36,432 INFO epoch 12 step 765 batch 20/62 phase=stage1 loss=1.9897 E=0.0364 F=0.0195 Frmse=0.3738 lr=9.92e-04
+2026-06-16 11:29:36,557 INFO epoch 12 step 775 batch 30/62 phase=stage1 loss=1.7697 E=0.0316 F=0.0174 Frmse=0.3631 lr=9.92e-04
+2026-06-16 11:29:36,684 INFO epoch 12 step 785 batch 40/62 phase=stage1 loss=1.4927 E=0.0385 F=0.0145 Frmse=0.3473 lr=9.92e-04
+2026-06-16 11:29:36,810 INFO epoch 12 step 795 batch 50/62 phase=stage1 loss=1.6213 E=0.0392 F=0.0158 Frmse=0.3547 lr=9.92e-04
+2026-06-16 11:29:36,936 INFO epoch 12 step 805 batch 60/62 phase=stage1 loss=1.9783 E=0.0305 F=0.0195 Frmse=0.3736 lr=9.92e-04
+2026-06-16 11:29:38,068 INFO [epoch 12 step 806 stage1] train loss=2.0367 E=0.0391 F=0.0200 Frmse=0.3734 (0.9s) | val loss=2.3927 Frmse=0.3916 Ermse=0.4011
+[epoch 12 step 806 stage1] train loss=2.0367 E=0.0391 F=0.0200 Frmse=0.3734 (0.9s) | val loss=2.3927 Frmse=0.3916 Ermse=0.4011
+2026-06-16 11:29:38,169 INFO epoch 13 step 807 batch 0/62 phase=stage1 loss=2.4616 E=0.0256 F=0.0244 Frmse=0.3951 lr=9.91e-04
+2026-06-16 11:29:38,303 INFO epoch 13 step 817 batch 10/62 phase=stage1 loss=2.3069 E=0.0274 F=0.0228 Frmse=0.3886 lr=9.91e-04
+2026-06-16 11:29:38,430 INFO epoch 13 step 827 batch 20/62 phase=stage1 loss=2.1670 E=0.0396 F=0.0213 Frmse=0.3819 lr=9.91e-04
+2026-06-16 11:29:38,556 INFO epoch 13 step 837 batch 30/62 phase=stage1 loss=1.9822 E=0.0390 F=0.0194 Frmse=0.3734 lr=9.91e-04
+2026-06-16 11:29:38,682 INFO epoch 13 step 847 batch 40/62 phase=stage1 loss=1.1455 E=0.0326 F=0.0111 Frmse=0.3248 lr=9.91e-04
+2026-06-16 11:29:38,808 INFO epoch 13 step 857 batch 50/62 phase=stage1 loss=1.5326 E=0.0319 F=0.0150 Frmse=0.3500 lr=9.91e-04
+2026-06-16 11:29:38,935 INFO epoch 13 step 867 batch 60/62 phase=stage1 loss=3.2247 E=0.0311 F=0.0319 Frmse=0.4227 lr=9.91e-04
+2026-06-16 11:29:40,058 INFO [epoch 13 step 868 stage1] train loss=1.9197 E=0.0354 F=0.0188 Frmse=0.3680 (0.9s) | val loss=1.6996 Frmse=0.3587 Ermse=0.4257
+[epoch 13 step 868 stage1] train loss=1.9197 E=0.0354 F=0.0188 Frmse=0.3680 (0.9s) | val loss=1.6996 Frmse=0.3587 Ermse=0.4257
+2026-06-16 11:29:40,073 INFO saved checkpoint -> /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_aligned_20260616/checkpoints/revised_ethanol_ictd_bridge_u_makefx_seed20260616_steps2000.pth (epoch 13 step 868 state=raw)
+2026-06-16 11:29:40,170 INFO epoch 14 step 869 batch 0/62 phase=stage1 loss=1.4987 E=0.0319 F=0.0147 Frmse=0.3480 lr=9.90e-04
+2026-06-16 11:29:40,304 INFO epoch 14 step 879 batch 10/62 phase=stage1 loss=2.1869 E=0.0282 F=0.0216 Frmse=0.3833 lr=9.90e-04
+2026-06-16 11:29:40,431 INFO epoch 14 step 889 batch 20/62 phase=stage1 loss=1.2572 E=0.0298 F=0.0123 Frmse=0.3328 lr=9.90e-04
+2026-06-16 11:29:40,557 INFO epoch 14 step 899 batch 30/62 phase=stage1 loss=1.9827 E=0.0286 F=0.0195 Frmse=0.3739 lr=9.90e-04
+2026-06-16 11:29:40,683 INFO epoch 14 step 909 batch 40/62 phase=stage1 loss=1.6308 E=0.0221 F=0.0161 Frmse=0.3561 lr=9.90e-04
+2026-06-16 11:29:40,809 INFO epoch 14 step 919 batch 50/62 phase=stage1 loss=2.2473 E=0.0329 F=0.0221 Frmse=0.3858 lr=9.90e-04
+2026-06-16 11:29:40,935 INFO epoch 14 step 929 batch 60/62 phase=stage1 loss=1.5828 E=0.0299 F=0.0155 Frmse=0.3530 lr=9.90e-04
+2026-06-16 11:29:42,058 INFO [epoch 14 step 930 stage1] train loss=1.7670 E=0.0281 F=0.0174 Frmse=0.3614 (0.9s) | val loss=2.2556 Frmse=0.3860 Ermse=0.3969
+[epoch 14 step 930 stage1] train loss=1.7670 E=0.0281 F=0.0174 Frmse=0.3614 (0.9s) | val loss=2.2556 Frmse=0.3860 Ermse=0.3969
+2026-06-16 11:29:42,153 INFO epoch 15 step 931 batch 0/62 phase=stage1 loss=1.9888 E=0.0247 F=0.0196 Frmse=0.3744 lr=9.90e-04
+2026-06-16 11:29:42,286 INFO epoch 15 step 941 batch 10/62 phase=stage1 loss=1.5149 E=0.0279 F=0.0149 Frmse=0.3492 lr=9.90e-04
+2026-06-16 11:29:42,413 INFO epoch 15 step 951 batch 20/62 phase=stage1 loss=1.5829 E=0.0295 F=0.0155 Frmse=0.3530 lr=9.90e-04
+2026-06-16 11:29:42,539 INFO epoch 15 step 961 batch 30/62 phase=stage1 loss=1.3529 E=0.0348 F=0.0132 Frmse=0.3388 lr=9.90e-04
+2026-06-16 11:29:42,666 INFO epoch 15 step 971 batch 40/62 phase=stage1 loss=1.4942 E=0.0244 F=0.0147 Frmse=0.3482 lr=9.90e-04
+2026-06-16 11:29:42,793 INFO epoch 15 step 981 batch 50/62 phase=stage1 loss=1.6220 E=0.0429 F=0.0158 Frmse=0.3545 lr=9.90e-04
+2026-06-16 11:29:42,918 INFO epoch 15 step 991 batch 60/62 phase=stage1 loss=1.9501 E=0.0437 F=0.0191 Frmse=0.3716 lr=9.90e-04
+2026-06-16 11:29:44,048 INFO [epoch 15 step 992 stage1] train loss=1.6027 E=0.0340 F=0.0157 Frmse=0.3526 (0.9s) | val loss=1.7260 Frmse=0.3598 Ermse=0.4489
+[epoch 15 step 992 stage1] train loss=1.6027 E=0.0340 F=0.0157 Frmse=0.3526 (0.9s) | val loss=1.7260 Frmse=0.3598 Ermse=0.4489
+2026-06-16 11:29:44,144 INFO epoch 16 step 993 batch 0/62 phase=stage1 loss=1.7082 E=0.0404 F=0.0167 Frmse=0.3594 lr=9.89e-04
+2026-06-16 11:29:44,278 INFO epoch 16 step 1003 batch 10/62 phase=stage1 loss=1.8062 E=0.0384 F=0.0177 Frmse=0.3646 lr=9.89e-04
+2026-06-16 11:29:44,405 INFO epoch 16 step 1013 batch 20/62 phase=stage1 loss=1.3367 E=0.0306 F=0.0131 Frmse=0.3381 lr=9.89e-04
+2026-06-16 11:29:44,532 INFO epoch 16 step 1023 batch 30/62 phase=stage1 loss=1.1192 E=0.0251 F=0.0109 Frmse=0.3234 lr=9.89e-04
+2026-06-16 11:29:44,658 INFO epoch 16 step 1033 batch 40/62 phase=stage1 loss=1.6772 E=0.0360 F=0.0164 Frmse=0.3579 lr=9.89e-04
+2026-06-16 11:29:44,784 INFO epoch 16 step 1043 batch 50/62 phase=stage1 loss=1.3770 E=0.0286 F=0.0135 Frmse=0.3408 lr=9.89e-04
+2026-06-16 11:29:44,911 INFO epoch 16 step 1053 batch 60/62 phase=stage1 loss=1.4713 E=0.0328 F=0.0144 Frmse=0.3463 lr=9.89e-04
+2026-06-16 11:29:46,041 INFO [epoch 16 step 1054 stage1] train loss=1.4700 E=0.0323 F=0.0144 Frmse=0.3450 (0.9s) | val loss=1.3843 Frmse=0.3402 Ermse=0.4311
+[epoch 16 step 1054 stage1] train loss=1.4700 E=0.0323 F=0.0144 Frmse=0.3450 (0.9s) | val loss=1.3843 Frmse=0.3402 Ermse=0.4311
+2026-06-16 11:29:46,056 INFO saved checkpoint -> /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_aligned_20260616/checkpoints/revised_ethanol_ictd_bridge_u_makefx_seed20260616_steps2000.pth (epoch 16 step 1054 state=raw)
+2026-06-16 11:29:46,152 INFO epoch 17 step 1055 batch 0/62 phase=stage1 loss=1.3456 E=0.0340 F=0.0131 Frmse=0.3384 lr=9.88e-04
+2026-06-16 11:29:46,287 INFO epoch 17 step 1065 batch 10/62 phase=stage1 loss=2.1174 E=0.0273 F=0.0209 Frmse=0.3802 lr=9.88e-04
+2026-06-16 11:29:46,413 INFO epoch 17 step 1075 batch 20/62 phase=stage1 loss=1.6830 E=0.0287 F=0.0165 Frmse=0.3586 lr=9.88e-04
+2026-06-16 11:29:46,539 INFO epoch 17 step 1085 batch 30/62 phase=stage1 loss=1.9099 E=0.0282 F=0.0188 Frmse=0.3704 lr=9.88e-04
+2026-06-16 11:29:46,665 INFO epoch 17 step 1095 batch 40/62 phase=stage1 loss=1.6222 E=0.0214 F=0.0160 Frmse=0.3557 lr=9.88e-04
+2026-06-16 11:29:46,791 INFO epoch 17 step 1105 batch 50/62 phase=stage1 loss=1.3058 E=0.0294 F=0.0128 Frmse=0.3361 lr=9.88e-04
+2026-06-16 11:29:46,918 INFO epoch 17 step 1115 batch 60/62 phase=stage1 loss=1.0234 E=0.0224 F=0.0100 Frmse=0.3163 lr=9.88e-04
+2026-06-16 11:29:48,047 INFO [epoch 17 step 1116 stage1] train loss=1.4686 E=0.0264 F=0.0144 Frmse=0.3453 (0.9s) | val loss=1.3968 Frmse=0.3416 Ermse=0.3957
+[epoch 17 step 1116 stage1] train loss=1.4686 E=0.0264 F=0.0144 Frmse=0.3453 (0.9s) | val loss=1.3968 Frmse=0.3416 Ermse=0.3957
+2026-06-16 11:29:48,142 INFO epoch 18 step 1117 batch 0/62 phase=stage1 loss=1.4138 E=0.0238 F=0.0139 Frmse=0.3434 lr=9.87e-04
+2026-06-16 11:29:48,277 INFO epoch 18 step 1127 batch 10/62 phase=stage1 loss=1.4697 E=0.0219 F=0.0145 Frmse=0.3469 lr=9.87e-04
+2026-06-16 11:29:48,403 INFO epoch 18 step 1137 batch 20/62 phase=stage1 loss=1.5018 E=0.0198 F=0.0148 Frmse=0.3489 lr=9.87e-04
+2026-06-16 11:29:48,529 INFO epoch 18 step 1147 batch 30/62 phase=stage1 loss=1.4090 E=0.0170 F=0.0139 Frmse=0.3435 lr=9.87e-04
+2026-06-16 11:29:48,655 INFO epoch 18 step 1157 batch 40/62 phase=stage1 loss=1.2020 E=0.0255 F=0.0118 Frmse=0.3293 lr=9.87e-04
+2026-06-16 11:29:48,781 INFO epoch 18 step 1167 batch 50/62 phase=stage1 loss=1.5474 E=0.0393 F=0.0151 Frmse=0.3504 lr=9.87e-04
+2026-06-16 11:29:48,907 INFO epoch 18 step 1177 batch 60/62 phase=stage1 loss=1.0327 E=0.0221 F=0.0101 Frmse=0.3171 lr=9.87e-04
+2026-06-16 11:29:50,038 INFO [epoch 18 step 1178 stage1] train loss=1.3127 E=0.0240 F=0.0129 Frmse=0.3354 (0.9s) | val loss=1.0736 Frmse=0.3194 Ermse=0.3852
+[epoch 18 step 1178 stage1] train loss=1.3127 E=0.0240 F=0.0129 Frmse=0.3354 (0.9s) | val loss=1.0736 Frmse=0.3194 Ermse=0.3852
+2026-06-16 11:29:50,054 INFO saved checkpoint -> /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_aligned_20260616/checkpoints/revised_ethanol_ictd_bridge_u_makefx_seed20260616_steps2000.pth (epoch 18 step 1178 state=raw)
+2026-06-16 11:29:50,152 INFO epoch 19 step 1179 batch 0/62 phase=stage1 loss=1.1282 E=0.0218 F=0.0111 Frmse=0.3243 lr=9.87e-04
+2026-06-16 11:29:50,285 INFO epoch 19 step 1189 batch 10/62 phase=stage1 loss=1.1964 E=0.0256 F=0.0117 Frmse=0.3289 lr=9.87e-04
+2026-06-16 11:29:50,411 INFO epoch 19 step 1199 batch 20/62 phase=stage1 loss=2.6537 E=0.0224 F=0.0263 Frmse=0.4028 lr=9.87e-04
+2026-06-16 11:29:50,538 INFO epoch 19 step 1209 batch 30/62 phase=stage1 loss=1.2823 E=0.0194 F=0.0126 Frmse=0.3352 lr=9.87e-04
+2026-06-16 11:29:50,664 INFO epoch 19 step 1219 batch 40/62 phase=stage1 loss=1.6136 E=0.0211 F=0.0159 Frmse=0.3552 lr=9.87e-04
+2026-06-16 11:29:50,791 INFO epoch 19 step 1229 batch 50/62 phase=stage1 loss=0.8628 E=0.0266 F=0.0084 Frmse=0.3024 lr=9.87e-04
+2026-06-16 11:29:50,917 INFO epoch 19 step 1239 batch 60/62 phase=stage1 loss=1.3462 E=0.0273 F=0.0132 Frmse=0.3389 lr=9.87e-04
+2026-06-16 11:29:52,042 INFO [epoch 19 step 1240 stage1] train loss=1.3761 E=0.0244 F=0.0135 Frmse=0.3382 (0.9s) | val loss=1.2096 Frmse=0.3291 Ermse=0.4057
+[epoch 19 step 1240 stage1] train loss=1.3761 E=0.0244 F=0.0135 Frmse=0.3382 (0.9s) | val loss=1.2096 Frmse=0.3291 Ermse=0.4057
+2026-06-16 11:29:52,136 INFO epoch 20 step 1241 batch 0/62 phase=stage1 loss=0.8368 E=0.0274 F=0.0081 Frmse=0.2999 lr=9.86e-04
+2026-06-16 11:29:52,271 INFO epoch 20 step 1251 batch 10/62 phase=stage1 loss=1.5672 E=0.0192 F=0.0155 Frmse=0.3527 lr=9.86e-04
+2026-06-16 11:29:52,398 INFO epoch 20 step 1261 batch 20/62 phase=stage1 loss=3.1190 E=0.0211 F=0.0310 Frmse=0.4195 lr=9.86e-04
+2026-06-16 11:29:52,524 INFO epoch 20 step 1271 batch 30/62 phase=stage1 loss=1.4362 E=0.0339 F=0.0140 Frmse=0.3441 lr=9.86e-04
+2026-06-16 11:29:52,650 INFO epoch 20 step 1281 batch 40/62 phase=stage1 loss=0.8146 E=0.0317 F=0.0078 Frmse=0.2975 lr=9.86e-04
+2026-06-16 11:29:52,776 INFO epoch 20 step 1291 batch 50/62 phase=stage1 loss=1.3261 E=0.0358 F=0.0129 Frmse=0.3370 lr=9.86e-04
+2026-06-16 11:29:52,902 INFO epoch 20 step 1301 batch 60/62 phase=stage1 loss=1.3485 E=0.0325 F=0.0132 Frmse=0.3387 lr=9.86e-04
+2026-06-16 11:29:54,025 INFO [epoch 20 step 1302 stage1] train loss=1.5036 E=0.0282 F=0.0148 Frmse=0.3460 (0.9s) | val loss=1.0983 Frmse=0.3208 Ermse=0.4082
+[epoch 20 step 1302 stage1] train loss=1.5036 E=0.0282 F=0.0148 Frmse=0.3460 (0.9s) | val loss=1.0983 Frmse=0.3208 Ermse=0.4082
+2026-06-16 11:29:54,125 INFO epoch 21 step 1303 batch 0/62 phase=stage1 loss=0.9275 E=0.0271 F=0.0090 Frmse=0.3080 lr=9.85e-04
+2026-06-16 11:29:54,259 INFO epoch 21 step 1313 batch 10/62 phase=stage1 loss=0.7772 E=0.0251 F=0.0075 Frmse=0.2945 lr=9.85e-04
+2026-06-16 11:29:54,384 INFO epoch 21 step 1323 batch 20/62 phase=stage1 loss=0.8534 E=0.0192 F=0.0083 Frmse=0.3022 lr=9.85e-04
+2026-06-16 11:29:54,511 INFO epoch 21 step 1333 batch 30/62 phase=stage1 loss=1.1640 E=0.0183 F=0.0115 Frmse=0.3272 lr=9.85e-04
+2026-06-16 11:29:54,636 INFO epoch 21 step 1343 batch 40/62 phase=stage1 loss=1.3458 E=0.0183 F=0.0133 Frmse=0.3394 lr=9.85e-04
+2026-06-16 11:29:54,762 INFO epoch 21 step 1353 batch 50/62 phase=stage1 loss=1.2292 E=0.0211 F=0.0121 Frmse=0.3315 lr=9.85e-04
+2026-06-16 11:29:54,888 INFO epoch 21 step 1363 batch 60/62 phase=stage1 loss=1.2293 E=0.0152 F=0.0121 Frmse=0.3319 lr=9.85e-04
+2026-06-16 11:29:56,015 INFO [epoch 21 step 1364 stage1] train loss=1.1383 E=0.0206 F=0.0112 Frmse=0.3236 (0.9s) | val loss=0.8944 Frmse=0.3052 Ermse=0.3607
+[epoch 21 step 1364 stage1] train loss=1.1383 E=0.0206 F=0.0112 Frmse=0.3236 (0.9s) | val loss=0.8944 Frmse=0.3052 Ermse=0.3607
+2026-06-16 11:29:56,030 INFO saved checkpoint -> /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_aligned_20260616/checkpoints/revised_ethanol_ictd_bridge_u_makefx_seed20260616_steps2000.pth (epoch 21 step 1364 state=raw)
+2026-06-16 11:29:56,128 INFO epoch 22 step 1365 batch 0/62 phase=stage1 loss=0.8220 E=0.0164 F=0.0081 Frmse=0.2996 lr=9.85e-04
+2026-06-16 11:29:56,262 INFO epoch 22 step 1375 batch 10/62 phase=stage1 loss=1.1676 E=0.0162 F=0.0115 Frmse=0.3276 lr=9.85e-04
+2026-06-16 11:29:56,389 INFO epoch 22 step 1385 batch 20/62 phase=stage1 loss=1.3465 E=0.0201 F=0.0133 Frmse=0.3394 lr=9.85e-04
+2026-06-16 11:29:56,515 INFO epoch 22 step 1395 batch 30/62 phase=stage1 loss=0.8472 E=0.0129 F=0.0083 Frmse=0.3022 lr=9.85e-04
+2026-06-16 11:29:56,642 INFO epoch 22 step 1405 batch 40/62 phase=stage1 loss=0.8859 E=0.0267 F=0.0086 Frmse=0.3045 lr=9.85e-04
+2026-06-16 11:29:56,768 INFO epoch 22 step 1415 batch 50/62 phase=stage1 loss=1.2458 E=0.0249 F=0.0122 Frmse=0.3324 lr=9.85e-04
+2026-06-16 11:29:56,894 INFO epoch 22 step 1425 batch 60/62 phase=stage1 loss=1.6232 E=0.0194 F=0.0160 Frmse=0.3559 lr=9.85e-04
+2026-06-16 11:29:58,020 INFO [epoch 22 step 1426 stage1] train loss=1.2110 E=0.0194 F=0.0119 Frmse=0.3286 (0.9s) | val loss=1.2407 Frmse=0.3318 Ermse=0.3799
+[epoch 22 step 1426 stage1] train loss=1.2110 E=0.0194 F=0.0119 Frmse=0.3286 (0.9s) | val loss=1.2407 Frmse=0.3318 Ermse=0.3799
+2026-06-16 11:29:58,115 INFO epoch 23 step 1427 batch 0/62 phase=stage1 loss=1.1216 E=0.0208 F=0.0110 Frmse=0.3239 lr=9.84e-04
+2026-06-16 11:29:58,249 INFO epoch 23 step 1437 batch 10/62 phase=stage1 loss=1.1460 E=0.0176 F=0.0113 Frmse=0.3259 lr=9.84e-04
+2026-06-16 11:29:58,375 INFO epoch 23 step 1447 batch 20/62 phase=stage1 loss=1.2753 E=0.0173 F=0.0126 Frmse=0.3349 lr=9.84e-04
+2026-06-16 11:29:58,501 INFO epoch 23 step 1457 batch 30/62 phase=stage1 loss=1.1738 E=0.0121 F=0.0116 Frmse=0.3283 lr=9.84e-04
+2026-06-16 11:29:58,628 INFO epoch 23 step 1467 batch 40/62 phase=stage1 loss=0.7255 E=0.0152 F=0.0071 Frmse=0.2903 lr=9.84e-04
+2026-06-16 11:29:58,755 INFO epoch 23 step 1477 batch 50/62 phase=stage1 loss=1.1953 E=0.0147 F=0.0118 Frmse=0.3296 lr=9.84e-04
+2026-06-16 11:29:58,881 INFO epoch 23 step 1487 batch 60/62 phase=stage1 loss=0.8905 E=0.0146 F=0.0088 Frmse=0.3059 lr=9.84e-04
+2026-06-16 11:30:00,009 INFO [epoch 23 step 1488 stage1] train loss=1.0445 E=0.0154 F=0.0103 Frmse=0.3170 (0.9s) | val loss=0.8706 Frmse=0.3037 Ermse=0.3367
+[epoch 23 step 1488 stage1] train loss=1.0445 E=0.0154 F=0.0103 Frmse=0.3170 (0.9s) | val loss=0.8706 Frmse=0.3037 Ermse=0.3367
+2026-06-16 11:30:00,025 INFO saved checkpoint -> /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_aligned_20260616/checkpoints/revised_ethanol_ictd_bridge_u_makefx_seed20260616_steps2000.pth (epoch 23 step 1488 state=raw)
+2026-06-16 11:30:00,122 INFO epoch 24 step 1489 batch 0/62 phase=stage1 loss=0.6782 E=0.0126 F=0.0067 Frmse=0.2856 lr=9.83e-04
+2026-06-16 11:30:00,256 INFO epoch 24 step 1499 batch 10/62 phase=stage1 loss=1.4645 E=0.0141 F=0.0145 Frmse=0.3470 lr=9.83e-04
+2026-06-16 11:30:00,382 INFO epoch 24 step 1509 batch 20/62 phase=stage1 loss=1.1703 E=0.0124 F=0.0116 Frmse=0.3280 lr=9.83e-04
+2026-06-16 11:30:00,508 INFO epoch 24 step 1519 batch 30/62 phase=stage1 loss=0.8114 E=0.0124 F=0.0080 Frmse=0.2990 lr=9.83e-04
+2026-06-16 11:30:00,634 INFO epoch 24 step 1529 batch 40/62 phase=stage1 loss=0.8383 E=0.0166 F=0.0082 Frmse=0.3011 lr=9.83e-04
+2026-06-16 11:30:00,760 INFO epoch 24 step 1539 batch 50/62 phase=stage1 loss=0.7261 E=0.0186 F=0.0071 Frmse=0.2900 lr=9.83e-04
+2026-06-16 11:30:00,886 INFO epoch 24 step 1549 batch 60/62 phase=stage1 loss=1.6762 E=0.0153 F=0.0166 Frmse=0.3590 lr=9.83e-04
+2026-06-16 11:30:02,006 INFO [epoch 24 step 1550 stage1] train loss=1.0354 E=0.0145 F=0.0102 Frmse=0.3154 (0.9s) | val loss=1.1490 Frmse=0.3258 Ermse=0.3479
+[epoch 24 step 1550 stage1] train loss=1.0354 E=0.0145 F=0.0102 Frmse=0.3154 (0.9s) | val loss=1.1490 Frmse=0.3258 Ermse=0.3479
+2026-06-16 11:30:02,101 INFO epoch 25 step 1551 batch 0/62 phase=stage1 loss=1.1098 E=0.0146 F=0.0110 Frmse=0.3235 lr=9.83e-04
+2026-06-16 11:30:02,234 INFO epoch 25 step 1561 batch 10/62 phase=stage1 loss=1.1051 E=0.0155 F=0.0109 Frmse=0.3231 lr=9.83e-04
+2026-06-16 11:30:02,359 INFO epoch 25 step 1571 batch 20/62 phase=stage1 loss=0.8177 E=0.0213 F=0.0080 Frmse=0.2987 lr=9.83e-04
+2026-06-16 11:30:02,486 INFO epoch 25 step 1581 batch 30/62 phase=stage1 loss=1.9065 E=0.0139 F=0.0189 Frmse=0.3709 lr=9.83e-04
+2026-06-16 11:30:02,612 INFO epoch 25 step 1591 batch 40/62 phase=stage1 loss=0.9366 E=0.0109 F=0.0093 Frmse=0.3102 lr=9.83e-04
+2026-06-16 11:30:02,739 INFO epoch 25 step 1601 batch 50/62 phase=stage1 loss=0.6717 E=0.0146 F=0.0066 Frmse=0.2847 lr=9.83e-04
+2026-06-16 11:30:02,864 INFO epoch 25 step 1611 batch 60/62 phase=stage1 loss=0.6345 E=0.0093 F=0.0063 Frmse=0.2812 lr=9.83e-04
+2026-06-16 11:30:03,991 INFO [epoch 25 step 1612 stage1] train loss=0.9754 E=0.0146 F=0.0096 Frmse=0.3114 (0.9s) | val loss=0.7382 Frmse=0.2912 Ermse=0.3219
+[epoch 25 step 1612 stage1] train loss=0.9754 E=0.0146 F=0.0096 Frmse=0.3114 (0.9s) | val loss=0.7382 Frmse=0.2912 Ermse=0.3219
+2026-06-16 11:30:04,007 INFO saved checkpoint -> /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_aligned_20260616/checkpoints/revised_ethanol_ictd_bridge_u_makefx_seed20260616_steps2000.pth (epoch 25 step 1612 state=raw)
+2026-06-16 11:30:04,104 INFO epoch 26 step 1613 batch 0/62 phase=stage1 loss=0.7117 E=0.0104 F=0.0070 Frmse=0.2894 lr=9.82e-04
+2026-06-16 11:30:04,237 INFO epoch 26 step 1623 batch 10/62 phase=stage1 loss=1.1731 E=0.0095 F=0.0116 Frmse=0.3284 lr=9.82e-04
+2026-06-16 11:30:04,364 INFO epoch 26 step 1633 batch 20/62 phase=stage1 loss=0.9445 E=0.0119 F=0.0093 Frmse=0.3108 lr=9.82e-04
+2026-06-16 11:30:04,490 INFO epoch 26 step 1643 batch 30/62 phase=stage1 loss=1.0874 E=0.0107 F=0.0108 Frmse=0.3221 lr=9.82e-04
+2026-06-16 11:30:04,616 INFO epoch 26 step 1653 batch 40/62 phase=stage1 loss=1.0049 E=0.0126 F=0.0099 Frmse=0.3156 lr=9.82e-04
+2026-06-16 11:30:04,742 INFO epoch 26 step 1663 batch 50/62 phase=stage1 loss=1.0440 E=0.0102 F=0.0103 Frmse=0.3189 lr=9.82e-04
+2026-06-16 11:30:04,868 INFO epoch 26 step 1673 batch 60/62 phase=stage1 loss=0.7287 E=0.0172 F=0.0071 Frmse=0.2904 lr=9.82e-04
+2026-06-16 11:30:05,996 INFO [epoch 26 step 1674 stage1] train loss=0.9430 E=0.0116 F=0.0093 Frmse=0.3092 (0.9s) | val loss=0.8898 Frmse=0.3051 Ermse=0.3573
+[epoch 26 step 1674 stage1] train loss=0.9430 E=0.0116 F=0.0093 Frmse=0.3092 (0.9s) | val loss=0.8898 Frmse=0.3051 Ermse=0.3573
+2026-06-16 11:30:06,092 INFO epoch 27 step 1675 batch 0/62 phase=stage1 loss=0.8616 E=0.0158 F=0.0085 Frmse=0.3033 lr=9.81e-04
+2026-06-16 11:30:06,225 INFO epoch 27 step 1685 batch 10/62 phase=stage1 loss=0.7846 E=0.0186 F=0.0077 Frmse=0.2958 lr=9.81e-04
+2026-06-16 11:30:06,351 INFO epoch 27 step 1695 batch 20/62 phase=stage1 loss=0.8790 E=0.0139 F=0.0087 Frmse=0.3050 lr=9.81e-04
+2026-06-16 11:30:06,477 INFO epoch 27 step 1705 batch 30/62 phase=stage1 loss=1.0333 E=0.0141 F=0.0102 Frmse=0.3177 lr=9.81e-04
+2026-06-16 11:30:06,603 INFO epoch 27 step 1715 batch 40/62 phase=stage1 loss=1.1527 E=0.0106 F=0.0114 Frmse=0.3269 lr=9.81e-04
+2026-06-16 11:30:06,730 INFO epoch 27 step 1725 batch 50/62 phase=stage1 loss=0.9295 E=0.0100 F=0.0092 Frmse=0.3097 lr=9.81e-04
+2026-06-16 11:30:06,856 INFO epoch 27 step 1735 batch 60/62 phase=stage1 loss=0.7259 E=0.0131 F=0.0071 Frmse=0.2906 lr=9.81e-04
+2026-06-16 11:30:07,978 INFO [epoch 27 step 1736 stage1] train loss=0.9408 E=0.0134 F=0.0093 Frmse=0.3088 (0.9s) | val loss=0.8884 Frmse=0.3053 Ermse=0.3374
+[epoch 27 step 1736 stage1] train loss=0.9408 E=0.0134 F=0.0093 Frmse=0.3088 (0.9s) | val loss=0.8884 Frmse=0.3053 Ermse=0.3374
+2026-06-16 11:30:08,073 INFO epoch 28 step 1737 batch 0/62 phase=stage1 loss=0.9917 E=0.0127 F=0.0098 Frmse=0.3146 lr=9.81e-04
+2026-06-16 11:30:08,206 INFO epoch 28 step 1747 batch 10/62 phase=stage1 loss=0.9084 E=0.0115 F=0.0090 Frmse=0.3077 lr=9.81e-04
+2026-06-16 11:30:08,332 INFO epoch 28 step 1757 batch 20/62 phase=stage1 loss=0.8916 E=0.0088 F=0.0088 Frmse=0.3065 lr=9.81e-04
+2026-06-16 11:30:08,458 INFO epoch 28 step 1767 batch 30/62 phase=stage1 loss=0.6216 E=0.0078 F=0.0061 Frmse=0.2799 lr=9.81e-04
+2026-06-16 11:30:08,585 INFO epoch 28 step 1777 batch 40/62 phase=stage1 loss=0.7940 E=0.0103 F=0.0078 Frmse=0.2975 lr=9.81e-04
+2026-06-16 11:30:08,711 INFO epoch 28 step 1787 batch 50/62 phase=stage1 loss=1.2853 E=0.0088 F=0.0128 Frmse=0.3361 lr=9.81e-04
+2026-06-16 11:30:08,836 INFO epoch 28 step 1797 batch 60/62 phase=stage1 loss=0.8271 E=0.0114 F=0.0082 Frmse=0.3005 lr=9.81e-04
+2026-06-16 11:30:09,964 INFO [epoch 28 step 1798 stage1] train loss=0.8700 E=0.0102 F=0.0086 Frmse=0.3024 (0.9s) | val loss=0.9648 Frmse=0.3118 Ermse=0.3374
+[epoch 28 step 1798 stage1] train loss=0.8700 E=0.0102 F=0.0086 Frmse=0.3024 (0.9s) | val loss=0.9648 Frmse=0.3118 Ermse=0.3374
+2026-06-16 11:30:10,064 INFO epoch 29 step 1799 batch 0/62 phase=stage1 loss=0.7280 E=0.0133 F=0.0071 Frmse=0.2908 lr=9.80e-04
+2026-06-16 11:30:10,198 INFO epoch 29 step 1809 batch 10/62 phase=stage1 loss=0.8498 E=0.0109 F=0.0084 Frmse=0.3026 lr=9.80e-04
+2026-06-16 11:30:10,325 INFO epoch 29 step 1819 batch 20/62 phase=stage1 loss=0.8327 E=0.0122 F=0.0082 Frmse=0.3010 lr=9.80e-04
+2026-06-16 11:30:10,451 INFO epoch 29 step 1829 batch 30/62 phase=stage1 loss=1.3210 E=0.0164 F=0.0130 Frmse=0.3380 lr=9.80e-04
+2026-06-16 11:30:10,578 INFO epoch 29 step 1839 batch 40/62 phase=stage1 loss=0.8717 E=0.0170 F=0.0085 Frmse=0.3041 lr=9.80e-04
+2026-06-16 11:30:10,704 INFO epoch 29 step 1849 batch 50/62 phase=stage1 loss=2.4291 E=0.0119 F=0.0242 Frmse=0.3943 lr=9.80e-04
+2026-06-16 11:30:10,830 INFO epoch 29 step 1859 batch 60/62 phase=stage1 loss=1.4386 E=0.0091 F=0.0143 Frmse=0.3458 lr=9.80e-04
+2026-06-16 11:30:11,951 INFO [epoch 29 step 1860 stage1] train loss=1.0297 E=0.0138 F=0.0102 Frmse=0.3143 (0.9s) | val loss=0.7559 Frmse=0.2931 Ermse=0.3229
+[epoch 29 step 1860 stage1] train loss=1.0297 E=0.0138 F=0.0102 Frmse=0.3143 (0.9s) | val loss=0.7559 Frmse=0.2931 Ermse=0.3229
+2026-06-16 11:30:12,047 INFO epoch 30 step 1861 batch 0/62 phase=stage1 loss=0.8270 E=0.0109 F=0.0082 Frmse=0.3006 lr=9.79e-04
+2026-06-16 11:30:12,180 INFO epoch 30 step 1871 batch 10/62 phase=stage1 loss=1.1506 E=0.0097 F=0.0114 Frmse=0.3268 lr=9.79e-04
+2026-06-16 11:30:12,307 INFO epoch 30 step 1881 batch 20/62 phase=stage1 loss=0.8771 E=0.0088 F=0.0087 Frmse=0.3053 lr=9.79e-04
+2026-06-16 11:30:12,433 INFO epoch 30 step 1891 batch 30/62 phase=stage1 loss=0.9781 E=0.0072 F=0.0097 Frmse=0.3139 lr=9.79e-04
+2026-06-16 11:30:12,559 INFO epoch 30 step 1901 batch 40/62 phase=stage1 loss=0.9071 E=0.0045 F=0.0090 Frmse=0.3082 lr=9.79e-04
+2026-06-16 11:30:12,685 INFO epoch 30 step 1911 batch 50/62 phase=stage1 loss=1.1661 E=0.0076 F=0.0116 Frmse=0.3281 lr=9.79e-04
+2026-06-16 11:30:12,811 INFO epoch 30 step 1921 batch 60/62 phase=stage1 loss=0.6207 E=0.0101 F=0.0061 Frmse=0.2795 lr=9.79e-04
+2026-06-16 11:30:13,935 INFO [epoch 30 step 1922 stage1] train loss=0.9030 E=0.0087 F=0.0089 Frmse=0.3060 (0.9s) | val loss=0.7649 Frmse=0.2943 Ermse=0.3074
+[epoch 30 step 1922 stage1] train loss=0.9030 E=0.0087 F=0.0089 Frmse=0.3060 (0.9s) | val loss=0.7649 Frmse=0.2943 Ermse=0.3074
+2026-06-16 11:30:14,030 INFO epoch 31 step 1923 batch 0/62 phase=stage1 loss=0.7294 E=0.0088 F=0.0072 Frmse=0.2914 lr=9.79e-04
+2026-06-16 11:30:14,164 INFO epoch 31 step 1933 batch 10/62 phase=stage1 loss=0.6789 E=0.0060 F=0.0067 Frmse=0.2864 lr=9.79e-04
+2026-06-16 11:30:14,290 INFO epoch 31 step 1943 batch 20/62 phase=stage1 loss=0.8010 E=0.0059 F=0.0080 Frmse=0.2986 lr=9.79e-04
+2026-06-16 11:30:14,416 INFO epoch 31 step 1953 batch 30/62 phase=stage1 loss=1.2797 E=0.0155 F=0.0126 Frmse=0.3353 lr=9.79e-04
+2026-06-16 11:30:14,543 INFO epoch 31 step 1963 batch 40/62 phase=stage1 loss=1.0922 E=0.0120 F=0.0108 Frmse=0.3224 lr=9.79e-04
+2026-06-16 11:30:14,669 INFO epoch 31 step 1973 batch 50/62 phase=stage1 loss=0.8709 E=0.0193 F=0.0085 Frmse=0.3038 lr=9.79e-04
+2026-06-16 11:30:14,795 INFO epoch 31 step 1983 batch 60/62 phase=stage1 loss=0.8386 E=0.0094 F=0.0083 Frmse=0.3018 lr=9.79e-04
+2026-06-16 11:30:15,916 INFO [epoch 31 step 1984 stage1] train loss=0.9089 E=0.0113 F=0.0090 Frmse=0.3058 (0.9s) | val loss=0.6303 Frmse=0.2797 Ermse=0.3216
+[epoch 31 step 1984 stage1] train loss=0.9089 E=0.0113 F=0.0090 Frmse=0.3058 (0.9s) | val loss=0.6303 Frmse=0.2797 Ermse=0.3216
+2026-06-16 11:30:15,931 INFO saved checkpoint -> /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_aligned_20260616/checkpoints/revised_ethanol_ictd_bridge_u_makefx_seed20260616_steps2000.pth (epoch 31 step 1984 state=raw)
+2026-06-16 11:30:16,028 INFO epoch 32 step 1985 batch 0/62 phase=stage1 loss=0.5908 E=0.0106 F=0.0058 Frmse=0.2760 lr=9.78e-04
+2026-06-16 11:30:16,162 INFO epoch 32 step 1995 batch 10/62 phase=stage1 loss=0.7857 E=0.0095 F=0.0078 Frmse=0.2968 lr=9.78e-04
+2026-06-16 11:30:17,325 INFO [epoch 32 step 2000 stage1] train loss=0.8192 E=0.0092 F=0.0081 Frmse=0.2982 (0.3s) | val loss=0.7846 Frmse=0.2961 Ermse=0.3098
+[epoch 32 step 2000 stage1] train loss=0.8192 E=0.0092 F=0.0081 Frmse=0.2982 (0.3s) | val loss=0.7846 Frmse=0.2961 Ermse=0.3098
+2026-06-16 11:30:17,326 INFO done. best loss = 0.630339. checkpoint -> /tmp/mace_ictd_public_md17_train_ethanol_5modes_2000_aligned_20260616/checkpoints/revised_ethanol_ictd_bridge_u_makefx_seed20260616_steps2000.pth

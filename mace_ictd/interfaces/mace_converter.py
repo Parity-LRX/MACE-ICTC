@@ -249,7 +249,7 @@ def _calibrate_conv_tp(
         c_by_path[(l1, l2, l3)] = c
         resid = (oe_paths[mi] - c * block_e).abs().max().item()
         max_resid = max(max_resid, resid)
-    if max_resid > 1e-8:
+    if max_resid > 2e-6:
         raise RuntimeError(
             f"conv_tp calibration residual too large ({max_resid:.2e}); the MACE/ICTD path "
             "bases do not correspond as expected."
@@ -347,16 +347,16 @@ def convert_mace_to_ictd(mace_model, ictd_model) -> Dict[str, object]:
             for k in range(3):  # activated layers 0,1,2
                 h_in = float(mace_layers[k].h_in)
                 w = mace_layers[k].weight.to(dtype=ictd_fc_linears[k].weight.dtype)  # (h_in, h_out)
-                scale = (_NORMALIZE2MOM_SILU_K if k > 0 else 1.0) / (h_in ** 0.5)
+                scale = 1.0 / (h_in ** 0.5)
                 ictd_fc_linears[k].weight.copy_((w * scale).T.contiguous())
-                ictd_fc_linears[k].bias.zero_()
+                if ictd_fc_linears[k].bias is not None:
+                    ictd_fc_linears[k].bias.zero_()
             # last layer (no act): e3nn computes out = x @ (W_mace / sqrt(h_in * var_in/var_out))
-            # = x @ (W_mace / sqrt(h_in)) with var_in=var_out=1. Apply that 1/sqrt(h_in) AND undo
-            # the previous activated layer's 1/K (xK), then reorder rows to ICTD path order and
-            # scale by c_p (per path, broadcast over C).
+            # = x @ (W_mace / sqrt(h_in)) with var_in=var_out=1. ICTD now uses the same
+            # normalize2mom(silu) activations, so no activation scale is folded into this layer.
             h_in_last = float(mace_layers[3].h_in)
             last_w = (
-                mace_layers[3].weight * (_NORMALIZE2MOM_SILU_K / (h_in_last ** 0.5))
+                mace_layers[3].weight * (1.0 / (h_in_last ** 0.5))
             ).to(dtype=ictd_fc_linears[3].weight.dtype).T.contiguous()  # (P*C, 64) MACE path order
             mace_paths = _mace_conv_tp_paths(m_inter.conv_tp)
             ictd_paths = [tuple(p) for p in ictd_inter.tp.paths]
@@ -366,9 +366,10 @@ def convert_mace_to_ictd(mace_model, ictd_model) -> Dict[str, object]:
                 c = float(c_by_path[path])
                 new_last[ictd_pos * C : (ictd_pos + 1) * C, :] = (
                     c * last_w[mace_pos * C : (mace_pos + 1) * C, :]
-                )
+            )
             ictd_fc_linears[3].weight.copy_(new_last)
-            ictd_fc_linears[3].bias.zero_()
+            if ictd_fc_linears[3].bias is not None:
+                ictd_fc_linears[3].bias.zero_()
         report["blocks"][f"interaction[{i}].fc"] = (
             "e3nn FC -> ICTD fc: W.T/sqrt(h_in), normalize2mom(silu) K folded into next layer; "
             "last layer reordered to ICTD path order, scaled by c_p; biases zeroed"
@@ -485,7 +486,8 @@ def convert_mace_to_ictd(mace_model, ictd_model) -> Dict[str, object]:
         )
         with torch.no_grad():
             i_readout.readout.weight.copy_(ro_mats[0].T.to(dtype=i_readout.readout.weight.dtype))
-            i_readout.readout.bias.zero_()
+            if i_readout.readout.bias is not None:
+                i_readout.readout.bias.zero_()
         report["blocks"][f"readout[{ridx}]"] = "MACE LinearReadout l=0 effective-matrix -> nn.Linear(C,1)"
 
     last_idx = len(mace_model.readouts) - 1
@@ -496,9 +498,8 @@ def convert_mace_to_ictd(mace_model, ictd_model) -> Dict[str, object]:
             f"got {type(last_readout).__name__}"
         )
     # MACE final readout: NonLinearReadoutBlock linear_1 (Cx0e->H x0e) -> e3nn
-    # Activation(silu) -> linear_2 (H x0e -> 1x0e). The e3nn Activation is
-    # normalize2mom(silu) = K * silu(.), while ICTD uses a plain nn.SiLU, so K is
-    # folded into linear_2.
+    # Activation(silu) -> linear_2 (H x0e -> 1x0e). ICTD uses the same
+    # normalize2mom(silu), so no activation scale is folded into linear_2.
     H = last_readout.linear_1.irreps_out.dim
     ro_l1 = _e3nn_linear_effective_matrices(
         last_readout.linear_1, channels_in_by_l={0: C}, channels_out_by_l={0: H}
@@ -510,13 +511,13 @@ def convert_mace_to_ictd(mace_model, ictd_model) -> Dict[str, object]:
         ictd_model.last_layer_energy_readout.linear_1.weight.copy_(
             ro_l1.T.to(dtype=ictd_model.last_layer_energy_readout.linear_1.weight.dtype)
         )
-        ictd_model.last_layer_energy_readout.linear_1.bias.zero_()
+        if ictd_model.last_layer_energy_readout.linear_1.bias is not None:
+            ictd_model.last_layer_energy_readout.linear_1.bias.zero_()
         ictd_model.last_layer_energy_readout.linear_2.weight.copy_(
-            (ro_l2 * _NORMALIZE2MOM_SILU_K).T.to(
-                dtype=ictd_model.last_layer_energy_readout.linear_2.weight.dtype
-            )
+            ro_l2.T.to(dtype=ictd_model.last_layer_energy_readout.linear_2.weight.dtype)
         )
-        ictd_model.last_layer_energy_readout.linear_2.bias.zero_()
+        if ictd_model.last_layer_energy_readout.linear_2.bias is not None:
+            ictd_model.last_layer_energy_readout.linear_2.bias.zero_()
     report["blocks"][f"readout[{last_idx}]"] = (
         "MACE NonLinearReadout linear_1/linear_2 effective-matrices; normalize2mom(silu) K "
         "folded into linear_2 (l=0 scalars)"

@@ -80,6 +80,7 @@ class ForceTrainer:
         min_learning_rate: float = 1e-6,
         weight_decay: float = 0.0,
         optimizer_type: str = "adamw",
+        optimizer_param_groups: str = "flat",
         adam_beta1: float = 0.9,
         adam_beta2: float = 0.999,
         adam_eps: float = 1e-8,
@@ -154,6 +155,9 @@ class ForceTrainer:
             raise ValueError("min_learning_rate must be <= learning_rate")
         self.weight_decay = float(weight_decay)
         self.optimizer_type = str(optimizer_type).lower()
+        self.optimizer_param_groups = str(optimizer_param_groups or "flat").lower().replace("_", "-")
+        if self.optimizer_param_groups not in {"flat", "mace"}:
+            raise ValueError("optimizer_param_groups must be 'flat' or 'mace'")
         self.adam_beta1 = float(adam_beta1)
         self.adam_beta2 = float(adam_beta2)
         self.adam_eps = float(adam_eps)
@@ -256,11 +260,49 @@ class ForceTrainer:
         )
 
     # ------------------------------------------------------------------ setup
+    def _mace_style_param_groups(self, lr: float, weight_decay: float):
+        groups = {
+            "embedding": {"params": [], "weight_decay": 0.0, "lr": lr},
+            "interactions_decay": {"params": [], "weight_decay": weight_decay, "lr": lr},
+            "interactions_no_decay": {"params": [], "weight_decay": 0.0, "lr": lr},
+            "products": {"params": [], "weight_decay": weight_decay, "lr": lr},
+            "readouts": {"params": [], "weight_decay": 0.0, "lr": lr},
+            "other_no_decay": {"params": [], "weight_decay": 0.0, "lr": lr},
+        }
+        seen: set[int] = set()
+        for name, param in self.model.named_parameters():
+            if not param.requires_grad:
+                continue
+            pid = id(param)
+            if pid in seen:
+                continue
+            seen.add(pid)
+            if name.startswith("node_embedding"):
+                key = "embedding"
+            elif name.startswith("products."):
+                key = "products"
+            elif name.startswith(("layer_energy_readouts", "last_layer_energy_readout", "readouts")):
+                key = "readouts"
+            elif name.startswith("interactions."):
+                if name.endswith(".bias") or "norm" in name or "scale" in name:
+                    key = "interactions_no_decay"
+                else:
+                    key = "interactions_decay"
+            else:
+                key = "other_no_decay"
+            groups[key]["params"].append(param)
+        return [dict(name=name, **group) for name, group in groups.items() if group["params"]]
+
     def _build_optimizer(self, optimizer_type, lr, weight_decay, amsgrad):
-        params = list(self.model.parameters())
+        if self.optimizer_param_groups == "mace":
+            params = self._mace_style_param_groups(lr, weight_decay)
+            base_weight_decay = 0.0
+        else:
+            params = list(self.model.parameters())
+            base_weight_decay = weight_decay
         kind = str(optimizer_type).lower()
         common = dict(lr=lr, betas=(self.adam_beta1, self.adam_beta2), eps=self.adam_eps,
-                      weight_decay=weight_decay, amsgrad=bool(amsgrad))
+                      weight_decay=base_weight_decay, amsgrad=bool(amsgrad))
         if kind == "adam":
             self.optimizer = torch.optim.Adam(params, **common)
         else:
@@ -563,14 +605,14 @@ class ForceTrainer:
             stress_loss = self._loss_term(stress_pred, stress_ref)
             total_loss = total_loss + self.c * stress_loss
             with torch.no_grad():
-                stress_rmse = torch.sqrt(self.criterion_2(stress_pred.reshape(-1), stress_ref.reshape(-1)))
+                stress_rmse = self.criterion_2(stress_pred.reshape(-1), stress_ref.reshape(-1))
         else:
             stress_loss = torch.zeros((), device=self.device)
             stress_rmse = torch.zeros((), device=self.device)
 
         with torch.no_grad():
-            force_rmse = torch.sqrt(self.criterion_2(f_pred_l.reshape(-1), force_ref_l.reshape(-1)))
-            energy_rmse_avg = torch.sqrt(self.criterion_2(E_avg_pred, target_energy_avg))
+            force_rmse = self.criterion_2(f_pred_l.reshape(-1), force_ref_l.reshape(-1))
+            energy_rmse_avg = self.criterion_2(E_avg_pred, target_energy_avg)
         return {
             "total_loss": total_loss,
             "energy_loss": energy_loss.detach(),
@@ -764,7 +806,11 @@ class ForceTrainer:
                 "ictd_tp_path_policy", "ictd_tp_max_rank_other", "ictd_save_tp_mode",
                 "save_contraction_order", "save_multiple_mix_channels",
                 "ictd_fix_route", "ictd_fix_product_backend",
-                "ictd_fix_use_reduced_cg", "ictd_fix_edge_lmax",
+                "ictd_fix_use_reduced_cg", "ictd_fix_first_layer_self_connection",
+                "ictd_fix_conv_tp_scale_init", "ictd_fix_freeze_conv_tp_weight",
+                "ictd_fix_interaction_init",
+                "ictd_fix_edge_lmax",
+                "ictd_fix_readout_hidden_channels",
                 "ictd_fix_fusion_heads", "ictd_fix_fusion_head_weight_mode",
                 "ictd_fix_interaction_attn_heads", "ictd_fix_interaction_scale",
                 "ictd_fix_fusion_scale_init", "ictd_fix_gmix_gate_init",

@@ -21,6 +21,7 @@ mace_ictd/models/_ictd_cache/
 
 # Model / run artifacts
 benchmark_results/
+benchmarks/paper/results/**/checkpoints/
 *.pt2
 *.pth
 checkpoint/

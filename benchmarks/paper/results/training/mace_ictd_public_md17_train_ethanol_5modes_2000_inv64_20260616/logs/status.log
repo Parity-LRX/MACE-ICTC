@@ -1,0 +1,5 @@
+OK revised_ethanol_ictd_bridge_u_eager_seed20260616_steps2000
+OK revised_ethanol_ictd_bridge_u_makefx_seed20260616_steps2000
+OK revised_ethanol_ictd_cueq_makefx_seed20260616_steps2000
+WARNING revised_ethanol_mace_e3nn_seed20260616_steps2000: training completed but mace-torch model save failed with ScriptFunction pickle error; retaining log for loss comparison.
+WARNING revised_ethanol_mace_cueq_seed20260616_steps2000: training completed but mace-torch model save failed with ScriptFunction pickle error; retaining log for loss comparison.

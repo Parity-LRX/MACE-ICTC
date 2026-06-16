@@ -1258,6 +1258,30 @@ class LAMMPS_MLIAP_MFF(MLIAPUnified):
                         arch_meta.get("ictd_fix_use_reduced_cg", False),
                     )
                 ),
+                ictd_fix_first_layer_self_connection=bool(
+                    ckpt.get(
+                        "ictd_fix_first_layer_self_connection",
+                        arch_meta.get("ictd_fix_first_layer_self_connection", False),
+                    )
+                ),
+                ictd_fix_conv_tp_scale_init=str(
+                    ckpt.get("ictd_fix_conv_tp_scale_init")
+                    or arch_meta.get("ictd_fix_conv_tp_scale_init", "none")
+                ),
+                ictd_fix_freeze_conv_tp_weight=bool(
+                    ckpt.get(
+                        "ictd_fix_freeze_conv_tp_weight",
+                        arch_meta.get("ictd_fix_freeze_conv_tp_weight", False),
+                    )
+                ),
+                ictd_fix_interaction_init=str(
+                    ckpt.get("ictd_fix_interaction_init")
+                    or arch_meta.get("ictd_fix_interaction_init", "identity")
+                ),
+                ictd_fix_readout_hidden_channels=int(
+                    ckpt.get("ictd_fix_readout_hidden_channels")
+                    or arch_meta.get("ictd_fix_readout_hidden_channels", 16)
+                ),
                 ictd_fix_edge_lmax=(
                     None
                     if ckpt.get("ictd_fix_edge_lmax", arch_meta.get("ictd_fix_edge_lmax", None)) is None
