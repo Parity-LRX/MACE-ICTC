@@ -736,10 +736,56 @@ class ForceTrainer:
         seen = max(seen, 1)
         return {k: v / seen for k, v in run.items()}
 
-    def fit(self, epochs=None):
+    def load_checkpoint(self, path, *, training_state: bool = False, strict: bool = True) -> int:
+        ckpt = torch.load(path, map_location=self.device)
+        state = ckpt.get("e3trans_state_dict", ckpt)
+        missing, unexpected = self.model.load_state_dict(state, strict=strict)
+        if missing or unexpected:
+            log.warning("checkpoint load_state_dict missing=%s unexpected=%s", missing, unexpected)
+        start_epoch = 0
+        if training_state:
+            if "optimizer_state_dict" not in ckpt:
+                raise KeyError(f"{path} does not contain optimizer_state_dict")
+            self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+            for group in self.optimizer.param_groups:
+                for key, value in list(group.items()):
+                    if torch.is_tensor(value):
+                        group[key] = value.to(self.device)
+            self.global_step = int(ckpt.get("global_step", 0))
+            start_epoch = int(ckpt.get("epoch", -1)) + 1
+            if isinstance(ckpt.get("e3trans_ema_state_dict"), dict):
+                self._ema_state = {
+                    k: v.to(self.device) if torch.is_tensor(v) else v
+                    for k, v in ckpt["e3trans_ema_state_dict"].items()
+                }
+            if isinstance(ckpt.get("e3trans_swa_state_dict"), dict):
+                self._swa_state = {
+                    k: v.to(self.device) if torch.is_tensor(v) else v
+                    for k, v in ckpt["e3trans_swa_state_dict"].items()
+                }
+                self._swa_n = int(ckpt.get("swa_n_averaged", self._swa_n))
+            self._stage_two_active = bool(
+                ckpt.get("training_hyperparameters", {}).get("stage_two_active", self._stage_two_active)
+            )
+            self._stage_two_activated_epoch = ckpt.get(
+                "training_hyperparameters", {}
+            ).get("stage_two_activated_epoch", self._stage_two_activated_epoch)
+            self._stage_two_activated_step = ckpt.get(
+                "training_hyperparameters", {}
+            ).get("stage_two_activated_step", self._stage_two_activated_step)
+            log.warning(
+                "resumed optimizer/global_step from %s at epoch=%d step=%d; "
+                "scheduler history is not serialized, so stateful schedulers resume approximately",
+                path, start_epoch, self.global_step,
+            )
+        else:
+            log.info("loaded model weights from %s", path)
+        return start_epoch
+
+    def fit(self, epochs=None, start_epoch: int = 0):
         epochs = int(epochs) if epochs is not None else self.epochs
         best = math.inf
-        for epoch in range(epochs):
+        for epoch in range(int(start_epoch), epochs):
             if self._reached_max_steps():
                 break
             self._maybe_activate_stage_two(epoch)

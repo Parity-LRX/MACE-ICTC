@@ -9,7 +9,7 @@ from matscipy.neighbours import neighbour_list as matscipy_neighbour_list
 from concurrent.futures import ProcessPoolExecutor
 from tqdm import tqdm
 from typing import Tuple, Optional, Dict, Any
-from mace_ictd.data.preprocessing import load_read_blocks
+from mace_ictd.data.preprocessing import load_read_blocks, sanitize_edge_shifts_for_pbc
 
 
 def _load_struct_property_file(file_path: str, *, kind: str) -> torch.Tensor:
@@ -146,6 +146,7 @@ def compute_graph_worker(args):
     i, j, S = matscipy_neighbour_list(
         'ijS', positions=pos, cell=current_cell, pbc=pbc_flags, cutoff=max_radius
     )
+    S = sanitize_edge_shifts_for_pbc(pos, i, j, S, current_cell, pbc_flags, max_radius)
     
     # Return cache dictionary (all converted to Tensor)
     out = {
@@ -678,6 +679,7 @@ class OnTheFlyDataset(Dataset):
         i, j, S = matscipy_neighbour_list(
             'ijS', positions=pos, cell=current_cell, pbc=pbc_flags, cutoff=self.max_radius
         )
+        S = sanitize_edge_shifts_for_pbc(pos, i, j, S, current_cell, pbc_flags, self.max_radius)
         
         # 4. Get stress
         if self.stresses is not None and idx < len(self.stresses):

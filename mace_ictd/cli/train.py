@@ -530,6 +530,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--dtype", default="float64", choices=["float32", "float64"])
     ap.add_argument("--checkpoint", default="model.pth")
+    ap.add_argument("--resume-checkpoint", default=None,
+                    help="Load model weights from a previous MACE-ICTD checkpoint before training.")
+    ap.add_argument("--resume-training-state", action="store_true",
+                    help="With --resume-checkpoint, also restore optimizer/global_step and continue epoch numbering.")
     ap.add_argument("--num-workers", type=int, default=2)
     ap.add_argument("--log-interval", type=int, default=10)
     return ap
@@ -786,7 +790,14 @@ def main(argv=None):
         train_sampler=sampler, checkpoint_path=args.checkpoint, log_interval=args.log_interval,
         extra_hparams=extra_hparams,
     )
-    best = trainer.fit()
+    start_epoch = 0
+    if args.resume_checkpoint:
+        start_epoch = trainer.load_checkpoint(
+            args.resume_checkpoint,
+            training_state=bool(args.resume_training_state),
+            strict=True,
+        )
+    best = trainer.fit(start_epoch=start_epoch)
     logging.info("done. best loss = %.6f. checkpoint -> %s", best, args.checkpoint)
 
 

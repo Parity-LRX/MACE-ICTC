@@ -57,6 +57,45 @@ def _parse_lattice_from_comment(line: str):
         return None
 
 
+def sanitize_edge_shifts_for_pbc(
+    pos,
+    edge_src,
+    edge_dst,
+    edge_shifts,
+    cell,
+    pbc_flags,
+    max_radius,
+):
+    """Normalize neighbor-list shifts and reject impossible cached edges.
+
+    Some datasets store a dummy nonzero Lattice even when pbc="F F F".  The
+    physical graph is then non-periodic, so any nonzero image shift is stale or
+    invalid cache state and would turn local molecular edges into box-scale
+    vectors in the model.
+    """
+    shifts = np.asarray(edge_shifts, dtype=np.float64)
+    if shifts.size == 0:
+        return shifts
+
+    pbc_flags = [bool(x) for x in pbc_flags]
+    if not any(pbc_flags):
+        if np.any(shifts != 0.0):
+            shifts = np.zeros_like(shifts, dtype=np.float64)
+        edge_vec = np.asarray(pos, dtype=np.float64)[edge_dst] - np.asarray(pos, dtype=np.float64)[edge_src]
+    else:
+        shift_vec = shifts @ np.asarray(cell, dtype=np.float64)
+        edge_vec = np.asarray(pos, dtype=np.float64)[edge_dst] - np.asarray(pos, dtype=np.float64)[edge_src] + shift_vec
+
+    if edge_vec.size:
+        max_len = float(np.linalg.norm(edge_vec, axis=1).max())
+        if max_len > float(max_radius) + 1e-6:
+            raise ValueError(
+                f"neighbor-list edge length {max_len:.6g} exceeds cutoff {float(max_radius):.6g}; "
+                "check pbc flags, cell, and cached edge_shifts"
+            )
+    return shifts
+
+
 def _canonical_property_name(name: str) -> str:
     """Normalize property names for tolerant matching."""
     return str(name).strip().lower()
@@ -763,6 +802,7 @@ def process_single_frame(args):
     i, j, S = matscipy_neighbour_list(
         'ijS', positions=pos, cell=current_cell, pbc=pbc_flags, cutoff=max_radius
     )
+    S = sanitize_edge_shifts_for_pbc(pos, i, j, S, current_cell, pbc_flags, max_radius)
     pos_checksum = np.sum(pos)
     
     # Return pure data (dictionary form)

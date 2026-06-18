@@ -69,6 +69,32 @@ def _symbol(z: int) -> str:
     raise ValueError(f"unsupported atomic number in MD17 subset: {z}")
 
 
+def _sanitize_shifts(
+    pos: np.ndarray,
+    edge_src: np.ndarray,
+    edge_dst: np.ndarray,
+    shifts: np.ndarray,
+    cell: np.ndarray,
+    pbc: tuple[bool, bool, bool],
+    max_radius: float,
+) -> np.ndarray:
+    shifts = np.asarray(shifts, dtype=np.float64)
+    if not any(bool(x) for x in pbc):
+        if shifts.size and np.any(shifts != 0.0):
+            shifts = np.zeros_like(shifts)
+        edge_vec = pos[edge_dst] - pos[edge_src]
+    else:
+        edge_vec = pos[edge_dst] - pos[edge_src] + shifts @ cell
+    if edge_vec.size:
+        max_len = float(np.linalg.norm(edge_vec, axis=1).max())
+        if max_len > float(max_radius) + 1e-6:
+            raise ValueError(
+                f"neighbor-list edge length {max_len:.6g} exceeds cutoff {float(max_radius):.6g}; "
+                "check pbc/cell handling before writing processed H5"
+            )
+    return shifts
+
+
 def _write_processed_h5(path: Path, frames: list[dict], *, max_radius: float) -> None:
     node_counts = np.zeros(len(frames), dtype=np.int64)
     edge_counts = np.zeros(len(frames), dtype=np.int64)
@@ -84,7 +110,7 @@ def _write_processed_h5(path: Path, frames: list[dict], *, max_radius: float) ->
             edge_src, edge_dst, shifts = neighbour_list("ijS", positions=pos, cell=cell, pbc=pbc, cutoff=max_radius)
             edge_src = np.asarray(edge_src, dtype=np.int64)
             edge_dst = np.asarray(edge_dst, dtype=np.int64)
-            shifts = np.asarray(shifts, dtype=np.float64)
+            shifts = _sanitize_shifts(pos, edge_src, edge_dst, shifts, cell, pbc, max_radius)
             g = h5.create_group(f"sample_{i}")
             g.create_dataset("pos", data=pos)
             g.create_dataset("A", data=z)
