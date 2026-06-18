@@ -10,7 +10,7 @@
 4. [修改 CMakeLists.txt](#4-修改-lammps-cmakeliststxt一次性)
 5. [CMake 配置](#5-cmake-配置)
 6. [编译](#6-编译)
-7. [导出 core.pt](#7-导出-corepttorchscript-模型)
+7. [导出 LAMMPS 模型 core](#7-导出-lammps-模型-core)
 8. [运行 LAMMPS](#8-运行-lammps)
 9. [一键测试脚本](#9-一键测试脚本)
 10. [故障排查](#10-故障排查)
@@ -27,7 +27,7 @@
 | CMake | ≥ 3.20 |
 | C++ 编译器 | GCC 7+ 或 Clang，支持 C++17 |
 | CUDA | 11+（与 PyTorch/LibTorch 版本匹配） |
-| Python | 3.8+（用于导出 `core.pt`） |
+| Python | 3.9+（用于 MACE-ICTD 导出 `.pt2` / `core.pt`） |
 
 ### 1.2 Python 环境
 
@@ -221,11 +221,81 @@ build-mfftorch/lmp
 
 ---
 
-## 7. 导出 core.pt（TorchScript 模型）
+## 7. 导出 LAMMPS 模型 core
 
-LAMMPS 的 `pair_style mff/torch` 需要 `core.pt` 文件。可用两种方式：
+当前推荐给 `pair_style mff/torch` / `pair_style mff/torch/kk` 使用的是
+AOTInductor `.pt2` core。TorchScript `core.pt` 路径仍可用于 legacy LibTorch
+部署，但新模型和预训练 MACE 转换建议优先走 `.pt2`。
 
-### 7.1 方式 A：从真实 checkpoint 导出
+### 7.1 从 MACE-ICTD checkpoint 导出 `.pt2`
+
+```bash
+mff-export-aoti \
+  --checkpoint /path/to/model.pth \
+  --elements H,O \
+  --out model.pt2 \
+  --dynamic \
+  --dtype float32 \
+  --device cuda \
+  --embed-e0
+```
+
+如果目标体系原子数固定，static-N 导出通常更稳，也方便 LAMMPS smoke test：
+
+```bash
+mff-export-aoti \
+  --checkpoint /path/to/model.pth \
+  --elements H,O \
+  --atoms 256 \
+  --degree 32 \
+  --static-n \
+  --dtype float32 \
+  --device cuda \
+  --embed-e0 \
+  --out model_static256.pt2
+```
+
+常用规则：
+
+- `--elements` 的顺序必须和后续 LAMMPS `pair_coeff` 里的元素顺序一致。
+- `--embed-e0` 会把 atomic reference energy 嵌入导出 core，使 LAMMPS `pe` 返回绝对能量。
+- `--dynamic` 适合变原子数/变邻接规模的部署；如果 dynamic export 失败，先用 `--static-n` 做固定形状验证。
+- `--degree` 是静态导出时为邻居数预留的 directed degree 上限。实际运行不能超过导出时的容量。
+- 导出日志会比较 eager 和 compiled `.pt2` 的能量/力；只有通过数值检查后才应进入 LAMMPS。
+
+### 7.2 从原生 MACE 预训练模型导出
+
+先把原生 `mace-torch` `ScaleShiftMACE` 对象转成 MACE-ICTD checkpoint：
+
+```bash
+mff-convert-mace \
+  --mace-model /path/to/mace.model \
+  --out mace_ictd.pth \
+  --product-backend ictd-bridge-u \
+  --dtype float64 \
+  --device cpu
+```
+
+很老的公开预训练模型可能只能在对应历史 `mace-torch`/`e3nn` 环境里完成 load 和 conversion。
+如果要做原生 MACE 数值对应审计，先保留 float64 checkpoint；如果要部署到 LAMMPS，
+用同一条转换命令把 `--dtype` 改成 `float32` 再导出 `.pt2`：
+
+```bash
+mff-export-aoti \
+  --checkpoint mace_ictd_f32.pth \
+  --elements H,C,N,O,F,P,S,Cl,Br,I \
+  --atoms 6 \
+  --degree 5 \
+  --static-n \
+  --dtype float32 \
+  --device cuda \
+  --embed-e0 \
+  --out mace_ictd_static6.pt2
+```
+
+### 7.3 Legacy TorchScript `core.pt`
+
+TorchScript 仍可通过 `mff-export-core` 导出：
 
 ```bash
 mff-export-core \
@@ -233,76 +303,10 @@ mff-export-core \
   --elements H O \
   --device cuda \
   --dtype float32 \
-  --e0-csv /path/to/fitted_E0.csv \
   --out core.pt
 ```
 
-**--mode 参数**：支持 `pure-cartesian-ictd`、`pure-cartesian-ictd-save`、`spherical-save-cue`。不指定时自动从 checkpoint 读取。若 checkpoint 中保存了 `tensor_product_mode`（mff-train 会自动保存），则无需手动指定。
-
-**当前默认导出规则**：
-- `pure-cartesian-ictd` / `pure-cartesian-ictd-o3` / `pure-cartesian-ictd-save`：默认 `--jit-mode hybrid`
-- `spherical-save-cue --native-ops`：默认 `--jit-mode hybrid`
-- 其他模式：默认 `--jit-mode trace`
-
-**spherical-save-cue 导出（方案 A，便携版）**：
-- 不传 `--native-ops` 时，默认导出为纯 PyTorch 实现，`core.pt` **无需 cuEquivariance 运行时**，可在任意 LibTorch 环境运行。
-- 此路径会使用 `force_naive`，将 cuEquivariance 自定义 ops 替换为纯 PyTorch 等价实现。
-
-**spherical-save-cue 导出（方案 B，native cuEquivariance）**：
-- 传 `--native-ops` 后，默认导出为单 `hybrid core.pt`
-- 当前 `/kk` 已可直接使用这条路径
-- 如需更保守的多 bucket 路线，可显式加 `--bundle-out`
-- 运行时必须设置：
-  ```bash
-  export PYTHONHOME=/root/miniconda3/envs/mff
-  export PYTHONPATH=/root/miniconda3/envs/mff/lib/python3.11/site-packages:/home/rebuild
-  export MFF_LIBPYTHON=/root/miniconda3/envs/mff/lib/libpython3.11.so
-  export MFF_CUSTOM_OPS_LIB=/root/miniconda3/envs/mff/lib/python3.11/site-packages/cuequivariance_ops/lib/libcue_ops.so:/root/miniconda3/envs/mff/lib/python3.11/site-packages/cuequivariance_ops_torch/_ext/cuequivariance_ops_torch_ext.cpython-311-x86_64-linux-gnu.so
-  ```
-
-**ICTD 系列导出说明**：
-- `pure-cartesian-ictd` / `pure-cartesian-ictd-o3` / `pure-cartesian-ictd-save` 现在默认导出为 `hybrid`
-- 若显式强制 `--jit-mode trace`，仍建议同时给代表性 trace：
-  ```bash
-  mff-export-core \
-    --checkpoint /path/to/model.pth \
-    --elements H O \
-    --device cuda \
-    --dtype float32 \
-    --jit-mode trace \
-    --trace-num-nodes 2048 \
-    --trace-num-edges 32000 \
-    --out core.pt
-  ```
-
-**max-radius 如何确定**：
-- **新训练的 checkpoint**（mff-train 会保存 max_radius）：脚本会自动从 checkpoint 读取，无需手动指定。
-- **旧 checkpoint 或未保存**：必须与训练时 `mff-train --max-radius` 一致（默认 5.0），且与 LAMMPS `pair_style mff/torch CUTOFF` 的 cutoff 一致。
-
-**E0 默认行为**：
-- `mff-export-core` 现在默认会把 E0 一起嵌入导出的 `core.pt`
-- 若显式传 `--e0-csv`，则优先使用该文件
-- 若不传 `--e0-csv`，新 checkpoint 会优先使用 checkpoint 中保存的 `atomic_energy_keys/atomic_energy_values`
-- 若是老 checkpoint 且未保存 E0，则回退到本地 `fitted_E0.csv`
-- 只有显式传 `--no-embed-e0` 时，才导出不带 E0 的纯网络能量
-
-### 7.2 方式 B：生成 dummy 模型（用于测试）
-
-```bash
-python - <<'PY'
-import torch
-from molecular_force_field.test.self_test_lammps_potential import _make_dummy_checkpoint_pure_cartesian_ictd
-_make_dummy_checkpoint_pure_cartesian_ictd("dummy.pth", device=torch.device("cpu"))
-print("dummy.pth 已生成")
-PY
-
-python molecular_force_field/scripts/export_libtorch_core.py \
-  --checkpoint dummy.pth \
-  --elements H O \
-  --device cuda \
-  --max-radius 5.0 \
-  --out core.pt
-```
+除非你明确需要 legacy TorchScript runtime，否则优先使用 7.1 的 `.pt2` 路径。
 
 ---
 
@@ -333,7 +337,7 @@ mass 2 15.999
 neighbor 1.0 bin
 
 pair_style mff/torch 5.0 cuda
-pair_coeff * * /path/to/core.pt H O
+pair_coeff * * /path/to/model.pt2 H O
 
 compute mffg all mff/torch/phys global
 compute mffa all mff/torch/phys atom
@@ -346,7 +350,7 @@ dump 1 all custom 20 dump.mff id type x y z c_mffa[1] c_mffa[2] c_mffa[3] c_mffa
 run 200
 ```
 
-若 `core.pt` 来自带外场架构的 `pure-cartesian-ictd` checkpoint，可在运行时通过 LAMMPS equal-style 变量传入 rank-1 外场：
+若导出的模型 core 来自带外场架构的 checkpoint，可在运行时通过 LAMMPS equal-style 变量传入 rank-1 外场：
 
 ```lammps
 variable Ex equal 0.0
@@ -354,7 +358,7 @@ variable Ey equal 0.0
 variable Ez equal 0.01
 
 pair_style mff/torch 5.0 cuda field v_Ex v_Ey v_Ez
-pair_coeff * * /path/to/core.pt H O
+pair_coeff * * /path/to/model.pt2 H O
 ```
 
 说明：
@@ -362,7 +366,7 @@ pair_coeff * * /path/to/core.pt H O
 - 也支持 rank-2 外场：
   - `field9`：全量 `3x3`，行主序 `xx xy xz yx yy yz zx zy zz`
   - `field6`：对称 `3x3` 简写，顺序 `xx yy zz xy xz yz`
-- 若 `core.pt` 需要外场但未提供 `field ...`，LAMMPS 初始化时会报错；反之，普通 `core.pt` 也不能搭配 `field ...` 使用。
+- 若模型 core 需要外场但未提供 `field ...`，LAMMPS 初始化时会报错；反之，普通模型 core 也不能搭配 `field ...` 使用。
 
 rank-2 示例：
 
@@ -378,12 +382,12 @@ variable Tzy equal 0.0
 variable Tzz equal 1.0
 
 pair_style mff/torch 5.0 cuda field9 v_Txx v_Txy v_Txz v_Tyx v_Tyy v_Tyz v_Tzx v_Tzy v_Tzz
-pair_coeff * * /path/to/core.pt H O
+pair_coeff * * /path/to/model.pt2 H O
 ```
 
 ### 8.3 输出物理张量
 
-若 `core.pt` 是带 `physical_tensor_outputs` 的 `pure-cartesian-ictd` 模型，
+若模型 core 是带 `physical_tensor_outputs` 的 MACE-ICTD 模型，
 可通过 `compute mff/torch/phys` 读取最近一次 `pair_style mff/torch*` 缓存的笛卡尔物理张量：
 
 ```lammps
@@ -472,181 +476,69 @@ thermo 20
 
 ---
 
-## 9. 一键测试脚本
+## 9. 编译和运行 smoke test
 
-### 9.1 快速 smoke 测试（dummy 模型）
+### 9.1 编译检查
 
-```bash
-# 在 rebuild 仓库根目录
-bash lammps_user_mfftorch/examples/run_smoke_mfftorch.sh /path/to/lmp cuda
-```
-
-### 9.2 完整 GPU 测试（含 dummy 或真实模型）
+从 LAMMPS 源码根目录编译：
 
 ```bash
-# 使用 dummy 模型（pure-cartesian-ictd）
-bash molecular_force_field/test/run_gpu_lammps_with_corept.sh \
-  --lmp /path/to/lammps/build-mfftorch/lmp \
-  --dummy-ictd \
-  --elements H O \
-  --dtype float32 \
-  --cutoff 5.0 \
-  --steps 200
-
-# 使用 dummy 模型（spherical-save-cue，需 cuEquivariance）
-bash molecular_force_field/test/run_gpu_lammps_with_corept.sh \
-  --lmp /path/to/lammps/build-mfftorch/lmp \
-  --dummy-cue \
-  --elements H O \
-  --cutoff 5.0 \
-  --steps 200
-
-# 使用真实模型
-bash molecular_force_field/test/run_gpu_lammps_with_corept.sh \
-  --lmp /path/to/lammps/build-mfftorch/lmp \
-  --pth /path/to/model.pth \
-  --elements H O \
-  --e0-csv /path/to/fitted_E0.csv \
-  --dtype float32 \
-  --cutoff 5.0 \
-  --steps 200
+export LIBTORCH_PREFIX="$(python -c 'import torch; print(torch.utils.cmake_prefix_path)')"
+cmake --build build-mfftorch -j 8
+cmake --build build-mfftorch-kk -j 8
 ```
 
-补充说明：
-- `spherical-save-cue --native-ops` 现在默认走单 `hybrid core.pt`
-- `pure-cartesian-ictd` / `pure-cartesian-ictd-save` 现在默认也走 `hybrid`
-- 如需强制旧 traced 路径，可在脚本后追加 `--jit-mode trace`
+如果链接阶段出现 CUDA runtime 版本冲突 warning，需要核对 Python 环境中的 PyTorch CUDA
+版本和系统 CUDA runtime。warning 不一定导致运行失败，但不应在生产环境中忽略。
 
-### 9.3 Feature-space FFT 训练 smoke（单卡 / 多卡）
+### 9.2 OFF23 converted `.pt2` smoke
+
+先按第 7 节导出一个 fixed-N `.pt2`。然后准备最小 LAMMPS input：
+
+```lammps
+units metal
+atom_style atomic
+boundary p p p
+
+read_data system.data
+neighbor 1.0 bin
+
+pair_style mff/torch 4.5 cuda
+pair_coeff * * /path/to/MACE-OFF23_small_ictd_bridge_u_f32_static6.pt2 H C N O
+
+thermo 1
+thermo_style custom step temp pe etotal fmax
+run 0
+```
+
+运行：
 
 ```bash
-# 单卡：同时测试 ICTD + spherical-save-cue
-bash molecular_force_field/test/run_feature_fft_train_smoketest.sh \
-  --mode both \
-  --device cuda \
-  --dtype float32
+export LD_LIBRARY_PATH="$(python -c 'import os, torch; print(os.path.join(os.path.dirname(torch.__file__), "lib"))'):${LD_LIBRARY_PATH:-}"
+/path/to/lammps/build-mfftorch/lmp -in in.off23_static6
+/path/to/lammps/build-mfftorch-kk/lmp -in in.off23_static6
 ```
 
-```bash
-# 多卡：2 GPU DDP dry run
-bash molecular_force_field/test/run_feature_fft_train_smoketest.sh \
-  --mode both \
-  --device cuda \
-  --dtype float32 \
-  --n-gpu 2
-```
+4090 验证记录中，普通 build 和 Kokkos build 均能加载 `.pt2`。fresh OFF23 static-6
+导出的 `run 0` 与 Python checkpoint 对应到：
 
-说明：
-- 脚本会自动生成非退化的 periodic toy 数据集并先完成预处理
-- 然后运行带 `feature_spectral_mode=fft` 的 `mff-train` dry run
-- `--mode ictd|cue|both` 可选择后端
-- `--n-gpu > 1` 时通过 `mff-train --n-gpu N` 自动触发 DDP
+| 量 | LAMMPS `mff/torch` | Python checkpoint |
+|---|---:|---:|
+| energy (eV) | `-6633.036` | `-6633.03613281` |
+| 最大绝对力分量 (eV/A) | `11.767612` | `11.76760674` |
 
-### 9.4 Feature-space FFT 部署 smoke（单卡 / MPI）
+这里 LAMMPS `fmax` 是最大绝对力分量。Python 侧应比较 `max(abs(forces))`，不要比较逐原子力向量范数最大值。
 
-```bash
-# 单卡 orthogonal PBC smoke
-bash molecular_force_field/test/run_gpu_lammps_with_corept.sh \
-  --lmp /path/to/lammps/build-mfftorch/lmp \
-  --dummy-ictd \
-  --test-feature-spectral-fft \
-  --elements H \
-  --dtype float32 \
-  --cutoff 5.0
-```
+### 9.3 原生 MACE 到 ICTD 的数值对应
 
-```bash
-# 双卡 MPI：1 rank 对应 1 GPU
-CUDA_VISIBLE_DEVICES=0,1 \
-bash molecular_force_field/test/run_gpu_lammps_with_corept.sh \
-  --lmp /path/to/lammps/build-mfftorch/lmp \
-  --dummy-ictd \
-  --test-feature-spectral-fft \
-  --elements H \
-  --dtype float32 \
-  --cutoff 5.0 \
-  --gpu 1 \
-  --np 2
-```
+转换桥接本身应先在 Python 中验证，再进入 LAMMPS。OFF23 small 的 float64 验证记录为：
 
-```bash
-# 三斜盒 + MPI
-CUDA_VISIBLE_DEVICES=0,1 \
-bash molecular_force_field/test/run_gpu_lammps_with_corept.sh \
-  --lmp /path/to/lammps/build-mfftorch/lmp \
-  --dummy-ictd \
-  --test-feature-spectral-fft-triclinic \
-  --elements H \
-  --dtype float32 \
-  --cutoff 5.0 \
-  --gpu 1 \
-  --np 2
-```
+- native `mace-torch` vs converted ICTD，苯 same-frame 轨迹；
+- 最大能量绝对差：`2.73e-12 eV`；
+- 最大力分量差：`4.44e-15 eV/A`。
 
-```bash
-# 2D slab smoke: boundary p p f，仅验证横向周期等价
-bash molecular_force_field/test/run_gpu_lammps_with_corept.sh \
-  --lmp /path/to/lammps/build-mfftorch/lmp \
-  --dummy-ictd \
-  --test-feature-spectral-fft-slab \
-  --elements H \
-  --dtype float32 \
-  --cutoff 5.0
-```
-
-```bash
-# 2D slab z-open sanity：验证 z 方向没有被误当成周期方向
-bash molecular_force_field/test/run_gpu_lammps_with_corept.sh \
-  --lmp /path/to/lammps/build-mfftorch/lmp \
-  --dummy-ictd \
-  --test-feature-spectral-fft-slab-z-open \
-  --elements H \
-  --dtype float32 \
-  --cutoff 5.0
-```
-
-```bash
-# np=1 vs np=2 consistency sanity
-CUDA_VISIBLE_DEVICES=0,1 \
-bash molecular_force_field/test/run_gpu_lammps_with_corept.sh \
-  --lmp /path/to/lammps/build-mfftorch/lmp \
-  --dummy-ictd \
-  --test-feature-spectral-fft-mpi-consistency \
-  --elements H \
-  --dtype float32 \
-  --cutoff 5.0 \
-  --gpu 1 \
-  --np 2
-```
-
-```bash
-# 吞吐量对比：baseline vs feature-FFT / reciprocal path
-CUDA_VISIBLE_DEVICES=0,1 \
-bash molecular_force_field/test/run_gpu_lammps_with_corept.sh \
-  --lmp /path/to/lammps/build-mfftorch/lmp \
-  --dummy-ictd \
-  --test-feature-spectral-fft \
-  --compare-throughput \
-  --elements H O \
-  --dtype float32 \
-  --cutoff 5.0 \
-  --steps 200 \
-  --gpu 1 \
-  --np 2
-```
-
-说明：
-- 当前 reciprocal solver 已经是“distributed-contract + correctness-first”的首版：去掉了原子全量 gather，默认走 mesh-reduce / slab-distributed FFT 路径
-- 这还不是最终的全程 GPU-resident distributed FFT 实现
-- 推荐模式是 `--gpu 1 --np N`，即每个 MPI rank 绑定一张 GPU
-- 多 MPI rank 下如果没有 GPU-aware MPI，通信阶段仍可能经过 host staging
-- 当前版本已经把 `phi/gx/gy/gz` 合并进一条 batched reciprocal field 路径，减少了重复 transpose / Allgather 次数
-- 如果启用 `compute mff/torch/phys`，physical tensor 会按需缓存到 host，这会额外引入输出搬运开销
-- `--compare-throughput` 会自动在相同随机体系上跑两次：baseline 与启用长程/feature-FFT 的版本，并输出 `loop time` / `steps/s` / slowdown 对比
-- 当前 `boundary p p f` reciprocal 路径已经单独走 `slab_2d` backend：它会在非周期方向使用 vacuum padding，再做正确性优先的频域求解
-- `--test-pbc-slab` / `--test-feature-spectral-fft-slab` 只检查 `boundary p p f` 下横向跨边界对与盒内等价对
-- `--test-pbc-slab-z-open` / `--test-feature-spectral-fft-slab-z-open` 进一步检查远距 z 对不会被误当成最小像近邻
-- 这仍然是 correctness-first 的首版 slab backend，不应等同于最终高性能/高精度 slab Green's function 实现
+这个测试验证 checkpoint conversion；AOTI `.pt2` 仍要单独验证 eager-vs-compiled 和
+LAMMPS-vs-Python，因为编译器 lowering 会改变浮点运算顺序。
 
 ---
 
@@ -692,17 +584,18 @@ bash molecular_force_field/test/run_gpu_lammps_with_corept.sh \
 ## 11. 附录：目录结构速览
 
 ```
-rebuild/
+MACE-ICTD/
 ├── lammps_user_mfftorch/
 │   ├── src/USER-MFFTORCH/          # 源码
 │   ├── cmake/Modules/Packages/USER-MFFTORCH.cmake
 │   ├── cmake/Packages/USER-MFFTORCH.cmake  # 部分版本
 │   ├── examples/
 │   └── docs/BUILD_AND_RUN.md       # 本文档
-├── molecular_force_field/
-│   └── scripts/
-│       ├── export_libtorch_core.py  # 导出 core.pt
-│       └── run_gpu_lammps_with_corept.sh
+├── mace_ictd/
+│   └── cli/
+│       ├── convert_mace.py          # 原生 MACE -> MACE-ICTD
+│       ├── export_aoti_core.py      # 导出 .pt2
+│       └── export_libtorch_core.py  # legacy TorchScript core
 └── scripts/
     └── install_user_mfftorch_into_lammps.sh
 ```

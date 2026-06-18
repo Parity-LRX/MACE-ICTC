@@ -219,6 +219,16 @@ radial layouts are rejected rather than silently converted.
 For exact MACE correspondence, the converted ICTD model must preserve the source
 model's structural options, including `use_reduced_cg`.
 
+OFF23 smoke test, RTX 4090, 2026-06-18: `MACE-OFF23_small.model` was converted
+to bridge-U ICTD and compared against native `mace-torch` in float64. On a
+benzene trajectory, same-frame maximum differences were `2.73e-12 eV` in energy
+and `4.44e-15 eV/A` in force. A fresh float32 static-6 AOTI export loaded in
+LAMMPS `mff/torch`; LAMMPS `pe=-6633.036` matched the Python checkpoint energy
+`-6633.03613281 eV`, and LAMMPS `fmax=11.767612` matched the Python maximum
+absolute force component `11.76760674 eV/A`. Some old OFF23 pickle files require
+a matching historical `mace-torch`/`e3nn` environment for the loading step before
+conversion.
+
 ## Long-Range Correction
 
 The supported long-range path is a learned scalar reciprocal correction:
@@ -270,8 +280,8 @@ LAMMPS support is in [lammps_user_mfftorch](lammps_user_mfftorch). After buildin
 LAMMPS with the provided `USER-MFFTORCH` package and LibTorch/AOTI support:
 
 ```text
-pair_style   mff/torch  model.pt2
-pair_coeff   * *
+pair_style   mff/torch  5.0 cuda
+pair_coeff   * * /path/to/model.pt2 H C N O
 ```
 
 Read [lammps_user_mfftorch/README.md](lammps_user_mfftorch/README.md) and

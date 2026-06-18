@@ -6,14 +6,17 @@
 
 它提供两个 pair style：
 
-- `pair_style mff/torch`：纯 C++ + LibTorch（可先用 CPU neighbor list 跑通）
-- `pair_style mff/torch/kk`：Kokkos+CUDA 数据准备 + LibTorch(CUDA) 推理（目标：全链路无 Python、无 Host 往返）
+- `pair_style mff/torch`：C++ + LibTorch/AOTI 推理路径，可用于基础编译和数值烟测
+- `pair_style mff/torch/kk`：Kokkos+CUDA 数据准备 + LibTorch/AOTI 推理路径，用于 GPU MD
 
 以及一个 compute style：
 
 - `compute ... mff/torch/phys`：读取最近一次 `pair_style mff/torch*` 缓存的物理张量输出
 
-模型文件使用本仓库导出的 **TorchScript core**：`core.pt`（`torch.jit.save`），见 `molecular_force_field/scripts/export_libtorch_core.py`。
+推荐模型文件是 MACE-ICTD 导出的 **AOTInductor `.pt2` core**，由
+`mff-export-aoti` 或 `python -m mace_ictd.cli.export_aoti_core` 生成。
+旧的 TorchScript `core.pt` 路径仍保留给 legacy LibTorch 部署，但新测试和 OFF23 smoke test
+都使用 `.pt2`。
 
 ## 目录结构（拷贝到 LAMMPS 源码）
 
@@ -50,7 +53,7 @@ read_data system.data
 neighbor 1.0 bin
 
 pair_style mff/torch/kk 5.0 cuda
-pair_coeff * * /path/to/core.pt H O
+pair_coeff * * /path/to/model.pt2 H O
 
 velocity all create 300 42
 fix 1 all nve
@@ -59,11 +62,25 @@ run 100
 
 说明：
 - `pair_style ... 5.0` 是 cutoff（Angstrom）。
-- `pair_coeff * * core.pt H O` 的元素顺序必须与导出时一致（type→元素→Z 映射）。可用 `NULL` 跳过某个 type。
+- `pair_coeff * * model.pt2 H O` 的元素顺序必须与导出时一致（type→元素→Z 映射）。可用 `NULL` 跳过某个 type。
+- `pair_style mff/torch` 和 `pair_style mff/torch/kk` 都可加载 `.pt2`；`/kk` 版本用于 Kokkos GPU 数据路径。
+
+## 已验证的 OFF23 `.pt2` 烟测
+
+在 RTX 4090 验证环境中，`build-mfftorch` 和 `build-mfftorch-kk` 都已重新编译并加载 fresh
+converted `MACE-OFF23_small` bridge-U ICTD `.pt2`。对一个 6 原子 static-N 输入，LAMMPS
+`run 0` 与 Python checkpoint 对应到：
+
+| 量 | LAMMPS `mff/torch` | Python checkpoint |
+|---|---:|---:|
+| energy (eV) | `-6633.036` | `-6633.03613281` |
+| 最大绝对力分量 (eV/A) | `11.767612` | `11.76760674` |
+
+注意 LAMMPS thermo 的 `fmax` 是最大绝对力分量，不是最大力向量范数。
 
 ## 物理张量输出
 
-如果导出的 `core.pt` 来自带 `physical_tensor_outputs` 的 `pure-cartesian-ictd` 模型，
+如果导出的模型 core 来自带 `physical_tensor_outputs` 的 MACE-ICTD 模型，
 那么 `pair_style mff/torch*` 会在每一步缓存固定 schema 的笛卡尔物理张量，可通过：
 
 ```lammps
@@ -108,4 +125,3 @@ compute adipx all mff/torch/phys atom dipole x
 
 - `compute ... mff/torch/phys global` / `atom` 会返回全 0
 - `compute ... mff/torch/phys global/mask` / `atom/mask` 会返回全 0
-

@@ -525,6 +525,76 @@ The converter reads `mace_model.use_reduced_cg` and rebuilds MACE-ICTD with the 
 Users should not guess or override that flag for imported native MACE models.
 Conversion preserves the source MACE architecture; it does not add a learned long-range module.
 
+### 8.1 OFF23 pretrained conversion and `mff/torch` smoke test
+
+Public pretrained MACE checkpoints are often saved as pickled Python model objects. The converter can
+only start after Python can load the source object. For older OFF23 checkpoints, this may require a
+historical `mace-torch`/`e3nn` environment for the loading and conversion step; the converted ICTD
+checkpoint can then be loaded by the current MACE-ICTD runtime.
+
+Example conversion of an OFF23 small model:
+
+```bash
+mff-convert-mace \
+  --mace-model /path/to/MACE-OFF23_small.model \
+  --out MACE-OFF23_small_ictd_bridge_u_f64.pth \
+  --product-backend ictd-bridge-u \
+  --dtype float64 \
+  --device cpu
+```
+
+Float64 is the recommended audit format for native-MACE parity. For LAMMPS deployment, export a
+float32 AOTInductor core with a static atom count when the target MD cell has fixed `N`. Create the
+deployment checkpoint with the same conversion command and `--dtype float32`, then export:
+
+```bash
+mff-export-aoti \
+  --checkpoint MACE-OFF23_small_ictd_bridge_u_f32.pth \
+  --elements H,C,N,O,F,P,S,Cl,Br,I \
+  --atoms 6 \
+  --degree 5 \
+  --static-n \
+  --dtype float32 \
+  --device cuda \
+  --embed-e0 \
+  --out MACE-OFF23_small_ictd_bridge_u_f32_static6.pt2
+```
+
+Minimal LAMMPS input:
+
+```lammps
+units metal
+atom_style atomic
+boundary p p p
+
+read_data system.data
+neighbor 1.0 bin
+
+pair_style mff/torch 4.5 cuda
+pair_coeff * * MACE-OFF23_small_ictd_bridge_u_f32_static6.pt2 H C N O
+
+thermo 1
+thermo_style custom step temp pe etotal fmax
+run 0
+```
+
+On the 4090 validation host, both `build-mfftorch` and `build-mfftorch-kk` compiled and loaded the
+`.pt2` OFF23 core. The ordinary build and the Kokkos build produced the same LAMMPS energies to the
+printed precision. For a fresh static-6 export, the LAMMPS `run 0` result was:
+
+| Quantity | LAMMPS `mff/torch` | Python checkpoint |
+|---|---:|---:|
+| energy (eV) | `-6633.036` | `-6633.03613281` |
+| max absolute force component (eV/A) | `11.767612` | `11.76760674` |
+
+LAMMPS `fmax` in this thermo output is the maximum absolute force component, not the maximum force
+vector norm. Compare it against `max(abs(forces))`, not against `max(norm(forces_i))`.
+
+The same converted float64 checkpoint was compared against native `mace-torch` on a benzene
+same-frame trajectory. The maximum absolute energy difference was `2.73e-12 eV`; the maximum force
+component difference was `4.44e-15 eV/A`. This checks the conversion bridge. The AOTI export should
+still be checked separately because compiler lowering changes floating-point operation order.
+
 ## 9. AOTInductor Export
 
 Basic export:

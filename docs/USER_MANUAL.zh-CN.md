@@ -518,6 +518,75 @@ backend 差异：
 converter 会读取 `mace_model.use_reduced_cg` 并用同样配置重建 MACE-ICTD。用户转换原生 MACE 模型时不应该手动猜这个选项。
 转换会保留原生 MACE 架构，不会自动添加 learned long-range module。
 
+### 8.1 OFF23 预训练模型转换和 `mff/torch` 烟测
+
+公开的 MACE 预训练模型经常是 pickled Python model object。converter 只有在 Python 能成功
+load 原始对象后才能开始工作。比较老的 OFF23 checkpoint 可能需要历史版本
+`mace-torch`/`e3nn` 环境来完成 load 和 conversion；转换后的 ICTD checkpoint 可以再交给当前
+MACE-ICTD runtime 加载、导出和部署。
+
+OFF23 small 模型转换示例：
+
+```bash
+mff-convert-mace \
+  --mace-model /path/to/MACE-OFF23_small.model \
+  --out MACE-OFF23_small_ictd_bridge_u_f64.pth \
+  --product-backend ictd-bridge-u \
+  --dtype float64 \
+  --device cpu
+```
+
+float64 适合做 native-MACE 数值对应审计。LAMMPS 部署通常导出 float32 AOTInductor core；
+可以用同一条转换命令把 `--dtype` 改成 `float32` 生成部署 checkpoint。如果目标 MD
+体系原子数固定，可以使用 static-N 导出：
+
+```bash
+mff-export-aoti \
+  --checkpoint MACE-OFF23_small_ictd_bridge_u_f32.pth \
+  --elements H,C,N,O,F,P,S,Cl,Br,I \
+  --atoms 6 \
+  --degree 5 \
+  --static-n \
+  --dtype float32 \
+  --device cuda \
+  --embed-e0 \
+  --out MACE-OFF23_small_ictd_bridge_u_f32_static6.pt2
+```
+
+最小 LAMMPS input：
+
+```lammps
+units metal
+atom_style atomic
+boundary p p p
+
+read_data system.data
+neighbor 1.0 bin
+
+pair_style mff/torch 4.5 cuda
+pair_coeff * * MACE-OFF23_small_ictd_bridge_u_f32_static6.pt2 H C N O
+
+thermo 1
+thermo_style custom step temp pe etotal fmax
+run 0
+```
+
+在 4090 验证环境中，`build-mfftorch` 和 `build-mfftorch-kk` 都能编译并加载 OFF23 `.pt2`
+core。普通 build 和 Kokkos build 输出的 LAMMPS 能量在打印精度内一致。fresh static-6
+导出的 `run 0` 对比如下：
+
+| 量 | LAMMPS `mff/torch` | Python checkpoint |
+|---|---:|---:|
+| energy (eV) | `-6633.036` | `-6633.03613281` |
+| 最大绝对力分量 (eV/A) | `11.767612` | `11.76760674` |
+
+这里 LAMMPS thermo 里的 `fmax` 是最大绝对力分量，不是逐原子力向量范数最大值。因此应与
+Python 中的 `max(abs(forces))` 比较，而不是和 `max(norm(forces_i))` 比较。
+
+同一个 converted float64 checkpoint 也和原生 `mace-torch` 做了苯 same-frame 轨迹对比：
+最大能量绝对差 `2.73e-12 eV`，最大力分量差 `4.44e-15 eV/A`。这个测试验证 conversion
+bridge；AOTI 导出仍应单独做 eager-vs-compiled 数值检查，因为 compiler lowering 会改变浮点运算顺序。
+
 ## 9. AOTInductor 导出
 
 基础导出：
