@@ -22,7 +22,11 @@ mace_ictd/models/_ictd_cache/
 # Model / run artifacts
 benchmark_results/
 benchmarks/paper/results/**/checkpoints/
+benchmarks/paper/**/*.pdf
+benchmarks/paper/**/*.png
+benchmarks/paper/**/*.npz
 *.pt2
+*.pt
 *.pth
 checkpoint/
 *.log

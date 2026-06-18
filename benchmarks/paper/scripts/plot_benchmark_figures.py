@@ -527,14 +527,15 @@ def plot_whole_model_fixed_configs(df: pd.DataFrame, outdir: Path) -> None:
 
 
 def main() -> None:
+    paper_dir = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser()
-    parser.add_argument("--bench-dir", type=Path, default=Path("/tmp/mace_ictd_cartnn_bench_20260614_220608"))
+    parser.add_argument("--bench-dir", type=Path, default=paper_dir / "results/operator")
     parser.add_argument(
         "--whole-model-dir",
         type=Path,
-        default=Path("/Users/sara/Desktop/code/MACE-ICTD/benchmark_results"),
+        default=paper_dir / "results/model",
     )
-    parser.add_argument("--outdir", type=Path, default=Path("/Users/sara/Desktop/code/mace_ictd_paper/figures"))
+    parser.add_argument("--outdir", type=Path, default=paper_dir / "figures")
     args = parser.parse_args()
     setup_style()
 
