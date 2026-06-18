@@ -21,21 +21,16 @@ Full manuals:
 
 ## What Is Included
 
-- `PureCartesianICTDFix`, a MACE-compatible model using compact ICTD angular
-  blocks with dimension `2l + 1` per degree.
-- Fixed `Q` and `U` operators for ICTD/e3nn basis correspondence and MACE
-  symmetric-contraction compatibility.
-- Native `mace-torch` conversion for supported `ScaleShiftMACE` checkpoints.
-- Training from H5 datasets with energy, force, optional stress/virial losses,
-  Stage-Two/SWA schedules, EMA, LR schedulers, checkpoint resume, and
-  `make_fx`/Inductor training compilation.
-- Optional cuEquivariance product backend for high-performance training and
-  inference.
-- AOTInductor `.pt2` export and a LAMMPS `USER-MFFTORCH` package.
-- A learned scalar reciprocal long-range correction path
-  (`reciprocal-spectral-v1`).
-- Paper benchmark scripts, selected source CSV/JSON records, validation logs,
-  and SVG figures under [benchmarks/paper](benchmarks/paper).
+- MACE-compatible ICTD model: `PureCartesianICTDFix`.
+- Fixed `Q`/`U` basis bridges for ICTD/e3nn correspondence.
+- H5 training with energy/force/stress losses, SWA/EMA, resume, and optional
+  `make_fx`/Inductor compilation.
+- Native `mace-torch` checkpoint conversion for supported `ScaleShiftMACE`
+  models.
+- ASE, AOTInductor `.pt2`, and LAMMPS `USER-MFFTORCH` deployment.
+- Optional cuEquivariance product backend and learned scalar reciprocal
+  long-range correction.
+- Curated benchmark records under [benchmarks/paper](benchmarks/paper).
 
 ## Installation
 
@@ -53,26 +48,19 @@ pip install -e ".[e0]"     # pandas support for fitted E0 CSV files
 pip install -e ".[full]"   # all optional Python extras
 ```
 
-Runtime expectations:
-
-- Python >= 3.9
-- PyTorch >= 2.4
-- PyTorch >= 2.7 recommended for AOTInductor and `make_fx` workflows
-- `e3nn >= 0.4.4, < 0.6`
-- CUDA for cuEquivariance and serious Inductor/AOTI benchmarking
-
-An optional compiled ICTD tensor-product extension can be built with:
+Runtime expectations: Python >= 3.9, PyTorch >= 2.4, `e3nn >= 0.4.4, < 0.6`.
+PyTorch >= 2.7 is recommended for AOTInductor and `make_fx`; CUDA is required
+for cuEquivariance and the main GPU benchmark paths. An optional compiled ICTD
+tensor-product extension can be built with:
 
 ```bash
 MFF_BUILD_ICTD_TP_EXT=1 pip install -e .
 ```
 
-The pure-Python/PyTorch path works without this extension.
-
-After installation, the console scripts `mff-convert-mace`, `mff-export-aoti`,
-`mff-export-core`, and `mff-lammps` are available. The examples below use
-`python -m ...` where possible so they also work from a source checkout before
-the shell has refreshed its script PATH.
+The pure-Python/PyTorch path works without this extension. After installation,
+the console scripts `mff-convert-mace`, `mff-export-aoti`, `mff-export-core`,
+and `mff-lammps` are available. The examples below use `python -m ...` so they
+also work from a source checkout before the script PATH is refreshed.
 
 ## Quick Check
 
@@ -141,101 +129,47 @@ DATA/
   processed_val.h5
 ```
 
-Canonical bridge-U training:
+Bridge-U training keeps the conservative MACE-correspondence product path:
 
 ```bash
 python -m mace_ictd.cli.train \
   --data-dir DATA \
-  --train-prefix train \
-  --val-prefix val \
-  --seed 123 \
-  --channels 64 \
-  --lmax 2 \
-  --max-ell 2 \
-  --num-interaction 2 \
-  --correlation 2 \
+  --channels 64 --lmax 2 --max-ell 2 \
+  --num-interaction 2 --correlation 2 \
   --function-type bessel \
   --product-backend ictd-bridge-u \
-  --scaling rms_forces_scaling \
-  --epochs 300 \
-  --batch-size 4 \
-  --loss smooth_l1 \
-  --energy-weight 1.0 \
-  --force-weight 10.0 \
-  --stress-weight 0.0 \
-  --optimizer adamw \
-  --lr 1e-3 \
-  --min-lr 1e-6 \
-  --weight-decay 0.0 \
-  --lr-scheduler plateau \
-  --warmup-batches 1000 \
-  --swa \
-  --start-swa 225 \
-  --swa-lr 1e-4 \
-  --swa-energy-weight 1000.0 \
-  --swa-force-weight 100.0 \
-  --device cuda \
-  --dtype float64 \
+  --epochs 300 --batch-size 4 \
+  --energy-weight 1.0 --force-weight 10.0 --stress-weight 0.0 \
+  --lr 1e-3 --min-lr 1e-6 --lr-scheduler plateau \
+  --swa --start-swa 225 --swa-lr 1e-4 \
+  --device cuda --dtype float64 \
   --checkpoint model_bridge_u.pth
 ```
 
-High-performance cuEq/product-compiled training:
+The performance path uses cuEquivariance products and compiles the force step:
 
 ```bash
 python -m mace_ictd.cli.train \
   --data-dir DATA \
-  --train-prefix train \
-  --val-prefix val \
-  --seed 123 \
-  --channels 64 \
-  --lmax 2 \
-  --max-ell 2 \
-  --num-interaction 2 \
-  --correlation 2 \
+  --channels 64 --lmax 2 --max-ell 2 \
+  --num-interaction 2 --correlation 2 \
   --function-type bessel \
-  --product-backend cueq \
-  --angular-basis e3nn \
-  --train-makefx-compile \
-  --makefx-buckets 6 \
-  --scaling rms_forces_scaling \
-  --epochs 300 \
-  --batch-size 8 \
-  --loss smooth_l1 \
-  --energy-weight 1.0 \
-  --force-weight 10.0 \
-  --stress-weight 0.0 \
-  --optimizer adamw \
-  --lr 1e-3 \
-  --min-lr 1e-6 \
-  --lr-scheduler cosine \
-  --warmup-batches 1000 \
-  --swa \
-  --start-swa 225 \
-  --swa-lr 1e-4 \
-  --swa-energy-weight 1000.0 \
-  --swa-force-weight 100.0 \
+  --product-backend cueq --angular-basis e3nn \
+  --train-makefx-compile --makefx-buckets 6 \
+  --epochs 300 --batch-size 8 \
+  --energy-weight 1.0 --force-weight 10.0 --stress-weight 0.0 \
+  --lr 1e-3 --min-lr 1e-6 --lr-scheduler cosine \
+  --swa --start-swa 225 --swa-lr 1e-4 \
   --ema-decay 0.999 \
-  --ema-start-step 1000 \
-  --device cuda \
-  --dtype float32 \
+  --device cuda --dtype float32 \
   --checkpoint model_cueq_e3nn_makefx.pth
 ```
 
-Training notes:
-
-- `--epochs` is an epoch limit; `--max-steps` is an optional optimizer-step cap.
-  If both are set, training stops when either limit is reached.
-- Stage Two/SWA changes the loss weights and LR at the SWA boundary, matching
-  the relevant `mace-torch` behavior used by this repository.
-- LR schedules include `plateau`, `exp`, `cosine`, `step`, and `none`; the LR is
-  clamped to `[--min-lr, --lr]`.
-- MACE-style ScaleShift is enabled by default through
-  `--scaling rms_forces_scaling`; use `--scaling no_scaling` only when that is
-  intentionally part of the experiment.
-- Checkpoints store model hyperparameters, scaling, E0 metadata, optimizer
-  state, EMA/SWA state when enabled, and enough metadata for deployment reloads.
-
-See [docs/USER_MANUAL.md](docs/USER_MANUAL.md) for all CLI options.
+`--epochs` and `--max-steps` are independent stop conditions; if both are set,
+training stops at the first one reached. MACE-style ScaleShift is enabled by
+default through `--scaling rms_forces_scaling`. Stage Two/SWA, EMA, optimizer
+parameters, loss weights, LR schedules, stress, resume, and E0 controls are
+documented in [docs/USER_MANUAL.md](docs/USER_MANUAL.md).
 
 ## Convert a Native MACE Checkpoint
 
@@ -351,6 +285,24 @@ contains lightweight scripts, CSV/JSON summaries, validation logs, and SVG
 figures used by the technical report. Large generated binaries such as
 checkpoint snapshots, AOTI packages, PNG/PDF figure exports, and MD trajectory
 arrays are kept out of Git and should be distributed through GitHub Releases.
+
+Representative RTX 4090 results are shown below. They are meant to summarize
+the observed regimes, not replace the full artifact tables.
+
+- Isolated tensor product, FP32, `C=64`, `E=100k`, forward+backward:
+  compiled ICTD is `45.5 ms` at `(L_h,L_e)=(2,2)` versus e3nn `50.8 ms`
+  and cartnn `62.5 ms`; at `(3,3)`, compiled ICTD is `128.5 ms` versus
+  e3nn `174.7 ms`, while cartnn OOMs.
+- Whole-model synthetic training, `lmax=max_ell=1`, 8192 atoms, avg degree 16:
+  `ICTD+cuEq compiled` reaches `46.3 ms/step`, about `1.9x` faster than
+  MACE e3nn (`89.0 ms`) and slower than native MACE cuEq (`36.5 ms`).
+- Whole-model synthetic inference, same setting: `ICTD+cuEq compiled` reaches
+  `15.3 ms/step`, about `1.5x` faster than MACE e3nn (`22.6 ms`) and slightly
+  faster than native MACE cuEq (`16.9 ms`).
+- Matched 300-epoch training runs on revised benzene/ethanol/aspirin and Cheng
+  water show lower final force RMSE for ICTD modes than for the matched MACE
+  e3nn/cuEq baselines under the archived protocol. This is a controlled
+  protocol comparison, not a universal accuracy claim.
 
 Replot the archived figures from the repository root:
 
