@@ -2125,6 +2125,7 @@ class PureCartesianICTDFix(nn.Module):
         long_range_assignment: str = "cic",
         long_range_mesh_fft_full_ewald: bool = False,
         long_range_max_multipole_l: int = 0,
+        long_range_dispersion: bool = False,
         long_range_theta: float = 0.5,
         long_range_leaf_size: int = 32,
         long_range_multipole_order: int = 0,
@@ -2561,6 +2562,48 @@ class PureCartesianICTDFix(nn.Module):
             else False
         )
 
+        # Multipole long-range: tap the deepest full-SO(3) node features for equivariant
+        # Cartesian monopole/dipole/quadrupole sources (a degree-l carrier IS a rank-l
+        # multipole) and feed the mesh-FFT reciprocal kernel. OFF (max_multipole_l==0) ->
+        # readout is None and the scalar latent-source path is used unchanged (byte-identical).
+        self.long_range_max_multipole_l = int(long_range_max_multipole_l)
+        self.multipole_readout = None
+        if self.long_range_module is not None and self.long_range_max_multipole_l > 0:
+            if str(long_range_reciprocal_backend) != "mesh_fft":
+                raise ValueError(
+                    "long_range_max_multipole_l>0 requires long_range_reciprocal_backend='mesh_fft' "
+                    "(only the mesh-FFT kernel exposes multipole_energy)"
+                )
+            if not bool(long_range_mesh_fft_full_ewald):
+                raise ValueError(
+                    "long_range_max_multipole_l>0 requires long_range_mesh_fft_full_ewald=True: the "
+                    "reciprocal multipole sum needs Ewald Gaussian screening for accuracy (without it "
+                    "the in-cell translation error is tens of %); long_range_assignment='pcs' recommended"
+                )
+            if self.long_range_max_multipole_l > self.lmax:
+                raise ValueError(
+                    f"long_range_max_multipole_l={self.long_range_max_multipole_l} exceeds model lmax={self.lmax}"
+                )
+            from mace_ictd.models.multipole_readout import MultipoleReadout
+
+            self.multipole_readout = MultipoleReadout(
+                channels=self.channels,
+                lmax=self.lmax,
+                max_multipole_l=self.long_range_max_multipole_l,
+                source_channels=int(long_range_source_channels),
+            )
+
+        # Pairwise C6 dispersion (van der Waals): a scalar/invariant long-range term that
+        # completes the electrostatics (multipoles) above. OFF by default -> None -> no
+        # contribution (byte-identical). NOTE: L1 reuses the short-range edge list, so the
+        # r^-6 tail beyond max_radius is currently truncated (a longer dispersion cutoff is
+        # a follow-up); the term is exact within the cutoff.
+        self.dispersion = None
+        if bool(long_range_dispersion):
+            from mace_ictd.models.dispersion import PairwiseDispersion
+
+            self.dispersion = PairwiseDispersion(feature_dim=self.channels)
+
         # Optional fixed scale/shift on the network (short-range) per-atom interaction energy.
         # This mirrors MACE ScaleShiftMACE: E_inter_atom = scale * readout + shift. OFF by
         # default -> None buffers are excluded from state_dict, so old checkpoints load unchanged
@@ -2877,7 +2920,27 @@ class PureCartesianICTDFix(nn.Module):
 
         # --- long-range additive term (skipped entirely when module is None) ---
         reciprocal_source = None
-        if self.long_range_module is not None:
+        if self.long_range_module is not None and self.multipole_readout is not None:
+            # Multipole route: equivariant Cartesian monopole/dipole/quadrupole sources from
+            # the deepest full-SO(3) layer (the penultimate layer is full-SO3; only the last
+            # collapses to scalar), fed to the mesh-FFT reciprocal kernel via multipole_energy.
+            mp_feat = None
+            for state in reversed(layer_states):
+                if state.shape[-1] != self.channels:
+                    mp_feat = state
+                    break
+            if mp_feat is None:
+                raise RuntimeError(
+                    "multipole long-range needs a full-SO(3) node-feature layer; none found "
+                    "(requires num_interaction >= 2)"
+                )
+            monopole, dipole, quadrupole = self.multipole_readout(mp_feat)
+            long_range_energy = self.long_range_module.forward_multipole(
+                pos, batch, cell, monopole, dipole, quadrupole
+            )
+            if long_range_energy is not None:
+                out = out + long_range_energy
+        elif self.long_range_module is not None:
             # final per-atom INVARIANT descriptor [N, channels] (in scope for both routes):
             # baseline last layer_state is already scalar; fusion last_preproduct is full-SO3 -> take l=0.
             last_state = layer_states[-1]
@@ -2899,6 +2962,17 @@ class PureCartesianICTDFix(nn.Module):
                 )
             if long_range_energy is not None and not defer:
                 out = out + long_range_energy
+
+        # --- pairwise dispersion additive term (invariant; reuses the existing edge list) ---
+        if self.dispersion is not None:
+            last_state = layer_states[-1]
+            if last_state.shape[-1] == self.channels:
+                disp_feat = last_state
+            else:
+                disp_feat = _split_irreps(last_state, self.channels, self.lmax)[0].reshape(
+                    last_state.shape[0], self.channels
+                )
+            out = out + self.dispersion(disp_feat, edge_src, edge_dst, edge_length)
 
         if return_combined_features:
             combined_features = torch.cat(layer_states, dim=-1)

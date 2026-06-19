@@ -728,6 +728,14 @@ class MeshLongRangeKernel3D(nn.Module):
             window = self._build_assignment_window(device=local_pos.device, dtype=local_pos.dtype).reshape(-1)
             wdeconv = torch.reciprocal(window.clamp_min(self.assignment_window_floor).square())
             spectral = green / volume * wdeconv
+            if self.full_ewald:
+                # Ewald Gaussian screening exp(-k^2/4a^2): band-limits the reciprocal sum so
+                # the coarse mesh can represent it -> accurate + (sub-grid) translation-stable.
+                # (Mirrors the monopole _build_reciprocal_spectral_weights path; without it the
+                # bare 4*pi/k^2 kernel has large CIC/mesh translation error.)
+                real_cutoff = self._estimate_real_cutoff(cell[graph_idx])
+                alpha = self._estimate_ewald_alpha(real_cutoff)
+                spectral = spectral * torch.exp(-(k_norms_flat.square()) / (4.0 * alpha * alpha))
             spectral = torch.where(k_norms_flat > self.k_norm_floor, spectral, torch.zeros_like(spectral))
 
             def _spread_fft(field: torch.Tensor) -> torch.Tensor:
@@ -1011,6 +1019,32 @@ class LatentReciprocalLongRange(nn.Module):
             atom_energy = self.energy_scale * atom_energy
         if return_source:
             return atom_energy, source
+        return atom_energy
+
+    def forward_multipole(
+        self,
+        pos: torch.Tensor,
+        batch: torch.Tensor,
+        cell: torch.Tensor,
+        monopole: torch.Tensor,
+        dipole: torch.Tensor | None = None,
+        quadrupole: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Long-range energy from pre-computed equivariant Cartesian multipole sources.
+
+        Routes through the mesh-FFT kernel's ``multipole_energy``
+        (S(k) = q + i k.mu - 1/2 k.Q.k). Only the monopole is charge-neutralized
+        per graph; dipole/quadrupole carry no net-charge constraint.
+        """
+        if not hasattr(self.kernel, "multipole_energy"):
+            raise ValueError(
+                "multipole long-range requires reciprocal_backend='mesh_fft' "
+                "(only the mesh-FFT kernel exposes multipole_energy)"
+            )
+        source = self._neutralize_source(monopole, batch, cell)
+        atom_energy = self.kernel.multipole_energy(pos, batch, cell, source, dipole, quadrupole)
+        if self.energy_scale is not None:
+            atom_energy = self.energy_scale * atom_energy
         return atom_energy
 
 
