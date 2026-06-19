@@ -591,6 +591,14 @@ def _export_single_core(
     # automatically so the core .pt always includes the source slot even without the explicit CLI flag.
     if getattr(metadata_model, "long_range_exports_reciprocal_source", False):
         export_reciprocal_source = True
+    # C6 dispersion rides in the graph (added to the model energy). The data-dependent
+    # dispersion_neighbor_list does not trace cleanly; for export fall back to the short-range edge
+    # list (dispersion_cutoff=0) so dispersion is summed over the LAMMPS neighbor list at deploy time
+    # (set the pair_style cutoff to the desired dispersion range).
+    if getattr(metadata_model, "dispersion", None) is not None and float(getattr(metadata_model, "dispersion_cutoff", 0.0) or 0.0) > 0.0:
+        print(f"[export_core] dispersion: export uses the edge list (dispersion_cutoff "
+              f"{metadata_model.dispersion_cutoff} -> 0; set the LAMMPS pair cutoff to the dispersion range)")
+        metadata_model.dispersion_cutoff = 0.0
     num_fidelity_levels = int(getattr(model_eager, "num_fidelity_levels", 0) or 0)
     multi_fidelity_mode = str(getattr(model_eager, "multi_fidelity_mode", "conditioning") or "conditioning")
     runtime_fidelity_input = False

@@ -630,6 +630,14 @@ def main() -> int:
     emit_rs = bool(getattr(_bare, "long_range_exports_reciprocal_source", False))
     if emit_rs:
         print("[aoti] multipole long-range: exporting (E, force, reciprocal_source) 3-tuple")
+    # C6 dispersion rides in the graph (added to the model energy). make_fx/AOTI cannot trace the
+    # data-dependent dispersion_neighbor_list (variable pair count), so for export fall back to the
+    # short-range edge list (dispersion_cutoff=0): dispersion is then summed over the LAMMPS neighbor
+    # list -> set the pair_style cutoff to the desired dispersion range.
+    if getattr(_bare, "dispersion", None) is not None and float(getattr(_bare, "dispersion_cutoff", 0.0) or 0.0) > 0.0:
+        print(f"[aoti] dispersion: export uses the edge list (dispersion_cutoff "
+              f"{_bare.dispersion_cutoff} -> 0; set the LAMMPS pair cutoff to the dispersion range)")
+        _bare.dispersion_cutoff = 0.0
 
     # ---- eager reference ----
     eager_fn = force_compute_fn_factory(model, training=False, emit_reciprocal_source=emit_rs)
