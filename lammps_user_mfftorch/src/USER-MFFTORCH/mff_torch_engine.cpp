@@ -491,6 +491,42 @@ void MFFTorchEngine::load_single_core_file(const std::string& core_pt_path) {
         }
       }
     }
+    // Long-range deploy metadata sidecar "<core>.pt2.json" (same keys the TorchScript path reads
+    // below). The .pt2 branch returns early, so without this an AOTI multipole core would never set
+    // core_exports_reciprocal_source_ and the pair style would skip the reciprocal solver -> the
+    // deployed energy would be missing the long-range term. Member defaults (header) serve as init.
+    {
+      std::ifstream jin(core_pt_path + ".json");
+      if (jin) {
+        std::string content((std::istreambuf_iterator<char>(jin)), std::istreambuf_iterator<char>());
+        (void)parse_bool_from_metadata(content, "\"export_reciprocal_source\"", core_exports_reciprocal_source_);
+        (void)parse_int64_from_metadata(content, "\"reciprocal_source_channels\"", reciprocal_source_channels_);
+        (void)parse_string_from_metadata(content, "\"reciprocal_source_boundary\"", reciprocal_source_boundary_);
+        (void)parse_int64_from_metadata(content, "\"reciprocal_source_slab_padding_factor\"", reciprocal_source_slab_padding_factor_);
+        (void)parse_string_from_metadata(content, "\"long_range_green_mode\"", long_range_green_mode_);
+        (void)parse_string_from_metadata(content, "\"long_range_runtime_backend\"", long_range_runtime_backend_);
+        (void)parse_int64_from_metadata(content, "\"long_range_mesh_size\"", long_range_mesh_size_);
+        (void)parse_int64_from_metadata(content, "\"long_range_max_multipole_l\"", long_range_max_multipole_l_);
+        (void)parse_string_from_metadata(content, "\"long_range_source_kind\"", long_range_source_kind_);
+        (void)parse_int64_from_metadata(content, "\"long_range_source_channels\"", long_range_source_channels_);
+        (void)parse_string_from_metadata(content, "\"long_range_source_layout\"", long_range_source_layout_);
+        (void)parse_string_from_metadata(content, "\"long_range_boundary\"", long_range_boundary_);
+        (void)parse_string_from_metadata(content, "\"long_range_energy_partition\"", long_range_energy_partition_);
+        (void)parse_bool_from_metadata(content, "\"long_range_neutralize\"", long_range_neutralize_);
+        (void)parse_double_from_metadata(content, "\"long_range_theta\"", long_range_theta_);
+        (void)parse_int64_from_metadata(content, "\"long_range_leaf_size\"", long_range_leaf_size_);
+        (void)parse_int64_from_metadata(content, "\"long_range_multipole_order\"", long_range_multipole_order_);
+        (void)parse_double_from_metadata(content, "\"long_range_screening\"", long_range_screening_);
+        (void)parse_double_from_metadata(content, "\"long_range_softening\"", long_range_softening_);
+        (void)parse_double_from_metadata(content, "\"long_range_energy_scale\"", long_range_energy_scale_);
+        (void)parse_bool_from_metadata(content, "\"long_range_mesh_fft_full_ewald\"", long_range_mesh_fft_full_ewald_);
+        (void)parse_double_from_metadata(content, "\"long_range_ewald_alpha_prefactor\"", long_range_ewald_alpha_prefactor_);
+        if (long_range_source_channels_ <= 0) long_range_source_channels_ = reciprocal_source_channels_;
+        if (long_range_runtime_backend_ == "none" && core_exports_reciprocal_source_ && reciprocal_source_channels_ > 0) {
+          long_range_runtime_backend_ = "mesh_fft";
+        }
+      }
+    }
     return;
 #else
     throw std::runtime_error(
