@@ -2593,6 +2593,9 @@ class PureCartesianICTDFix(nn.Module):
                 max_multipole_l=self.long_range_max_multipole_l,
                 source_channels=int(long_range_source_channels),
             )
+            # at export the multipole route emits a packed [q|mu|Q] reciprocal_source for the
+            # C++ solver (instead of computing the reciprocal energy in-model).
+            self.long_range_exports_reciprocal_source = True
 
         # Pairwise C6 dispersion (van der Waals): a scalar/invariant long-range term that
         # completes the electrostatics (multipoles) above. OFF by default -> None -> no
@@ -2938,11 +2941,19 @@ class PureCartesianICTDFix(nn.Module):
                     "(requires num_interaction >= 2)"
                 )
             monopole, dipole, quadrupole = self.multipole_readout(mp_feat)
-            long_range_energy = self.long_range_module.forward_multipole(
-                pos, batch, cell, monopole, dipole, quadrupole
-            )
-            if long_range_energy is not None:
-                out = out + long_range_energy
+            if return_reciprocal_source and self.long_range_exports_reciprocal_source:
+                # deployment: emit the packed [q|mu|Q] per-atom source for the C++ reciprocal
+                # solver (mff_reciprocal_solver) to do the long-range sum; defer the energy here.
+                from mace_ictd.models.multipole_readout import pack_multipole_source
+
+                reciprocal_source = pack_multipole_source(monopole, dipole, quadrupole)
+            else:
+                # training/validation: compute the reciprocal multipole energy in-model.
+                long_range_energy = self.long_range_module.forward_multipole(
+                    pos, batch, cell, monopole, dipole, quadrupole
+                )
+                if long_range_energy is not None:
+                    out = out + long_range_energy
         elif self.long_range_module is not None:
             # final per-atom INVARIANT descriptor [N, channels] (in scope for both routes):
             # baseline last layer_state is already scalar; fusion last_preproduct is full-SO3 -> take l=0.

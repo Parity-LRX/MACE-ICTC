@@ -25,6 +25,27 @@ from mace_ictd.models.pure_cartesian_ictd_layers import (
 )
 
 
+def pack_multipole_source(
+    monopole: torch.Tensor,
+    dipole: torch.Tensor | None = None,
+    quadrupole: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Pack Cartesian multipoles into the LAMMPS reciprocal-solver source layout
+    ``[ q (N, S) | dipole (N, 3S) | quadrupole (N, 9S) ]`` -> ``(N, S*(1 + 3[mu] + 9[Q]))``.
+
+    Channel-major within each block (per channel: dipole x,y,z; quadrupole 3x3 row-major),
+    matching mff_reciprocal_solver.cpp's ``narrow(1, off, k*C).reshape(-1, C, ...)`` decode
+    (q at [0,C), mu at [C,4C) -> reshape(C,3), Q at [4C,13C) -> reshape(C,3,3)).
+    """
+    n, s = monopole.shape[0], monopole.shape[1]
+    parts = [monopole]
+    if dipole is not None:
+        parts.append(dipole.reshape(n, s * 3))
+    if quadrupole is not None:
+        parts.append(quadrupole.reshape(n, s * 9))
+    return torch.cat(parts, dim=1)
+
+
 class MultipoleReadout(nn.Module):
     def __init__(
         self,

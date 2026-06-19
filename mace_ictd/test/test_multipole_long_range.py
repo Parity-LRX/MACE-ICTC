@@ -236,6 +236,44 @@ def test_model_multipole_training_smoke():
     return losses[0], losses[-1]
 
 
+def test_export_reciprocal_source_equivariant_layout():
+    """Export mode (return_reciprocal_source=True): the model emits a packed [q|mu|Q] source of
+    width S*(1+3+9)=13S matching mff_reciprocal_solver's narrow/reshape decode, and the source
+    transforms equivariantly (q invariant, mu->R mu, Q->R Q R^T) so the C++ reciprocal energy is
+    rotation-invariant. Validates the Python-export <-> C++-solver contract."""
+    torch.set_default_dtype(torch.float64)
+    model = _build_model(max_multipole_l=2).double().eval()
+    assert model.long_range_exports_reciprocal_source, "multipole model must export reciprocal_source"
+    box = 8.0
+    cell = (torch.eye(3, dtype=torch.float64) * box).reshape(1, 3, 3)
+    A = torch.tensor([1, 6, 7, 8, 1, 6])
+    n = A.numel()
+    s = model.multipole_readout.source_channels
+    torch.manual_seed(3)
+    pos = torch.rand(n, 3, dtype=torch.float64) * box
+    batch = torch.zeros(n, dtype=torch.long)
+    es, ed, sh = _neighbor_list(pos, cell[0], r_max=4.5)
+
+    def emit(p, c):
+        _out, rs = model(p, A, batch, es, ed, sh, c, return_reciprocal_source=True)
+        q = rs[:, :s]
+        mu = rs[:, s:4 * s].reshape(n, s, 3)            # C++ decode: narrow(C,3C).reshape(C,3)
+        quad = rs[:, 4 * s:13 * s].reshape(n, s, 3, 3)  # narrow(4C,9C).reshape(C,3,3)
+        return rs, q, mu, quad
+
+    rs, q, mu, quad = emit(pos, cell)
+    assert rs.shape == (n, s * 13), rs.shape
+    assert torch.isfinite(rs).all()
+
+    R = _random_rotation(torch.float64)
+    _, q_r, mu_r, quad_r = emit(pos @ R.T, (cell[0] @ R.T).reshape(1, 3, 3))
+    assert torch.allclose(q, q_r, atol=1e-8), "monopole source not invariant"
+    assert torch.allclose(mu @ R.T, mu_r, atol=1e-8), (mu @ R.T - mu_r).abs().max()
+    assert torch.allclose(
+        torch.einsum("ij,nsjk,lk->nsil", R, quad, R), quad_r, atol=1e-8
+    ), "quadrupole source not equivariant"
+
+
 if __name__ == "__main__":
     test_forward_multipole_rotation_invariance_and_forces()
     print("OK: forward_multipole rotation-invariance + forces + translation-invariance")
@@ -245,3 +283,5 @@ if __name__ == "__main__":
     print("OK: full-model forward smoke (energy + forces + rotation-invariance, multipole ON)")
     l0, l1 = test_model_multipole_training_smoke()
     print(f"OK: training smoke (loss {l0:.3e} -> {l1:.3e}, multipole readout gets gradient)")
+    test_export_reciprocal_source_equivariant_layout()
+    print("OK: export reciprocal_source packed [q|mu|Q] layout + equivariance (C++ contract)")
