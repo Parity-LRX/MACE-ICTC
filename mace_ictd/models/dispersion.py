@@ -19,6 +19,48 @@ from torch import nn
 from torch.nn import functional as F
 
 
+@torch.no_grad()
+def dispersion_neighbor_list(pos, batch, cell, cutoff, pbc=True):
+    """Periodic pair list within ``cutoff`` (per graph), repo convention
+    edge_vec = pos[i] - pos[j] + shifts @ cell, returning (src=j, dst=i, shifts).
+
+    Pure torch (no torch_cluster); O(N_g^2 * images) per graph -> intended for the
+    small/medium validation systems (production gets its list from LAMMPS/ASE). Only
+    indices+integer shifts are produced here; recompute lengths from ``pos`` for
+    differentiable forces. ``cutoff`` should be <~ min lattice length for periodic cells.
+    """
+    dev, dt = pos.device, pos.dtype
+    cutoff_t = torch.as_tensor(float(cutoff), device=dev, dtype=dt)
+    src_all, dst_all, shift_all = [], [], []
+    for g in range(cell.shape[0]):
+        idx = (batch == g).nonzero(as_tuple=True)[0]
+        if idx.numel() == 0:
+            continue
+        p = pos.index_select(0, idx)  # [m, 3]
+        c = cell[g]                   # [3, 3]
+        if pbc:
+            lengths = c.norm(dim=-1).clamp_min(1e-6)
+            nmax = torch.ceil(cutoff_t / lengths).to(torch.long)
+            axes = [torch.arange(-int(nmax[a]), int(nmax[a]) + 1, device=dev) for a in range(3)]
+        else:
+            axes = [torch.zeros(1, dtype=torch.long, device=dev) for _ in range(3)]
+        shifts = torch.cartesian_prod(*axes).to(dt)  # [S, 3]
+        shift_vecs = shifts @ c                       # [S, 3]
+        disp = p[:, None, None, :] - p[None, :, None, :] + shift_vecs[None, None, :, :]  # [i, j, S, 3]
+        dist = disp.norm(dim=-1)                      # [i, j, S]
+        mask = (dist > 1e-8) & (dist <= cutoff_t)
+        ii, jj, ss = mask.nonzero(as_tuple=True)
+        if ii.numel() == 0:
+            continue
+        src_all.append(idx[jj])
+        dst_all.append(idx[ii])
+        shift_all.append(shifts[ss].to(torch.long))
+    if not src_all:
+        z = torch.zeros(0, dtype=torch.long, device=dev)
+        return z, z, torch.zeros(0, 3, dtype=torch.long, device=dev)
+    return torch.cat(src_all), torch.cat(dst_all), torch.cat(shift_all)
+
+
 class PairwiseDispersion(nn.Module):
     def __init__(self, feature_dim: int, hidden_dim: int = 32, r0_floor: float = 0.5):
         super().__init__()

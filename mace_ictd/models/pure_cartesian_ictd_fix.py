@@ -2126,6 +2126,7 @@ class PureCartesianICTDFix(nn.Module):
         long_range_mesh_fft_full_ewald: bool = False,
         long_range_max_multipole_l: int = 0,
         long_range_dispersion: bool = False,
+        dispersion_cutoff: float = 10.0,
         long_range_theta: float = 0.5,
         long_range_leaf_size: int = 32,
         long_range_multipole_order: int = 0,
@@ -2599,6 +2600,8 @@ class PureCartesianICTDFix(nn.Module):
         # r^-6 tail beyond max_radius is currently truncated (a longer dispersion cutoff is
         # a follow-up); the term is exact within the cutoff.
         self.dispersion = None
+        self.dispersion_cutoff = float(dispersion_cutoff)
+        self.dispersion_pbc = str(long_range_boundary) == "periodic"
         if bool(long_range_dispersion):
             from mace_ictd.models.dispersion import PairwiseDispersion
 
@@ -2963,7 +2966,7 @@ class PureCartesianICTDFix(nn.Module):
             if long_range_energy is not None and not defer:
                 out = out + long_range_energy
 
-        # --- pairwise dispersion additive term (invariant; reuses the existing edge list) ---
+        # --- pairwise dispersion additive term (invariant) ---
         if self.dispersion is not None:
             last_state = layer_states[-1]
             if last_state.shape[-1] == self.channels:
@@ -2972,7 +2975,19 @@ class PureCartesianICTDFix(nn.Module):
                 disp_feat = _split_irreps(last_state, self.channels, self.lmax)[0].reshape(
                     last_state.shape[0], self.channels
                 )
-            out = out + self.dispersion(disp_feat, edge_src, edge_dst, edge_length)
+            if self.dispersion_cutoff and self.dispersion_cutoff > 0.0:
+                # dedicated longer-range neighbor list -> removes the r^-6 truncation of the
+                # short-range cutoff; lengths recomputed from pos for differentiable forces.
+                from mace_ictd.models.dispersion import dispersion_neighbor_list
+
+                d_src, d_dst, d_shift = dispersion_neighbor_list(
+                    pos, batch, cell, self.dispersion_cutoff, pbc=self.dispersion_pbc
+                )
+                shift_vecs = torch.einsum("ni,nij->nj", d_shift.to(pos.dtype), cell[batch[d_dst]])
+                d_len = (pos[d_dst] - pos[d_src] + shift_vecs).norm(dim=1)
+                out = out + self.dispersion(disp_feat, d_src, d_dst, d_len)
+            else:
+                out = out + self.dispersion(disp_feat, edge_src, edge_dst, edge_length)
 
         if return_combined_features:
             combined_features = torch.cat(layer_states, dim=-1)

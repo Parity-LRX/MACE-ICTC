@@ -83,8 +83,34 @@ def test_model_complete_long_range_smoke():
     assert dp and any(g.abs().sum() > 0 for g in dp), "dispersion got no gradient"
 
 
+def test_dispersion_neighbor_list_matches_bruteforce():
+    """The longer-cutoff dispersion neighbor list matches a brute-force periodic search
+    (cutoff < box so a single image shell is complete), removing the short-range truncation."""
+    from mace_ictd.models.dispersion import dispersion_neighbor_list
+    from mace_ictd.test.test_multipole_long_range import _neighbor_list
+
+    dtype = torch.float64
+    torch.manual_seed(2)
+    box, cutoff, n = 12.0, 5.0, 6
+    cell = torch.eye(3, dtype=dtype) * box
+    pos = torch.rand(n, 3, dtype=dtype) * box
+    batch = torch.zeros(n, dtype=torch.long)
+
+    src, dst, shifts = dispersion_neighbor_list(pos, batch, cell.reshape(1, 3, 3), cutoff, pbc=True)
+    bsrc, bdst, bsh = _neighbor_list(pos, cell, cutoff)
+
+    def keyset(s, d, sh):
+        return {(int(a), int(b), tuple(int(x) for x in c)) for a, b, c in zip(s, d, sh)}
+
+    assert keyset(src, dst, shifts) == keyset(bsrc, bdst, bsh), "dispersion list != brute force"
+    dlen = (pos[dst] - pos[src] + shifts.to(dtype) @ cell).norm(dim=1)
+    assert (dlen > 1e-8).all() and (dlen <= cutoff + 1e-9).all(), "pairs outside cutoff"
+
+
 if __name__ == "__main__":
     test_dispersion_physics()
     print("OK: dispersion physics (attractive, decaying, BJ-finite, attractive forces, invariant)")
+    test_dispersion_neighbor_list_matches_bruteforce()
+    print("OK: dispersion neighbor list matches brute-force periodic search")
     test_model_complete_long_range_smoke()
     print("OK: complete long-range smoke (multipole electrostatics + dispersion, both train)")
