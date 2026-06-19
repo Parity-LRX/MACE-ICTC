@@ -1070,6 +1070,12 @@ MFFOutputs MFFTorchEngine::run_aoti(
   // Slice off the dummy padding atoms -> outputs for the real ntot atoms only.
   out.atom_energy = outs[0].narrow(0, 0, ntot).contiguous();
   out.forces = outs[1].narrow(0, 0, ntot).contiguous();
+  // Optional 3rd output: packed latent-multipole reciprocal_source [q|mu|Q] for the C++ reciprocal
+  // solver (the AOTI multipole export returns (E, force, reciprocal_source); slice off padding). The
+  // pair style's existing reciprocal-solver path then runs identically to the TorchScript core.
+  if (outs.size() > 2 && outs[2].defined() && outs[2].numel() > 0) {
+    out.reciprocal_source = outs[2].narrow(0, 0, ntot).contiguous();
+  }
   return out;
 #else
   (void)pos0; (void)A; (void)edge_src; (void)edge_dst; (void)edge_shifts; (void)cell;
