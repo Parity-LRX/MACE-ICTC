@@ -587,6 +587,10 @@ def _export_single_core(
 
     model_eager = obj.wrapper.model
     metadata_model = model_eager
+    # Multipole/long-range models flag themselves as exporting a packed reciprocal_source; honor that
+    # automatically so the core .pt always includes the source slot even without the explicit CLI flag.
+    if getattr(metadata_model, "long_range_exports_reciprocal_source", False):
+        export_reciprocal_source = True
     num_fidelity_levels = int(getattr(model_eager, "num_fidelity_levels", 0) or 0)
     multi_fidelity_mode = str(getattr(model_eager, "multi_fidelity_mode", "conditioning") or "conditioning")
     runtime_fidelity_input = False
@@ -731,7 +735,11 @@ def _export_single_core(
         # reciprocal_source is packed channel-last as [q | dipole_xyz | quad_3x3] per source channel,
         # so the C++ reciprocal solver rebuilds q/mu/Q using this + reciprocal_source_channels.
         "long_range_max_multipole_l": int(
-            getattr(getattr(metadata_model, "long_range_module", None), "max_multipole_l", 0)
+            getattr(
+                metadata_model,
+                "long_range_max_multipole_l",
+                getattr(getattr(metadata_model, "long_range_module", None), "max_multipole_l", 0),
+            )
         ),
         "long_range_slab_padding_factor": int(getattr(metadata_model, "long_range_slab_padding_factor", 2)),
         "long_range_reciprocal_backend": str(getattr(metadata_model, "long_range_reciprocal_backend", "direct_kspace")),
@@ -739,6 +747,16 @@ def _export_single_core(
         "long_range_neutralize": bool(getattr(metadata_model, "long_range_neutralize", True)),
         "long_range_green_mode": str(getattr(metadata_model, "long_range_green_mode", "poisson")),
         "long_range_mesh_fft_full_ewald": bool(getattr(metadata_model, "long_range_mesh_fft_full_ewald", False)),
+        # Ewald screening prefactor: alpha = prefactor / (0.5 * min periodic box length). The C++
+        # multipole_reciprocal_energy applies exp(-k^2/4 alpha^2) when full_ewald is set, matching the
+        # in-model MeshLongRangeKernel3D.multipole_energy (kernel.ewald_alpha_prefactor, default 5.0).
+        "long_range_ewald_alpha_prefactor": float(
+            getattr(
+                getattr(getattr(metadata_model, "long_range_module", None), "kernel", None),
+                "ewald_alpha_prefactor",
+                5.0,
+            )
+        ),
         "long_range_theta": float(getattr(metadata_model, "long_range_theta", 0.5)),
         "long_range_leaf_size": int(getattr(metadata_model, "long_range_leaf_size", 32)),
         "long_range_multipole_order": int(getattr(metadata_model, "long_range_multipole_order", 0)),

@@ -2596,6 +2596,27 @@ class PureCartesianICTDFix(nn.Module):
             # at export the multipole route emits a packed [q|mu|Q] reciprocal_source for the
             # C++ solver (instead of computing the reciprocal energy in-model).
             self.long_range_exports_reciprocal_source = True
+            # Deploy metadata read by export_libtorch_core -> .json -> the C++ engine/solver.
+            # The packed per-atom source is [q | dipole_xyz | quad_3x3] per channel (channel-major);
+            # the C++ reciprocal solver rebuilds q/mu/Q from source_channels + max_multipole_l, and
+            # multipole_reciprocal_energy mirrors the in-model multipole_energy (screened |S(k)|^2 PME).
+            self.long_range_runtime_backend = "mesh_fft"
+            self.long_range_runtime_source_kind = "latent_multipole"
+            self.long_range_runtime_source_channels = int(long_range_source_channels)
+            self.long_range_runtime_source_layout = "packed_q_dipole_quad"
+            self.long_range_runtime_source_boundary = "periodic"
+            # Deploy config the .json writer reads, taken from the built mesh kernel (the source of
+            # truth) so the C++ reciprocal solver reproduces the in-model multipole_energy exactly:
+            # screened |S(k)|^2 PME with green_mode/mesh_size/boundary/full_ewald all matched.
+            _mp_kernel = self.long_range_module.kernel
+            self.long_range_mesh_fft_full_ewald = bool(getattr(_mp_kernel, "full_ewald", bool(long_range_mesh_fft_full_ewald)))
+            self.long_range_mesh_size = int(getattr(_mp_kernel, "mesh_size", 16))
+            self.long_range_green_mode = str(getattr(_mp_kernel, "green_mode", "poisson"))
+            self.long_range_boundary = str(getattr(_mp_kernel, "boundary", "periodic"))
+            # multipole_energy always distributes e_graph/n_local uniformly (it ignores the kernel's
+            # energy_partition); report that honestly so the C++ per-atom decomposition can match.
+            self.long_range_energy_partition = "uniform"
+            self.long_range_neutralize = bool(getattr(self.long_range_module, "neutralize", True))
 
         # Pairwise C6 dispersion (van der Waals): a scalar/invariant long-range term that
         # completes the electrostatics (multipoles) above. OFF by default -> None -> no

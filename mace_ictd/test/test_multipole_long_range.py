@@ -274,6 +274,56 @@ def test_export_reciprocal_source_equivariant_layout():
     ), "quadrupole source not equivariant"
 
 
+def test_export_torchscript_core_multipole():
+    """The TorchScript export core (_TorchScriptEdgeVecCore, export_reciprocal_source=True) emits the
+    6-tuple wire format the C++ engine reads: (atom_energy, global_phys[M,22], atom_phys[N,31],
+    global_mask[5], atom_mask[5], reciprocal_source[N,13S]) with reciprocal_source at index 5. The 4
+    physical-tensor slots are correct-width zeros (MACE-ICTD has no physical heads) so the engine's
+    width checks pass. Also asserts the deploy metadata the .json writer reads is set on the model,
+    and that the core jit.traces + reloads to the identical 6-tuple."""
+    torch.set_default_dtype(torch.float64)
+    from mace_ictd.interfaces.lammps_mliap import _TorchScriptEdgeVecCore
+
+    model = _build_model(max_multipole_l=2).double().eval()
+    s = model.multipole_readout.source_channels
+    # deploy metadata the export .json writer reads (export_libtorch_core meta dict)
+    assert model.long_range_exports_reciprocal_source is True
+    assert model.long_range_max_multipole_l == 2
+    assert model.long_range_runtime_source_channels == s
+    assert model.long_range_runtime_backend == "mesh_fft"
+    assert model.long_range_runtime_source_kind == "latent_multipole"
+    assert model.long_range_mesh_fft_full_ewald is True
+
+    box = 8.0
+    cell = (torch.eye(3, dtype=torch.float64) * box).reshape(1, 3, 3)
+    A = torch.tensor([1, 6, 7, 8, 1, 6])
+    n = A.numel()
+    torch.manual_seed(5)
+    pos = torch.rand(n, 3, dtype=torch.float64) * box
+    batch = torch.zeros(n, dtype=torch.long)
+    es, ed, sh = _neighbor_list(pos, cell[0], r_max=4.5)
+    edge_vec = pos[ed] - pos[es] + sh.to(pos.dtype) @ cell[0]
+    ext = torch.empty(0, dtype=torch.float64)
+
+    core = _TorchScriptEdgeVecCore(model, export_reciprocal_source=True).eval()
+    out = core(pos, A, batch, es, ed, sh, cell, edge_vec, ext)
+    assert isinstance(out, tuple) and len(out) == 6, f"expected 6-tuple, got len {len(out) if isinstance(out, tuple) else '-'}"
+    atom_e, gphys, aphys, gmask, amask, rs = out
+    assert atom_e.shape[0] == n
+    assert rs.shape == (n, 13 * s), rs.shape  # reciprocal_source MUST be at index 5
+    # physical-tensor slots: correct-width zeros (engine checks width only when numel>0)
+    assert gphys.shape[-1] == 22 and aphys.shape[-1] == 31, (gphys.shape, aphys.shape)
+    assert gmask.numel() == 5 and amask.numel() == 5
+    assert float(gphys.abs().sum()) == 0.0 and float(aphys.abs().sum()) == 0.0, "phys slots must be zero (no heads)"
+
+    # traces + reloads to the identical 6-tuple (this is what torch.jit.save serializes for LibTorch)
+    traced = torch.jit.trace(core, (pos, A, batch, es, ed, sh, cell, edge_vec, ext), check_trace=False, strict=False)
+    out2 = traced(pos, A, batch, es, ed, sh, cell, edge_vec, ext)
+    assert len(out2) == 6 and out2[5].shape == (n, 13 * s)
+    assert torch.allclose(out2[5], rs, atol=1e-8), "traced reciprocal_source diverged"
+    assert torch.allclose(out2[0], atom_e, atol=1e-8), "traced energy diverged"
+
+
 if __name__ == "__main__":
     test_forward_multipole_rotation_invariance_and_forces()
     print("OK: forward_multipole rotation-invariance + forces + translation-invariance")
@@ -285,3 +335,5 @@ if __name__ == "__main__":
     print(f"OK: training smoke (loss {l0:.3e} -> {l1:.3e}, multipole readout gets gradient)")
     test_export_reciprocal_source_equivariant_layout()
     print("OK: export reciprocal_source packed [q|mu|Q] layout + equivariance (C++ contract)")
+    test_export_torchscript_core_multipole()
+    print("OK: TorchScript export core emits the 6-tuple wire format (rs@5, phys zeros) + traces")
