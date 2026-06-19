@@ -1021,6 +1021,14 @@ class LatentReciprocalLongRange(nn.Module):
             return atom_energy, source
         return atom_energy
 
+    def emit_source(self, invariant_features: torch.Tensor) -> torch.Tensor:
+        """Latent monopole (0e charge) source for the C++ reciprocal solver at deploy time: the raw
+        source_head output only -- the reciprocal energy AND neutralization are deferred to the C++
+        solver (which neutralizes per long_range_neutralize). Unlike ``forward(return_source=True)``
+        this does NOT call the mesh kernel, so it avoids the kernel's per-graph ``torch.nonzero`` (a
+        data-dependent op that make_fx/AOTI cannot trace), mirroring the multipole pack-source emit."""
+        return self.source_head(invariant_features)
+
     def forward_multipole(
         self,
         pos: torch.Tensor,

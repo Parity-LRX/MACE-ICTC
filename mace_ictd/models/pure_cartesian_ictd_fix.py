@@ -2987,10 +2987,12 @@ class PureCartesianICTDFix(nn.Module):
                 lr_feat = _split_irreps(last_state, self.channels, self.lmax)[0].reshape(last_state.shape[0], self.channels)
             defer = False
             if return_reciprocal_source and self.long_range_exports_reciprocal_source:
-                long_range_energy, reciprocal_source = self.long_range_module(
-                    lr_feat, pos, batch, cell, edge_src=edge_src, edge_dst=edge_dst, return_source=True
-                )
-                defer = reciprocal_source.numel() > 0
+                # Deploy: emit ONLY the latent charge source (source_head); defer the reciprocal
+                # energy + neutralization to the C++ solver. emit_source avoids the kernel's per-graph
+                # torch.nonzero so make_fx/AOTI can trace it (forward(return_source=True) would not).
+                reciprocal_source = self.long_range_module.emit_source(lr_feat)
+                long_range_energy = None
+                defer = True
             else:
                 long_range_energy = self.long_range_module(
                     lr_feat, pos, batch, cell, edge_src=edge_src, edge_dst=edge_dst
