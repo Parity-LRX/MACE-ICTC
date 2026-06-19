@@ -539,6 +539,8 @@ void MFFTorchEngine::load_single_core_file(const std::string& core_pt_path) {
   long_range_screening_ = 0.0;
   long_range_softening_ = 1.0e-6;
   long_range_energy_scale_ = 1.0;
+  long_range_mesh_fft_full_ewald_ = false;
+  long_range_ewald_alpha_prefactor_ = 5.0;
 
   try {
     auto schema = core_.get_method("forward").function().getSchema();
@@ -579,6 +581,8 @@ void MFFTorchEngine::load_single_core_file(const std::string& core_pt_path) {
       (void)parse_double_from_metadata(content, "\"long_range_screening\"", long_range_screening_);
       (void)parse_double_from_metadata(content, "\"long_range_softening\"", long_range_softening_);
       (void)parse_double_from_metadata(content, "\"long_range_energy_scale\"", long_range_energy_scale_);
+      (void)parse_bool_from_metadata(content, "\"long_range_mesh_fft_full_ewald\"", long_range_mesh_fft_full_ewald_);
+      (void)parse_double_from_metadata(content, "\"long_range_ewald_alpha_prefactor\"", long_range_ewald_alpha_prefactor_);
       (void)parse_int64_from_metadata(content, "\"trace_num_nodes\"", trace_num_nodes_);
       (void)parse_int64_from_metadata(content, "\"trace_num_edges\"", trace_num_edges_);
       (void)parse_string_from_metadata(content, "\"external_tensor_irrep\"", external_tensor_irrep_);

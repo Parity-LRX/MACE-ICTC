@@ -160,10 +160,19 @@ void PairMFFTorchKokkos<DeviceType>::init_style() {
       if (debug_bundle) std::fprintf(stderr, "[USER-MFFTORCH] kk init_style after load_core\n");
       if (reciprocal_solver_) {
         auto cfg = reciprocal_solver_->config();
+        // Mirror the non-Kokkos PairMFFTorch reciprocal config so the GPU path decodes the packed
+        // latent-multipole source correctly (source_channels/max_multipole_l) at the trained mesh.
+        cfg.mesh_size = static_cast<int>(engine_->long_range_mesh_size());
+        cfg.max_multipole_l = static_cast<int>(engine_->long_range_max_multipole_l());
+        cfg.source_channels = static_cast<int>(engine_->reciprocal_source_channels());
         cfg.slab_padding_factor = static_cast<int>(engine_->reciprocal_source_slab_padding_factor());
         cfg.green_mode = (engine_->long_range_green_mode() == "learned_poisson")
                              ? mfftorch::ReciprocalGreenMode::LearnedPoisson
                              : mfftorch::ReciprocalGreenMode::Poisson;
+        // Latent-multipole alignment with the in-model multipole_energy (screening + energy scale).
+        cfg.full_ewald = engine_->long_range_mesh_fft_full_ewald();
+        cfg.ewald_alpha_prefactor = engine_->long_range_ewald_alpha_prefactor();
+        cfg.energy_scale = engine_->long_range_energy_scale();
         reciprocal_solver_->set_config(cfg);
       }
       if (tree_fmm_solver_) {

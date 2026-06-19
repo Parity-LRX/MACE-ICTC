@@ -82,6 +82,8 @@ class MFFTorchEngine {
   double long_range_screening() const { return long_range_screening_; }
   double long_range_softening() const { return long_range_softening_; }
   double long_range_energy_scale() const { return long_range_energy_scale_; }
+  bool long_range_mesh_fft_full_ewald() const { return long_range_mesh_fft_full_ewald_; }
+  double long_range_ewald_alpha_prefactor() const { return long_range_ewald_alpha_prefactor_; }
   const std::string& tensor_product_mode() const { return tensor_product_mode_; }
   bool prefers_kokkos_host_staging() const { return tensor_product_mode_ == "spherical-save-cue"; }
   bool is_bundle_manifest() const { return bundle_mode_; }
@@ -169,6 +171,10 @@ class MFFTorchEngine {
   double long_range_screening_ = 0.0;
   double long_range_softening_ = 1.0e-6;
   double long_range_energy_scale_ = 1.0;
+  // Ewald Gaussian screening for the latent-multipole reciprocal sum (mirrors the in-model
+  // MeshLongRangeKernel3D.multipole_energy full_ewald branch): alpha = prefactor / (0.5*Lmin).
+  bool long_range_mesh_fft_full_ewald_ = false;
+  double long_range_ewald_alpha_prefactor_ = 5.0;
   int64_t trace_num_nodes_ = 0;
   int64_t trace_num_edges_ = 0;
 

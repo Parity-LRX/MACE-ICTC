@@ -332,6 +332,11 @@ void PairMFFTorch::init_style() {
       cfg.green_mode = (engine_->long_range_green_mode() == "learned_poisson")
                            ? mfftorch::ReciprocalGreenMode::LearnedPoisson
                            : mfftorch::ReciprocalGreenMode::Poisson;
+      // Latent-multipole alignment with the in-model MeshLongRangeKernel3D.multipole_energy:
+      // Ewald Gaussian screening (+ its alpha prefactor) and the learned reciprocal energy scale.
+      cfg.full_ewald = engine_->long_range_mesh_fft_full_ewald();
+      cfg.ewald_alpha_prefactor = engine_->long_range_ewald_alpha_prefactor();
+      cfg.energy_scale = engine_->long_range_energy_scale();
       reciprocal_solver_->set_config(cfg);
     }
     if (tree_fmm_solver_) {

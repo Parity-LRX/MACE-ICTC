@@ -40,6 +40,10 @@ struct ReciprocalConfig {
   ReciprocalGreenMode green_mode = ReciprocalGreenMode::Poisson;
   int max_multipole_l = 0;   // 0=monopole; 1=+dipole; 2=+dipole+quadrupole (packed source)
   int source_channels = 1;   // latent monopole channels C; packed width = C*(1 + 3[l>=1] + 9[l>=2])
+  // Latent-multipole reciprocal alignment with the in-model MeshLongRangeKernel3D.multipole_energy:
+  bool full_ewald = false;            // multiply spectral weight by exp(-k^2/4 alpha^2)
+  double ewald_alpha_prefactor = 5.0; // alpha = prefactor / (0.5 * min periodic box length)
+  double energy_scale = 1.0;          // learned scalar applied to the reciprocal energy
 };
 
 struct ReciprocalInputs {
@@ -84,6 +88,9 @@ class MFFReciprocalSolver {
     k_norm_floor_ = config_.k_norm_floor;
     max_multipole_l_ = config_.max_multipole_l;
     source_channels_ = config_.source_channels;
+    full_ewald_ = config_.full_ewald;
+    ewald_alpha_prefactor_ = config_.ewald_alpha_prefactor;
+    energy_scale_ = config_.energy_scale;
   }
   const ReciprocalConfig& config() const { return config_; }
   int mesh_size() const { return mesh_size_; }
@@ -137,6 +144,9 @@ class MFFReciprocalSolver {
   double k_norm_floor_ = 1.0e-6;
   int max_multipole_l_ = 0;
   int source_channels_ = 1;
+  bool full_ewald_ = false;
+  double ewald_alpha_prefactor_ = 5.0;
+  double energy_scale_ = 1.0;
   mutable torch::Tensor cached_integer_freq_cpu_;
   mutable SpectralCacheKey spectral_cache_key_;
   mutable SparsePartitionCacheKey sparse_partition_cache_key_;

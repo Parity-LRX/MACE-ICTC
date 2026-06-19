@@ -952,6 +952,24 @@ torch::Tensor MFFReciprocalSolver::multipole_reciprocal_energy(
   auto wdeconv = torch::reciprocal(window.clamp_min(1.0e-6).square());
   auto safe = k_norm.clamp_min(k_norm_floor_);
   auto spectral = (4.0 * M_PI) / (safe * safe) / geom.volume * wdeconv;
+  if (full_ewald_) {
+    // Ewald Gaussian screening exp(-k^2/4 alpha^2), alpha = prefactor / (0.5 * min periodic box
+    // length) -- mirrors the in-model MeshLongRangeKernel3D.multipole_energy full_ewald branch so the
+    // deployed reciprocal sum matches training (without it the bare 4pi/k^2 mesh sum has large
+    // CIC/mesh translation error). eff_cpu rows are the real-space lattice vectors.
+    auto row_norms = torch::linalg_vector_norm(eff_cpu, 2, 1);  // (3,) lattice vector lengths
+    double Lmin = -1.0;
+    for (int ax = 0; ax < 3; ++ax) {
+      if (pbc[ax] != 1) continue;
+      const double Lax = row_norms[ax].item<double>();
+      if (Lmin < 0.0 || Lax < Lmin) Lmin = Lax;
+    }
+    if (Lmin < 0.0) Lmin = row_norms.min().item<double>();  // non-periodic fallback: all axes
+    double real_cutoff = 0.5 * Lmin;
+    if (real_cutoff < k_norm_floor_) real_cutoff = k_norm_floor_;
+    const double alpha = ewald_alpha_prefactor_ / real_cutoff;
+    spectral = spectral * torch::exp(-(k_norm.square()) / (4.0 * alpha * alpha));
+  }
   spectral = torch::where(k_norm > k_norm_floor_, spectral, torch::zeros_like(spectral));
   auto q = packed_source.narrow(1, 0, C);
   auto S = torch::fft::fftn(spread_to_mesh_full(frac, q, pbc), {}, {0, 1, 2}).reshape({-1, C});
@@ -969,7 +987,7 @@ torch::Tensor MFFReciprocalSolver::multipole_reciprocal_energy(
     auto kc = k_cart.to(qt.dtype());
     S = S - 0.5 * torch::einsum("kx,kcxy,ky->kc", {kc, qt, kc});  // - 1/2 k.Q.k
   }
-  return 0.5 * (spectral.unsqueeze(-1) * S.abs().square()).sum();
+  return energy_scale_ * 0.5 * (spectral.unsqueeze(-1) * S.abs().square()).sum();
 }
 
 ReciprocalOutputs MFFReciprocalSolver::compute_replicated_atoms(
