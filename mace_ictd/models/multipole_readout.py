@@ -38,11 +38,11 @@ def pack_multipole_source(
     (q at [0,C), mu at [C,4C) -> reshape(C,3), Q at [4C,13C) -> reshape(C,3,3)).
     """
     n, s = monopole.shape[0], monopole.shape[1]
-    parts = [monopole]
+    parts = [monopole.contiguous()]
     if dipole is not None:
-        parts.append(dipole.reshape(n, s * 3))
+        parts.append(dipole.contiguous().flatten(start_dim=1))
     if quadrupole is not None:
-        parts.append(quadrupole.reshape(n, s * 9))
+        parts.append(quadrupole.contiguous().flatten(start_dim=1))
     return torch.cat(parts, dim=1)
 
 

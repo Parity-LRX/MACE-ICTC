@@ -304,9 +304,10 @@ def test_export_torchscript_core_multipole():
     es, ed, sh = _neighbor_list(pos, cell[0], r_max=4.5)
     edge_vec = pos[ed] - pos[es] + sh.to(pos.dtype) @ cell[0]
     ext = torch.empty(0, dtype=torch.float64)
+    disp_args = (es, ed, sh, edge_vec)
 
     core = _TorchScriptEdgeVecCore(model, export_reciprocal_source=True).eval()
-    out = core(pos, A, batch, es, ed, sh, cell, edge_vec, ext)
+    out = core(pos, A, batch, es, ed, sh, cell, edge_vec, *disp_args, ext)
     assert isinstance(out, tuple) and len(out) == 6, f"expected 6-tuple, got len {len(out) if isinstance(out, tuple) else '-'}"
     atom_e, gphys, aphys, gmask, amask, rs = out
     assert atom_e.shape[0] == n
@@ -317,8 +318,9 @@ def test_export_torchscript_core_multipole():
     assert float(gphys.abs().sum()) == 0.0 and float(aphys.abs().sum()) == 0.0, "phys slots must be zero (no heads)"
 
     # traces + reloads to the identical 6-tuple (this is what torch.jit.save serializes for LibTorch)
-    traced = torch.jit.trace(core, (pos, A, batch, es, ed, sh, cell, edge_vec, ext), check_trace=False, strict=False)
-    out2 = traced(pos, A, batch, es, ed, sh, cell, edge_vec, ext)
+    trace_inputs = (pos, A, batch, es, ed, sh, cell, edge_vec, *disp_args, ext)
+    traced = torch.jit.trace(core, trace_inputs, check_trace=False, strict=False)
+    out2 = traced(*trace_inputs)
     assert len(out2) == 6 and out2[5].shape == (n, 13 * s)
     assert torch.allclose(out2[5], rs, atol=1e-8), "traced reciprocal_source diverged"
     assert torch.allclose(out2[0], atom_e, atol=1e-8), "traced energy diverged"

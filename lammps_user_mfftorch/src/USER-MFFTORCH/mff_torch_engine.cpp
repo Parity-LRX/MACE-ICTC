@@ -2,6 +2,8 @@
 
 #include <c10/cuda/CUDAGuard.h>
 #include <c10/cuda/CUDAStream.h>
+#include <cuda_runtime_api.h>
+#include <torch/autograd.h>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -20,6 +22,27 @@ namespace {
 constexpr int64_t kGlobalPhysWidth = 22;
 constexpr int64_t kAtomPhysWidth = 31;
 constexpr int64_t kPhysMaskWidth = 5;
+
+int cuda_device_count_runtime() {
+  int count = 0;
+  const cudaError_t err = cudaGetDeviceCount(&count);
+  if (err != cudaSuccess) {
+    cudaGetLastError();
+    return 0;
+  }
+  return count;
+}
+
+bool cuda_available_runtime() {
+  return cuda_device_count_runtime() > 0;
+}
+
+void cuda_synchronize_runtime() {
+  const cudaError_t err = cudaDeviceSynchronize();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(std::string("cudaDeviceSynchronize failed: ") + cudaGetErrorString(err));
+  }
+}
 
 bool parse_bool_from_metadata(const std::string& content, const std::string& key, bool& value) {
   const auto key_pos = content.find(key);
@@ -236,8 +259,13 @@ void maybe_dump_forward_inputs_once(const std::vector<torch::jit::IValue>& input
 
   auto dump_tensor = [&](size_t idx, const char* name) {
     if (idx >= inputs.size() || !inputs[idx].isTensor()) return;
+#if defined(MFF_ENABLE_TORCH_SAVE_DEBUG)
     torch::Tensor t = inputs[idx].toTensor().detach().cpu();
     torch::save(t, std::string(prefix) + "_" + name + ".pt");
+#else
+    (void)idx;
+    (void)name;
+#endif
   };
 
   dump_tensor(0, "pos");
@@ -268,7 +296,7 @@ static int detect_local_gpu_index() {
     const char* val = std::getenv(*v);
     if (val && val[0] != '\0') {
       int rank = std::atoi(val);
-      int n_gpus = static_cast<int>(torch::cuda::device_count());
+      int n_gpus = cuda_device_count_runtime();
       if (n_gpus > 0) return rank % n_gpus;
     }
   }
@@ -278,14 +306,14 @@ static int detect_local_gpu_index() {
 static torch::Device pick_device(const std::string& device_str) {
   if (device_str.rfind("cuda:", 0) == 0) {
     int idx = std::atoi(device_str.c_str() + 5);
-    if (!torch::cuda::is_available()) {
+    if (!cuda_available_runtime()) {
       throw std::runtime_error("requested " + device_str + " but CUDA is not available");
     }
     c10::cuda::set_device(idx);
     return torch::Device(torch::kCUDA, idx);
   }
   if (device_str == "cuda") {
-    if (!torch::cuda::is_available()) {
+    if (!cuda_available_runtime()) {
       throw std::runtime_error("requested device=cuda but torch::cuda::is_available() is false");
     }
     int idx = detect_local_gpu_index();
@@ -432,7 +460,7 @@ void MFFTorchEngine::load_single_core_file(const std::string& core_pt_path) {
       core_pt_path.compare(core_pt_path.size() - 4, 4, ".pt2") == 0) {
 #if MFF_HAS_AOTI
     aoti_loader_ = std::make_unique<torch::inductor::AOTIModelPackageLoader>(
-        core_pt_path, "model", /*run_single_threaded=*/false);
+        core_pt_path, "model", /*run_single_threaded=*/true);
     aoti_mode_ = true;
     loaded_ = true;
     cached_ntotal_ = 0;
@@ -451,6 +479,7 @@ void MFFTorchEngine::load_single_core_file(const std::string& core_pt_path) {
     aoti_pad_z_ = 1;
     have_ts_fallback_ = false;
     aoti_fallback_warned_ = false;
+    aoti_takes_dispersion_edges_arg_ = false;
     {
       std::ifstream mf(core_pt_path + ".meta");
       std::string key, fb;
@@ -458,6 +487,11 @@ void MFFTorchEngine::load_single_core_file(const std::string& core_pt_path) {
         if (key == "nmax") mf >> aoti_nmax_;
         else if (key == "pad_z") mf >> aoti_pad_z_;
         else if (key == "fallback") mf >> fb;
+        else if (key == "dispersion_edges") {
+          int flag = 0;
+          mf >> flag;
+          aoti_takes_dispersion_edges_arg_ = (flag != 0);
+        }
         else { std::string rest; std::getline(mf, rest); }
       }
       if (!fb.empty()) {
@@ -475,15 +509,18 @@ void MFFTorchEngine::load_single_core_file(const std::string& core_pt_path) {
             auto schema = core_.get_method("forward").function().getSchema();
             size_t nargs = schema.arguments().size();
             if (nargs > 0 && schema.arguments()[0].name() == "self") nargs -= 1;
-            core_takes_external_tensor_arg_ = (nargs >= 9);
-            core_takes_fidelity_arg_ = (nargs >= 10);
+            core_takes_dispersion_edges_arg_ = (nargs >= 13);
+            core_takes_external_tensor_arg_ = core_takes_dispersion_edges_arg_ ? (nargs >= 13) : (nargs >= 9);
+            core_takes_fidelity_arg_ = core_takes_dispersion_edges_arg_ ? (nargs >= 14) : (nargs >= 10);
           } catch (...) {
+            core_takes_dispersion_edges_arg_ = false;
             core_takes_external_tensor_arg_ = false;
             core_takes_fidelity_arg_ = false;
           }
           have_ts_fallback_ = true;
-          std::fprintf(stderr, "[mff/torch] AOTI .pt2 N_max=%lld pad_z=%lld + TorchScript fallback %s (ext_arg=%d)\n",
-                       (long long)aoti_nmax_, (long long)aoti_pad_z_, fbp.string().c_str(),
+          std::fprintf(stderr, "[mff/torch] AOTI .pt2 N_max=%lld pad_z=%lld disp_edges=%d + TorchScript fallback %s (ext_arg=%d)\n",
+                       (long long)aoti_nmax_, (long long)aoti_pad_z_,
+                       (int)aoti_takes_dispersion_edges_arg_, fbp.string().c_str(),
                        (int)core_takes_external_tensor_arg_);
         } catch (const std::exception& e) {
           std::fprintf(stderr, "[mff/torch] WARNING: AOTI fallback core %s failed to load: %s\n",
@@ -549,6 +586,8 @@ void MFFTorchEngine::load_single_core_file(const std::string& core_pt_path) {
   cached_nedges_ = 0;
   core_takes_external_tensor_arg_ = false;
   core_requires_external_tensor_ = false;
+  core_takes_dispersion_edges_arg_ = false;
+  aoti_takes_dispersion_edges_arg_ = false;
   core_takes_fidelity_arg_ = false;
   core_requires_runtime_fidelity_ = false;
   external_tensor_irrep_.clear();
@@ -582,10 +621,12 @@ void MFFTorchEngine::load_single_core_file(const std::string& core_pt_path) {
     auto schema = core_.get_method("forward").function().getSchema();
     size_t nargs = schema.arguments().size();
     if (nargs > 0 && schema.arguments()[0].name() == "self") nargs -= 1;
-    core_takes_external_tensor_arg_ = (nargs >= 9);
-    core_takes_fidelity_arg_ = (nargs >= 10);
+    core_takes_dispersion_edges_arg_ = (nargs >= 13);
+    core_takes_external_tensor_arg_ = core_takes_dispersion_edges_arg_ ? (nargs >= 13) : (nargs >= 9);
+    core_takes_fidelity_arg_ = core_takes_dispersion_edges_arg_ ? (nargs >= 14) : (nargs >= 10);
   } catch (...) {
     // Keep compatibility with older LibTorch builds that may not expose schema details cleanly.
+    core_takes_dispersion_edges_arg_ = false;
     core_takes_external_tensor_arg_ = false;
     core_takes_fidelity_arg_ = false;
   }
@@ -882,7 +923,21 @@ void MFFTorchEngine::warmup(int64_t N, int64_t E) {
     for (const auto& fidelity_ids : warmup_fidelity_tensors) {
       try {
         for (int i = 0; i < 3; i++) {
-          compute(N, N, pos, A, edge_src, edge_dst, edge_shifts, cell, external_tensor, fidelity_ids, false);
+          compute(
+              N,
+              N,
+              pos,
+              A,
+              edge_src,
+              edge_dst,
+              edge_shifts,
+              cell,
+              torch::Tensor(),
+              torch::Tensor(),
+              torch::Tensor(),
+              external_tensor,
+              fidelity_ids,
+              false);
         }
         warmed = true;
         break;
@@ -901,7 +956,7 @@ void MFFTorchEngine::warmup(int64_t N, int64_t E) {
         "MFFTorchEngine warmup failed for all supported external tensor shapes; last error: " + last_error);
   }
   warming_up_ = false;
-  if (device_.is_cuda()) torch::cuda::synchronize();
+  if (device_.is_cuda()) cuda_synchronize_runtime();
   use_cuda_graph_ = saved_cuda_graph;
 }
 
@@ -913,6 +968,9 @@ MFFOutputs MFFTorchEngine::compute(int64_t nlocal, int64_t ntotal,
                                   const torch::Tensor& edge_dst_in,
                                   const torch::Tensor& edge_shifts_in,
                                   const torch::Tensor& cell_in,
+                                  const torch::Tensor& dispersion_edge_src_in,
+                                  const torch::Tensor& dispersion_edge_dst_in,
+                                  const torch::Tensor& dispersion_edge_shifts_in,
                                   const torch::Tensor& external_tensor_in,
                                   const torch::Tensor& fidelity_ids_in,
                                   bool need_energy,
@@ -930,12 +988,14 @@ MFFOutputs MFFTorchEngine::compute(int64_t nlocal, int64_t ntotal,
     if (!dumped) {
       dumped = true;
       const std::string p = "/tmp/mff_graph_";
+#if defined(MFF_ENABLE_TORCH_SAVE_DEBUG)
       torch::save(pos_in.detach().to(torch::kCPU, torch::kFloat64), p + "pos.pt");
       torch::save(A_in.detach().to(torch::kCPU, torch::kInt64), p + "A.pt");
       torch::save(edge_src_in.detach().to(torch::kCPU, torch::kInt64), p + "es.pt");
       torch::save(edge_dst_in.detach().to(torch::kCPU, torch::kInt64), p + "ed.pt");
       torch::save(edge_shifts_in.detach().to(torch::kCPU, torch::kFloat64), p + "esh.pt");
       torch::save(cell_in.detach().to(torch::kCPU, torch::kFloat64), p + "cell.pt");
+#endif
       std::ofstream mf(p + "meta.txt");
       mf << nlocal << " " << ntotal << " " << edge_src_in.size(0) << "\n";
       mf.close();
@@ -958,6 +1018,23 @@ MFFOutputs MFFTorchEngine::compute(int64_t nlocal, int64_t ntotal,
                        ? edge_shifts_in : edge_shifts_in.to(device_, torch::kFloat32);
   auto cell = (cell_in.device() == device_ && cell_in.dtype() == torch::kFloat32)
                 ? cell_in : cell_in.to(device_, torch::kFloat32);
+  torch::Tensor dispersion_edge_src = edge_src;
+  torch::Tensor dispersion_edge_dst = edge_dst;
+  torch::Tensor dispersion_edge_shifts = edge_shifts;
+  const bool need_dispersion_edges =
+      core_takes_dispersion_edges_arg_ || (aoti_mode_ && aoti_takes_dispersion_edges_arg_);
+  if (need_dispersion_edges && dispersion_edge_src_in.defined() && dispersion_edge_dst_in.defined() &&
+      dispersion_edge_shifts_in.defined() && dispersion_edge_src_in.numel() > 0) {
+    dispersion_edge_src =
+        (dispersion_edge_src_in.device() == device_ && dispersion_edge_src_in.dtype() == torch::kInt64)
+            ? dispersion_edge_src_in : dispersion_edge_src_in.to(device_, torch::kInt64);
+    dispersion_edge_dst =
+        (dispersion_edge_dst_in.device() == device_ && dispersion_edge_dst_in.dtype() == torch::kInt64)
+            ? dispersion_edge_dst_in : dispersion_edge_dst_in.to(device_, torch::kInt64);
+    dispersion_edge_shifts =
+        (dispersion_edge_shifts_in.device() == device_ && dispersion_edge_shifts_in.dtype() == torch::kFloat32)
+            ? dispersion_edge_shifts_in : dispersion_edge_shifts_in.to(device_, torch::kFloat32);
+  }
   torch::Tensor external_tensor;
   if (core_takes_external_tensor_arg_) {
     if (core_requires_external_tensor_ && (!external_tensor_in.defined() || external_tensor_in.numel() == 0)) {
@@ -1043,6 +1120,7 @@ MFFOutputs MFFTorchEngine::compute(int64_t nlocal, int64_t ntotal,
                        (long long)ntotal, (long long)aoti_nmax_);
         }
         return run_forward_backward(pos0, A, edge_src, edge_dst, edge_shifts, cell,
+                                    dispersion_edge_src, dispersion_edge_dst, dispersion_edge_shifts,
                                     external_tensor, fidelity_ids,
                                     nlocal, ntotal, need_energy, need_atom_virial);
       }
@@ -1051,7 +1129,8 @@ MFFOutputs MFFTorchEngine::compute(int64_t nlocal, int64_t ntotal,
           std::to_string(aoti_nmax_) + " and no TorchScript fallback configured; re-export with a "
           "larger --atoms or add 'fallback <core.pt>' to <core>.pt2.meta.");
     }
-    MFFOutputs out = run_aoti(pos0, A, edge_src, edge_dst, edge_shifts, cell);
+    MFFOutputs out = run_aoti(pos0, A, edge_src, edge_dst, edge_shifts, cell,
+                              dispersion_edge_src, dispersion_edge_dst, dispersion_edge_shifts);
     // run_aoti fills atom_energy + forces but NOT the scalar out.energy that the pair_style
     // adds to eng_vdwl (the reported PE). Reduce the LOCAL atom energies here (compute() has
     // nlocal), mirroring run_forward_backward's E_local = atom_e[0:nlocal].sum(). Without this
@@ -1064,7 +1143,8 @@ MFFOutputs MFFTorchEngine::compute(int64_t nlocal, int64_t ntotal,
   }
 
 #if MFF_HAS_CUDA_GRAPH
-  if (use_cuda_graph_ && device_.is_cuda()) {
+  if (use_cuda_graph_ && device_.is_cuda() && !core_takes_dispersion_edges_arg_ &&
+      !(aoti_mode_ && aoti_takes_dispersion_edges_arg_)) {
     return compute_with_cuda_graph(nlocal, ntotal, pos0, A, edge_src, edge_dst,
                                   edge_shifts, cell, external_tensor, fidelity_ids,
                                   need_energy, need_atom_virial);
@@ -1072,6 +1152,7 @@ MFFOutputs MFFTorchEngine::compute(int64_t nlocal, int64_t ntotal,
 #endif
 
   return run_forward_backward(pos0, A, edge_src, edge_dst, edge_shifts, cell,
+                              dispersion_edge_src, dispersion_edge_dst, dispersion_edge_shifts,
                               external_tensor, fidelity_ids,
                               nlocal, ntotal, need_energy, need_atom_virial);
 }
@@ -1079,9 +1160,14 @@ MFFOutputs MFFTorchEngine::compute(int64_t nlocal, int64_t ntotal,
 MFFOutputs MFFTorchEngine::run_aoti(
     const torch::Tensor& pos0, const torch::Tensor& A,
     const torch::Tensor& edge_src, const torch::Tensor& edge_dst,
-    const torch::Tensor& edge_shifts, const torch::Tensor& cell) {
+    const torch::Tensor& edge_shifts, const torch::Tensor& cell,
+    const torch::Tensor& dispersion_edge_src,
+    const torch::Tensor& dispersion_edge_dst,
+    const torch::Tensor& dispersion_edge_shifts) {
 #if MFF_HAS_AOTI
-  // Training-signature inputs: (pos, A, batch, edge_src, edge_dst, edge_shifts, cell).
+  // Training-signature inputs: (pos, A, batch, edge_src, edge_dst, edge_shifts, cell)
+  // or, for MBD/SLQ-MBD exports, the same plus (dispersion_edge_src, dispersion_edge_dst,
+  // dispersion_edge_shifts).
   // The .pt2 computes edge_vec internally and returns (atom_energy[N,1], force[N,3] = -dE/dpos)
   // with the force traced into the graph. The .pt2 BAKES N, so when ntotal < aoti_nmax_ we PAD the
   // node tensors up to aoti_nmax_ with dummy atoms (valid species, no edges -> isolated -> they
@@ -1095,9 +1181,64 @@ MFFOutputs MFFTorchEngine::run_aoti(
     A_in = torch::cat({A, torch::full({k}, aoti_pad_z_, A.options())}, 0);
     batch_in = torch::cat({buf_batch_, torch::zeros({k}, buf_batch_.options())}, 0);
   }
-  const std::vector<at::Tensor> inputs = {
-      pos_in, A_in, batch_in, edge_src, edge_dst, edge_shifts, cell};
-  auto outs = aoti_loader_->run(inputs);
+  std::vector<at::Tensor> inputs;
+  inputs.reserve(aoti_takes_dispersion_edges_arg_ ? 10 : 7);
+  inputs.push_back(pos_in);
+  inputs.push_back(A_in);
+  inputs.push_back(batch_in);
+  inputs.push_back(edge_src);
+  inputs.push_back(edge_dst);
+  inputs.push_back(edge_shifts);
+  inputs.push_back(cell);
+	  if (aoti_takes_dispersion_edges_arg_) {
+	    inputs.push_back(dispersion_edge_src);
+	    inputs.push_back(dispersion_edge_dst);
+	    inputs.push_back(dispersion_edge_shifts);
+	  }
+	  if (std::getenv("MFF_DUMP_AOTI_INPUTS")) {
+	    auto dump_index_tensor = [](const at::Tensor& t, const char* name) {
+	      if (!t.defined()) {
+	        std::fprintf(stderr, "[MFF_DUMP_AOTI_INPUTS] %s undefined\n", name);
+	        return;
+	      }
+	      auto cpu = t.to(torch::kCPU, torch::kInt64).contiguous();
+	      const int64_t n = cpu.numel();
+	      std::fprintf(stderr, "[MFF_DUMP_AOTI_INPUTS] %s n=%lld", name, (long long)n);
+	      if (n > 0) {
+	        std::fprintf(stderr, " min=%lld max=%lld tail=",
+	                     (long long)cpu.min().item<int64_t>(),
+	                     (long long)cpu.max().item<int64_t>());
+	        const auto *ptr = cpu.data_ptr<int64_t>();
+	        const int64_t first = std::max<int64_t>(0, n - 8);
+	        for (int64_t i = first; i < n; ++i) {
+	          std::fprintf(stderr, "%s%lld", (i == first ? "" : ","), (long long)ptr[i]);
+	        }
+	      }
+	      std::fprintf(stderr, "\n");
+	    };
+	    std::fprintf(stderr,
+	                 "[MFF_DUMP_AOTI_INPUTS] pos=(%lld,%lld) A=%lld batch=%lld edge_shifts=(%lld,%lld) cell=(%lld,%lld,%lld) disp=%d\n",
+	                 (long long)pos_in.size(0), (long long)pos_in.size(1),
+	                 (long long)A_in.numel(), (long long)batch_in.numel(),
+	                 (long long)edge_shifts.size(0), (long long)edge_shifts.size(1),
+	                 (long long)cell.size(0), (long long)cell.size(1), (long long)cell.size(2),
+	                 (int)aoti_takes_dispersion_edges_arg_);
+	    dump_index_tensor(edge_src, "edge_src");
+	    dump_index_tensor(edge_dst, "edge_dst");
+	    if (aoti_takes_dispersion_edges_arg_) {
+	      dump_index_tensor(dispersion_edge_src, "dispersion_edge_src");
+	      dump_index_tensor(dispersion_edge_dst, "dispersion_edge_dst");
+	    }
+	  }
+	  std::unique_ptr<c10::cuda::CUDAGuard> aoti_device_guard;
+	  std::unique_ptr<c10::cuda::CUDAStreamGuard> aoti_stream_guard;
+	  if (device_.is_cuda()) {
+	    aoti_device_guard = std::make_unique<c10::cuda::CUDAGuard>(device_.index());
+	    aoti_stream_guard = std::make_unique<c10::cuda::CUDAStreamGuard>(
+	        c10::cuda::getDefaultCUDAStream(device_.index()));
+	  }
+	  c10::InferenceMode inference_guard(true);
+	  std::vector<at::Tensor> outs = aoti_loader_->run(inputs);
   if (outs.size() < 2) {
     throw std::runtime_error(
         "AOTI .pt2 must return (atom_energy, force); got fewer than 2 outputs");
@@ -1110,11 +1251,12 @@ MFFOutputs MFFTorchEngine::run_aoti(
   // solver (the AOTI multipole export returns (E, force, reciprocal_source); slice off padding). The
   // pair style's existing reciprocal-solver path then runs identically to the TorchScript core.
   if (outs.size() > 2 && outs[2].defined() && outs[2].numel() > 0) {
-    out.reciprocal_source = outs[2].narrow(0, 0, ntot).contiguous();
+    out.reciprocal_source = outs[2].narrow(0, 0, ntot).clone().contiguous();
   }
   return out;
 #else
   (void)pos0; (void)A; (void)edge_src; (void)edge_dst; (void)edge_shifts; (void)cell;
+  (void)dispersion_edge_src; (void)dispersion_edge_dst; (void)dispersion_edge_shifts;
   throw std::runtime_error("run_aoti called but this build lacks AOTIModelPackageLoader");
 #endif
 }
@@ -1144,6 +1286,7 @@ MFFOutputs MFFTorchEngine::compute_with_cuda_graph(
     if (!cg_cache_.valid) {
       // Capture failed; use_cuda_graph_ was already turned off — fall back to eager.
       return run_forward_backward(pos0, A, edge_src, edge_dst, edge_shifts, cell,
+                                  edge_src, edge_dst, edge_shifts,
                                   external_tensor, fidelity_ids,
                                   nlocal, ntotal, need_energy, need_atom_virial);
     }
@@ -1227,18 +1370,20 @@ void MFFTorchEngine::capture_cuda_graph(
       run_forward_backward(cg_cache_.pos_in, cg_cache_.A_in,
                            cg_cache_.edge_src_in, cg_cache_.edge_dst_in,
                            cg_cache_.edge_shifts_in, cg_cache_.cell_in,
+                           cg_cache_.edge_src_in, cg_cache_.edge_dst_in,
+                           cg_cache_.edge_shifts_in,
                            cg_cache_.external_tensor_in, cg_cache_.fidelity_ids_in,
                            nlocal, ntotal, false, need_atom_virial);
-      if (device_.is_cuda()) torch::cuda::synchronize();
+      if (device_.is_cuda()) cuda_synchronize_runtime();
     } catch (...) {
       // Warmup may fail for degenerate inputs; proceed to capture.
     }
   }
-  if (device_.is_cuda()) torch::cuda::synchronize();
+  if (device_.is_cuda()) cuda_synchronize_runtime();
 
   // Drain all GPU work from every stream before capture.  Kokkos background
   // ops (cudaFreeHost, etc.) are globally illegal during stream capture.
-  torch::cuda::synchronize();
+  cuda_synchronize_runtime();
 
   // Capture the graph on a dedicated non-default stream.
   cg_cache_.capture_stream = c10::cuda::getStreamFromPool(false, device_.index());
@@ -1253,6 +1398,8 @@ void MFFTorchEngine::capture_cuda_graph(
         cg_cache_.pos_in, cg_cache_.A_in,
         cg_cache_.edge_src_in, cg_cache_.edge_dst_in,
         cg_cache_.edge_shifts_in, cg_cache_.cell_in,
+        cg_cache_.edge_src_in, cg_cache_.edge_dst_in,
+        cg_cache_.edge_shifts_in,
         cg_cache_.external_tensor_in, cg_cache_.fidelity_ids_in,
         nlocal, ntotal, /*need_energy=*/false, need_atom_virial);
 
@@ -1301,6 +1448,8 @@ MFFOutputs MFFTorchEngine::run_forward_backward(
     const torch::Tensor& pos0, const torch::Tensor& A,
     const torch::Tensor& edge_src, const torch::Tensor& edge_dst,
     const torch::Tensor& edge_shifts, const torch::Tensor& cell,
+    const torch::Tensor& dispersion_edge_src, const torch::Tensor& dispersion_edge_dst,
+    const torch::Tensor& dispersion_edge_shifts,
     const torch::Tensor& external_tensor, const torch::Tensor& fidelity_ids,
     int64_t nlocal, int64_t ntotal, bool need_energy, bool need_atom_virial) {
 
@@ -1323,15 +1472,24 @@ MFFOutputs MFFTorchEngine::run_forward_backward(
   }
 
   auto edge_vec = pos.index_select(0, edge_dst) - pos.index_select(0, edge_src) + shift_leaf;
+  torch::Tensor dispersion_edge_vec;
+  if (core_takes_dispersion_edges_arg_) {
+    auto disp_edge_batch = buf_batch_.index_select(0, dispersion_edge_src);
+    auto disp_edge_cells = cell.index_select(0, disp_edge_batch);
+    auto disp_shift_vec = torch::einsum("ni,nij->nj", {dispersion_edge_shifts, disp_edge_cells});
+    dispersion_edge_vec =
+        pos.index_select(0, dispersion_edge_dst) - pos.index_select(0, dispersion_edge_src) + disp_shift_vec;
+  }
   // NOTE: this device sync is a pure timing barrier (only used under debug_timings).
   // It MUST be gated: a device sync is illegal during CUDA-graph capture, and running
   // it unconditionally both broke MFF_CUDA_GRAPH capture and added a needless sync to
   // the eager hot path.
-  if (debug_timings && device_.is_cuda()) torch::cuda::synchronize();
+  if (debug_timings && device_.is_cuda()) cuda_synchronize_runtime();
   const auto t_after_prep = std::chrono::steady_clock::now();
 
   std::vector<torch::jit::IValue> inputs;
-  inputs.reserve((core_takes_external_tensor_arg_ ? 1 : 0) + (core_takes_fidelity_arg_ ? 10 : 8));
+  inputs.reserve((core_takes_dispersion_edges_arg_ ? 4 : 0) + (core_takes_external_tensor_arg_ ? 1 : 0) +
+                 (core_takes_fidelity_arg_ ? 10 : 8));
   inputs.push_back(pos);
   inputs.push_back(A);
   inputs.push_back(buf_batch_);
@@ -1340,13 +1498,19 @@ MFFOutputs MFFTorchEngine::run_forward_backward(
   inputs.push_back(edge_shifts);
   inputs.push_back(cell);
   inputs.push_back(edge_vec);
+  if (core_takes_dispersion_edges_arg_) {
+    inputs.push_back(dispersion_edge_src);
+    inputs.push_back(dispersion_edge_dst);
+    inputs.push_back(dispersion_edge_shifts);
+    inputs.push_back(dispersion_edge_vec);
+  }
   if (core_takes_external_tensor_arg_) inputs.push_back(external_tensor);
   if (core_takes_fidelity_arg_) inputs.push_back(fidelity_ids);
 
   maybe_dump_forward_inputs_once(inputs);
 
   auto core_out = core_.forward(inputs);
-  if (debug_timings && device_.is_cuda()) torch::cuda::synchronize();  // timing-only; gated for capture-safety
+  if (debug_timings && device_.is_cuda()) cuda_synchronize_runtime();  // timing-only; gated for capture-safety
   const auto t_after_forward = std::chrono::steady_clock::now();
   torch::Tensor atom_e;
   torch::Tensor global_phys;
@@ -1394,7 +1558,7 @@ MFFOutputs MFFTorchEngine::run_forward_backward(
   OptionalGilRelease no_gil;
   auto grads = torch::autograd::grad({E_local}, grad_inputs, {}, /*retain_graph=*/false,
                                      /*create_graph=*/false, /*allow_unused=*/true);
-  if (debug_timings && device_.is_cuda()) torch::cuda::synchronize();  // timing-only; gated for capture-safety
+  if (debug_timings && device_.is_cuda()) cuda_synchronize_runtime();  // timing-only; gated for capture-safety
   const auto t_after_grad = std::chrono::steady_clock::now();
   auto forces = -grads[0];
 

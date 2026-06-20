@@ -6,7 +6,6 @@
 #include <vector>
 
 #include <torch/script.h>
-#include <torch/torch.h>
 
 #if __has_include(<ATen/cuda/CUDAGraph.h>)
 #include <ATen/cuda/CUDAGraph.h>
@@ -20,6 +19,8 @@
 // INTO the graph) instead of a TorchScript .pt. The .pt2 path is simpler than the
 // TorchScript path: it skips the C++-side edge_vec compute and the C++ autograd,
 // calling .run() -> (atom_energy, force) directly.
+// Keep this feature-detected instead of version-gated: some LibTorch builds ship the
+// AOTI package loader even when the public CMake variables do not expose a dedicated flag.
 #if __has_include(<torch/csrc/inductor/aoti_package/model_package_loader.h>)
 #include <torch/csrc/inductor/aoti_package/model_package_loader.h>
 #define MFF_HAS_AOTI 1
@@ -86,6 +87,8 @@ class MFFTorchEngine {
   double long_range_ewald_alpha_prefactor() const { return long_range_ewald_alpha_prefactor_; }
   const std::string& tensor_product_mode() const { return tensor_product_mode_; }
   bool prefers_kokkos_host_staging() const { return tensor_product_mode_ == "spherical-save-cue"; }
+  bool is_aoti_mode() const { return aoti_mode_; }
+  bool aoti_takes_dispersion_edges() const { return aoti_takes_dispersion_edges_arg_; }
   bool is_bundle_manifest() const { return bundle_mode_; }
 
   MFFOutputs compute(int64_t nlocal, int64_t ntotal,
@@ -95,6 +98,9 @@ class MFFTorchEngine {
                      const torch::Tensor& edge_dst,
                      const torch::Tensor& edge_shifts,
                      const torch::Tensor& cell,
+                     const torch::Tensor& dispersion_edge_src = torch::Tensor(),
+                     const torch::Tensor& dispersion_edge_dst = torch::Tensor(),
+                     const torch::Tensor& dispersion_edge_shifts = torch::Tensor(),
                      const torch::Tensor& external_tensor = torch::Tensor(),
                      const torch::Tensor& fidelity_ids = torch::Tensor(),
                      bool need_energy = true,
@@ -117,7 +123,10 @@ class MFFTorchEngine {
   // so no C++ edge_vec compute and no C++ autograd are needed (unlike run_forward_backward).
   MFFOutputs run_aoti(const torch::Tensor& pos0, const torch::Tensor& A,
                       const torch::Tensor& edge_src, const torch::Tensor& edge_dst,
-                      const torch::Tensor& edge_shifts, const torch::Tensor& cell);
+                      const torch::Tensor& edge_shifts, const torch::Tensor& cell,
+                      const torch::Tensor& dispersion_edge_src,
+                      const torch::Tensor& dispersion_edge_dst,
+                      const torch::Tensor& dispersion_edge_shifts);
   void ensure_core_for_shape(int64_t nlocal, int64_t ntotal, int64_t nedges, bool warmup_on_switch);
 
   torch::jit::script::Module core_;
@@ -133,6 +142,7 @@ class MFFTorchEngine {
   int64_t aoti_pad_z_ = 1;          // atomic number for dummy padding atoms (must be a valid embedding Z)
   bool have_ts_fallback_ = false;   // core_ holds an N-flexible TorchScript core for ntotal > nmax_
   bool aoti_fallback_warned_ = false;
+  bool aoti_takes_dispersion_edges_arg_ = false;
   bool loaded_ = false;
   bool bundle_mode_ = false;
   std::string bundle_manifest_path_;
@@ -142,6 +152,7 @@ class MFFTorchEngine {
   bool warming_up_ = false;
   bool core_takes_external_tensor_arg_ = false;
   bool core_requires_external_tensor_ = false;
+  bool core_takes_dispersion_edges_arg_ = false;
   bool core_takes_fidelity_arg_ = false;
   bool core_requires_runtime_fidelity_ = false;
   std::string external_tensor_irrep_;
@@ -242,6 +253,9 @@ class MFFTorchEngine {
       const torch::Tensor& pos0, const torch::Tensor& A,
       const torch::Tensor& edge_src, const torch::Tensor& edge_dst,
       const torch::Tensor& edge_shifts, const torch::Tensor& cell,
+      const torch::Tensor& dispersion_edge_src,
+      const torch::Tensor& dispersion_edge_dst,
+      const torch::Tensor& dispersion_edge_shifts,
       const torch::Tensor& external_tensor, const torch::Tensor& fidelity_ids,
       int64_t nlocal, int64_t ntotal, bool need_energy, bool need_atom_virial);
 };

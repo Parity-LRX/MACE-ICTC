@@ -428,11 +428,19 @@ class _TorchScriptEdgeVecCore(nn.Module):
         edge_shifts: torch.Tensor,
         cell: torch.Tensor,
         edge_vec: torch.Tensor,
+        dispersion_edge_src: torch.Tensor,
+        dispersion_edge_dst: torch.Tensor,
+        dispersion_edge_shifts: torch.Tensor,
+        dispersion_edge_vec: torch.Tensor,
         external_tensor: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         try:
             kwargs = {
                 "precomputed_edge_vec": edge_vec,
+                "dispersion_edge_src": dispersion_edge_src,
+                "dispersion_edge_dst": dispersion_edge_dst,
+                "dispersion_edge_shifts": dispersion_edge_shifts,
+                "precomputed_dispersion_edge_vec": dispersion_edge_vec,
                 "return_physical_tensors": self.has_physical_tensor_heads,
                 "return_reciprocal_source": self.export_reciprocal_source,
             }
@@ -442,6 +450,10 @@ class _TorchScriptEdgeVecCore(nn.Module):
         except TypeError:
             kwargs = {
                 "precomputed_edge_vec": edge_vec,
+                "dispersion_edge_src": dispersion_edge_src,
+                "dispersion_edge_dst": dispersion_edge_dst,
+                "dispersion_edge_shifts": dispersion_edge_shifts,
+                "precomputed_dispersion_edge_vec": dispersion_edge_vec,
                 "return_physical_tensors": self.has_physical_tensor_heads,
                 "return_reciprocal_source": self.export_reciprocal_source,
             }
@@ -498,11 +510,19 @@ class _TorchScriptEdgeVecCoreWithFidelity(nn.Module):
         edge_shifts: torch.Tensor,
         cell: torch.Tensor,
         edge_vec: torch.Tensor,
+        dispersion_edge_src: torch.Tensor,
+        dispersion_edge_dst: torch.Tensor,
+        dispersion_edge_shifts: torch.Tensor,
+        dispersion_edge_vec: torch.Tensor,
         external_tensor: torch.Tensor,
         fidelity_ids: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         kwargs = {
             "precomputed_edge_vec": edge_vec,
+            "dispersion_edge_src": dispersion_edge_src,
+            "dispersion_edge_dst": dispersion_edge_dst,
+            "dispersion_edge_shifts": dispersion_edge_shifts,
+            "precomputed_dispersion_edge_vec": dispersion_edge_vec,
             "return_physical_tensors": self.has_physical_tensor_heads,
             "return_reciprocal_source": self.export_reciprocal_source,
             "fidelity_ids": fidelity_ids.to(device=pos.device, dtype=torch.long).view(-1),
@@ -541,6 +561,18 @@ class _TorchScriptEdgeVecAdapter(nn.Module):
     def __init__(self, core: torch.jit.ScriptModule):
         super().__init__()
         self.core = core
+        self._refresh_schema_flags()
+
+    def _refresh_schema_flags(self) -> None:
+        self.core_takes_dispersion_edges_arg = False
+        try:
+            schema = self.core.forward.schema
+            nargs = len(schema.arguments)
+            if nargs > 0 and schema.arguments[0].name == "self":
+                nargs -= 1
+            self.core_takes_dispersion_edges_arg = nargs >= 13
+        except Exception:
+            self.core_takes_dispersion_edges_arg = False
 
     def __getstate__(self):
         # Make this module picklable via torch.save by serializing the ScriptModule to bytes.
@@ -560,6 +592,7 @@ class _TorchScriptEdgeVecAdapter(nn.Module):
             map_loc = "cuda" if torch.cuda.is_available() else "cpu"
         core = torch.jit.load(io.BytesIO(state["core_bytes"]), map_location=map_loc)
         self.core = core
+        self._refresh_schema_flags()
 
     def forward(
         self,
@@ -572,6 +605,10 @@ class _TorchScriptEdgeVecAdapter(nn.Module):
         cell: torch.Tensor,
         *,
         precomputed_edge_vec: Optional[torch.Tensor] = None,
+        dispersion_edge_src: Optional[torch.Tensor] = None,
+        dispersion_edge_dst: Optional[torch.Tensor] = None,
+        dispersion_edge_shifts: Optional[torch.Tensor] = None,
+        precomputed_dispersion_edge_vec: Optional[torch.Tensor] = None,
         external_tensor: Optional[torch.Tensor] = None,
         sync_after_scatter=None,
     ) -> torch.Tensor:
@@ -580,9 +617,34 @@ class _TorchScriptEdgeVecAdapter(nn.Module):
         # sync_after_scatter is ignored in TorchScript mode.
         if external_tensor is None:
             external_tensor = torch.empty(0, dtype=pos.dtype, device=pos.device)
-        out = self.core(
-            pos, A, batch, edge_src, edge_dst, edge_shifts, cell, precomputed_edge_vec, external_tensor
-        )
+        if self.core_takes_dispersion_edges_arg:
+            if dispersion_edge_src is None:
+                dispersion_edge_src = edge_src
+            if dispersion_edge_dst is None:
+                dispersion_edge_dst = edge_dst
+            if dispersion_edge_shifts is None:
+                dispersion_edge_shifts = edge_shifts
+            if precomputed_dispersion_edge_vec is None:
+                precomputed_dispersion_edge_vec = precomputed_edge_vec
+            out = self.core(
+                pos,
+                A,
+                batch,
+                edge_src,
+                edge_dst,
+                edge_shifts,
+                cell,
+                precomputed_edge_vec,
+                dispersion_edge_src,
+                dispersion_edge_dst,
+                dispersion_edge_shifts,
+                precomputed_dispersion_edge_vec,
+                external_tensor,
+            )
+        else:
+            out = self.core(
+                pos, A, batch, edge_src, edge_dst, edge_shifts, cell, precomputed_edge_vec, external_tensor
+            )
         return out[0] if isinstance(out, tuple) else out
 
 
@@ -592,6 +654,18 @@ class _TorchScriptEdgeVecAdapterWithFidelity(nn.Module):
     def __init__(self, core: torch.jit.ScriptModule):
         super().__init__()
         self.core = core
+        self._refresh_schema_flags()
+
+    def _refresh_schema_flags(self) -> None:
+        self.core_takes_dispersion_edges_arg = False
+        try:
+            schema = self.core.forward.schema
+            nargs = len(schema.arguments)
+            if nargs > 0 and schema.arguments[0].name == "self":
+                nargs -= 1
+            self.core_takes_dispersion_edges_arg = nargs >= 14
+        except Exception:
+            self.core_takes_dispersion_edges_arg = False
 
     def __getstate__(self):
         buf = io.BytesIO()
@@ -606,6 +680,7 @@ class _TorchScriptEdgeVecAdapterWithFidelity(nn.Module):
         else:
             map_loc = "cuda" if torch.cuda.is_available() else "cpu"
         self.core = torch.jit.load(io.BytesIO(state["core_bytes"]), map_location=map_loc)
+        self._refresh_schema_flags()
 
     def forward(
         self,
@@ -618,6 +693,10 @@ class _TorchScriptEdgeVecAdapterWithFidelity(nn.Module):
         cell: torch.Tensor,
         *,
         precomputed_edge_vec: Optional[torch.Tensor] = None,
+        dispersion_edge_src: Optional[torch.Tensor] = None,
+        dispersion_edge_dst: Optional[torch.Tensor] = None,
+        dispersion_edge_shifts: Optional[torch.Tensor] = None,
+        precomputed_dispersion_edge_vec: Optional[torch.Tensor] = None,
         external_tensor: Optional[torch.Tensor] = None,
         fidelity_ids: Optional[torch.Tensor] = None,
         sync_after_scatter=None,
@@ -628,18 +707,44 @@ class _TorchScriptEdgeVecAdapterWithFidelity(nn.Module):
             raise ValueError("TorchScript model requires fidelity_ids")
         if external_tensor is None:
             external_tensor = torch.empty(0, dtype=pos.dtype, device=pos.device)
-        out = self.core(
-            pos,
-            A,
-            batch,
-            edge_src,
-            edge_dst,
-            edge_shifts,
-            cell,
-            precomputed_edge_vec,
-            external_tensor,
-            fidelity_ids.to(device=pos.device, dtype=torch.long).view(-1),
-        )
+        if self.core_takes_dispersion_edges_arg:
+            if dispersion_edge_src is None:
+                dispersion_edge_src = edge_src
+            if dispersion_edge_dst is None:
+                dispersion_edge_dst = edge_dst
+            if dispersion_edge_shifts is None:
+                dispersion_edge_shifts = edge_shifts
+            if precomputed_dispersion_edge_vec is None:
+                precomputed_dispersion_edge_vec = precomputed_edge_vec
+            out = self.core(
+                pos,
+                A,
+                batch,
+                edge_src,
+                edge_dst,
+                edge_shifts,
+                cell,
+                precomputed_edge_vec,
+                dispersion_edge_src,
+                dispersion_edge_dst,
+                dispersion_edge_shifts,
+                precomputed_dispersion_edge_vec,
+                external_tensor,
+                fidelity_ids.to(device=pos.device, dtype=torch.long).view(-1),
+            )
+        else:
+            out = self.core(
+                pos,
+                A,
+                batch,
+                edge_src,
+                edge_dst,
+                edge_shifts,
+                cell,
+                precomputed_edge_vec,
+                external_tensor,
+                fidelity_ids.to(device=pos.device, dtype=torch.long).view(-1),
+            )
         return out[0] if isinstance(out, tuple) else out
 
 
@@ -678,6 +783,10 @@ def _maybe_torchscript_trace_model(
     edge_shifts = torch.zeros(E, 3, device=device, dtype=dtype)
     cell = (torch.eye(3, device=device, dtype=dtype).unsqueeze(0) * 100.0)
     edge_vec = torch.randn(E, 3, device=device, dtype=dtype)
+    dispersion_edge_src = edge_src.clone()
+    dispersion_edge_dst = edge_dst.clone()
+    dispersion_edge_shifts = edge_shifts.clone()
+    dispersion_edge_vec = edge_vec.clone()
     if ext_total_numel <= 0:
         external_tensor = torch.empty(0, device=device, dtype=dtype)
     else:
@@ -694,17 +803,74 @@ def _maybe_torchscript_trace_model(
                         prewarm(device=device, dtype=dtype)
                 # One eager run to lock in branches and fill caches.
                 if runtime_fidelity:
-                    _ = core(pos, A, batch, edge_src, edge_dst, edge_shifts, cell, edge_vec, external_tensor, fidelity_ids)
+                    _ = core(
+                        pos,
+                        A,
+                        batch,
+                        edge_src,
+                        edge_dst,
+                        edge_shifts,
+                        cell,
+                        edge_vec,
+                        dispersion_edge_src,
+                        dispersion_edge_dst,
+                        dispersion_edge_shifts,
+                        dispersion_edge_vec,
+                        external_tensor,
+                        fidelity_ids,
+                    )
                 else:
-                    _ = core(pos, A, batch, edge_src, edge_dst, edge_shifts, cell, edge_vec, external_tensor)
+                    _ = core(
+                        pos,
+                        A,
+                        batch,
+                        edge_src,
+                        edge_dst,
+                        edge_shifts,
+                        cell,
+                        edge_vec,
+                        dispersion_edge_src,
+                        dispersion_edge_dst,
+                        dispersion_edge_shifts,
+                        dispersion_edge_vec,
+                        external_tensor,
+                    )
         except Exception:
             pass
 
-        trace_inputs = (
-            (pos, A, batch, edge_src, edge_dst, edge_shifts, cell, edge_vec, external_tensor, fidelity_ids)
-            if runtime_fidelity
-            else (pos, A, batch, edge_src, edge_dst, edge_shifts, cell, edge_vec, external_tensor)
-        )
+        if runtime_fidelity:
+            trace_inputs = (
+                pos,
+                A,
+                batch,
+                edge_src,
+                edge_dst,
+                edge_shifts,
+                cell,
+                edge_vec,
+                dispersion_edge_src,
+                dispersion_edge_dst,
+                dispersion_edge_shifts,
+                dispersion_edge_vec,
+                external_tensor,
+                fidelity_ids,
+            )
+        else:
+            trace_inputs = (
+                pos,
+                A,
+                batch,
+                edge_src,
+                edge_dst,
+                edge_shifts,
+                cell,
+                edge_vec,
+                dispersion_edge_src,
+                dispersion_edge_dst,
+                dispersion_edge_shifts,
+                dispersion_edge_vec,
+                external_tensor,
+            )
         core_ts = torch.jit.trace(core, trace_inputs, check_trace=False, strict=False)
         try:
             core_ts = torch.jit.freeze(core_ts.eval())
@@ -1073,6 +1239,10 @@ class LAMMPS_MLIAP_MFF(MLIAPUnified):
             )
         )
         dispersion_cutoff = float(arch_meta.get("dispersion_cutoff", 10.0))
+        dispersion_slq_num_probes = int(ckpt.get("dispersion_slq_num_probes", arch_meta.get("dispersion_slq_num_probes", 8)))
+        dispersion_slq_lanczos_steps = int(
+            ckpt.get("dispersion_slq_lanczos_steps", arch_meta.get("dispersion_slq_lanczos_steps", 16))
+        )
         long_range_theta = float(arch_meta.get("long_range_theta", 0.5))
         long_range_leaf_size = int(arch_meta.get("long_range_leaf_size", 32))
         long_range_multipole_order = int(arch_meta.get("long_range_multipole_order", 0))
@@ -1379,6 +1549,8 @@ class LAMMPS_MLIAP_MFF(MLIAPUnified):
                 long_range_max_multipole_l=long_range_max_multipole_l,
                 long_range_dispersion_mode=long_range_dispersion_mode,
                 dispersion_cutoff=dispersion_cutoff,
+                dispersion_slq_num_probes=dispersion_slq_num_probes,
+                dispersion_slq_lanczos_steps=dispersion_slq_lanczos_steps,
                 long_range_theta=long_range_theta,
                 long_range_leaf_size=long_range_leaf_size,
                 long_range_multipole_order=long_range_multipole_order,

@@ -225,7 +225,7 @@ build-mfftorch/lmp
 
 当前推荐给 `pair_style mff/torch` / `pair_style mff/torch/kk` 使用的是
 AOTInductor `.pt2` core。TorchScript `core.pt` 路径仍可用于 legacy LibTorch
-部署，但新模型和预训练 MACE 转换建议优先走 `.pt2`。
+部署，也适合调试导出签名和数值差异。
 
 ### 7.1 从 MACE-ICTD checkpoint 导出 `.pt2`
 
@@ -383,6 +383,30 @@ variable Tzz equal 1.0
 pair_style mff/torch 5.0 cuda field9 v_Txx v_Txy v_Txz v_Tyx v_Tyy v_Tyz v_Tzx v_Tzy v_Tzz
 pair_coeff * * /path/to/model.pt2 H O
 ```
+
+### 8.2.1 独立色散邻居表 / MBD
+
+带 `--long-range-dispersion-mode mbd` 或 `--long-range-dispersion-mode mbd-slq`
+训练并通过 `export_libtorch_core.py` 导出的 TorchScript `core.pt` 会接收第二套色散 edge list。
+`mbd` 是 dense eigensolve oracle；`mbd-slq` 是 cutoff matrix-free stochastic-Lanczos 近似，
+可用 `--dispersion-slq-num-probes` 和 `--dispersion-slq-lanczos-steps` 调节成本/精度。
+LAMMPS 侧用
+`dispersion <cutoff>` 指定色散邻居表 cutoff，主 cutoff 仍用于 message passing：
+
+```lammps
+pair_style mff/torch 4.0 cuda dispersion 6.0
+pair_coeff * * /path/to/core.pt H C N O
+```
+
+这会让 LAMMPS 请求 `max(4.0, 6.0)` 的候选邻居，在 `mff/torch` / `mff/torch/kk`
+内部拆成主 edge list 和 dispersion edge list。若省略 `dispersion <cutoff>`，
+新 schema 的 core 会回退为复用主 edge list。
+
+AOTI `.pt2` 对 `mbd-slq` 会导出 `dispersion_edges 1` sidecar metadata，并接收第二套
+dispersion edge list；`mff/torch` 和 `mff/torch/kk` build 都支持这一路径。导出时会把 SLQ 切到
+atom-rademacher probes + Newton-Schulz quadrature，以避免有限 Cartesian probe 破坏旋转等变性，
+并避开 AOTI 对本征分解的限制。dense `mbd` 仍只作为 dense eigensolve oracle，不建议也不会导出为
+AOTI 部署 core。
 
 ### 8.3 输出压力/应力（virial）
 

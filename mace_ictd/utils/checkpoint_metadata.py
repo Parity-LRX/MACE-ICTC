@@ -57,6 +57,8 @@ DEFAULT_MODEL_ARCHITECTURE: dict[str, Any] = {
     "long_range_dispersion_mode": "none",
     "long_range_dispersion": False,
     "dispersion_cutoff": 10.0,
+    "dispersion_slq_num_probes": 8,
+    "dispersion_slq_lanczos_steps": 16,
     "long_range_theta": 0.5,
     "long_range_leaf_size": 32,
     "long_range_multipole_order": 0,
@@ -608,6 +610,24 @@ def resolve_model_architecture(
             arch_meta,
             "dispersion_cutoff",
             DEFAULT_MODEL_ARCHITECTURE["dispersion_cutoff"],
+        )
+    )
+    resolved["dispersion_slq_num_probes"] = int(
+        _resolve_value(
+            overrides,
+            checkpoint,
+            arch_meta,
+            "dispersion_slq_num_probes",
+            DEFAULT_MODEL_ARCHITECTURE["dispersion_slq_num_probes"],
+        )
+    )
+    resolved["dispersion_slq_lanczos_steps"] = int(
+        _resolve_value(
+            overrides,
+            checkpoint,
+            arch_meta,
+            "dispersion_slq_lanczos_steps",
+            DEFAULT_MODEL_ARCHITECTURE["dispersion_slq_lanczos_steps"],
         )
     )
     resolved["long_range_theta"] = float(

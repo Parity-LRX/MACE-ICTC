@@ -152,7 +152,7 @@ def make_training_table() -> None:
 
 def make_ntk_table() -> None:
     df = pd.read_csv(PAPER_ARTIFACT_TRAIN / "ntk_by_system_mode.csv")
-    system_order = ["revised_benzene", "revised_ethanol", "revised_aspirin"]
+    system_order = ["revised_benzene", "revised_ethanol", "revised_aspirin", "cheng_water"]
     mode_order = ["mace_e3nn", "mace_cueq", "ictd_bridge_u", "ictd_cueq"]
     df = df[df["dataset"].isin(system_order)].copy()
     by_key = df.set_index(["mode", "dataset"])
@@ -160,13 +160,13 @@ def make_ntk_table() -> None:
         r"\begin{table}[H]",
         r"\centering",
         r"\scriptsize",
-        r"\setlength{\tabcolsep}{2.2pt}",
+        r"\setlength{\tabcolsep}{1.4pt}",
         r"\renewcommand{\arraystretch}{1.08}",
-        r"\caption{Empirical weighted-output NTK spectrum summary at initialization on the three revised MD17 systems. Mode labels denote the initialization-time parameterization and product backend, not compiled training graphs. Entries are means over three sampled batches; standard deviations and the additional water diagnostic are archived in the accompanying CSV records.}",
+        r"\caption{Empirical weighted-output NTK spectrum summary at initialization on the three revised MD17 systems and the Cheng liquid-water split. Mode labels denote the initialization-time parameterization and product backend, not compiled training graphs. Entries are means over three sampled batches; standard deviations are archived in the accompanying CSV records.}",
         r"\label{tab:appendix-ntk-spectrum-summary}",
-        r"\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{0.20\textwidth}C{0.12\textwidth}C{0.18\textwidth}C{0.18\textwidth}C{0.18\textwidth}@{}}",
+        r"\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{0.17\textwidth}C{0.105\textwidth}C{0.155\textwidth}C{0.155\textwidth}C{0.155\textwidth}C{0.155\textwidth}@{}}",
         r"\toprule",
-        r"\multicolumn{1}{c}{Mode} & Metric & Benzene & Ethanol & Aspirin \\",
+        r"\multicolumn{1}{c}{Mode} & Metric & Benzene & Ethanol & Aspirin & Water \\",
         r"\midrule",
     ]
     metrics = [

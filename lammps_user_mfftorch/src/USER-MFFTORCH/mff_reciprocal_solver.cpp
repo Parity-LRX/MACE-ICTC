@@ -1,15 +1,25 @@
 #include "mff_reciprocal_solver.h"
 
+#include "mff_cufft_multipole.h"
+
+#include <c10/cuda/CUDAGuard.h>
+#include <c10/cuda/CUDAStream.h>
 #include <torch/fft.h>
 
 #include <ATen/ops/linalg_det.h>
+
+#if !defined(MFF_HAS_CUFFT)
+#define MFF_HAS_CUFFT 0
+#endif
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <cstdio>
 #include <stdexcept>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -1008,6 +1018,182 @@ torch::Tensor MFFReciprocalSolver::multipole_reciprocal_energy(
   return energy_scale_ * 0.5 * (spectral.unsqueeze(-1) * S.abs().square()).sum();
 }
 
+torch::Tensor MFFReciprocalSolver::multipole_reciprocal_forces_explicit(
+    const torch::Tensor& global_pos,
+    const torch::Tensor& packed_source,
+    const EffectiveGeometry& geom,
+    const std::array<int, 3>& pbc,
+    const torch::Device& device) const {
+  const int C = source_channels_;
+  auto frac = torch::matmul(global_pos, geom.inv_cell);
+  for (int axis = 0; axis < 3; ++axis) {
+    if (pbc[axis] == 1) {
+      auto frac_axis = frac.select(1, axis);
+      frac.select(1, axis).copy_(frac_axis - torch::floor(frac_axis));
+    }
+  }
+
+  auto eff_cpu = geom.effective_cell.to(torch::kCPU, torch::kFloat32).contiguous();
+  const auto cell_key = flatten_cell_values(eff_cpu);
+  const bool cache_hit = cached_mp_key_valid_ && cached_mp_k_cart_.defined() &&
+                         cached_mp_mesh_ == mesh_size_ && cached_mp_full_ewald_ == full_ewald_ &&
+                         cached_mp_k_cart_.device() == device && cached_mp_cell_key_ == cell_key;
+  if (!cache_hit) {
+    (void)multipole_reciprocal_energy(global_pos, packed_source, geom, pbc, device);
+  }
+  const auto& k_cart = cached_mp_k_cart_;
+  const auto& spectral = cached_mp_spectral_;
+
+  auto packed_fft = torch::fft::fftn(spread_to_mesh_full(frac, packed_source, pbc), {}, {0, 1, 2})
+                        .reshape({-1, packed_source.size(1)});
+  auto S = packed_fft.narrow(1, 0, C);
+  if (max_multipole_l_ >= 1) {
+    auto mut = packed_fft.narrow(1, C, 3 * C).reshape({-1, C, 3});
+    S = S + torch::einsum("kx,kcx->kc", {k_cart.to(mut.dtype()), mut}).mul(c10::complex<double>(0.0, 1.0));
+  }
+  if (max_multipole_l_ >= 2) {
+    auto qt = packed_fft.narrow(1, 4 * C, 9 * C).reshape({-1, C, 3, 3});
+    auto kc = k_cart.to(qt.dtype());
+    S = S - 0.5 * torch::einsum("kx,kcxy,ky->kc", {kc, qt, kc});
+  }
+
+  auto base = (energy_scale_ * spectral).unsqueeze(-1).to(S.dtype()) * S;
+  std::vector<torch::Tensor> field_blocks;
+  field_blocks.reserve(3);
+  field_blocks.push_back(base);
+  auto imag = torch::complex(
+      torch::zeros({1}, torch::TensorOptions().dtype(torch::kFloat32).device(device)),
+      torch::ones({1}, torch::TensorOptions().dtype(torch::kFloat32).device(device)));
+  auto kc = k_cart.to(base.dtype());
+  if (max_multipole_l_ >= 1) {
+    auto mu_field = base.unsqueeze(-1) * ((-imag) * kc).unsqueeze(1);
+    field_blocks.push_back(mu_field.reshape({base.size(0), 3 * C}));
+  }
+  if (max_multipole_l_ >= 2) {
+    auto q_field =
+        -0.5 * base.unsqueeze(-1).unsqueeze(-1) *
+        (kc.unsqueeze(1).unsqueeze(-1) * kc.unsqueeze(1).unsqueeze(-2));
+    field_blocks.push_back(q_field.reshape({base.size(0), 9 * C}));
+  }
+  auto field_k = torch::cat(field_blocks, 1);
+  const int64_t packed_width = field_k.size(1);
+  auto grad_k_x = field_k * (imag * kc.select(1, 0)).unsqueeze(1);
+  auto grad_k_y = field_k * (imag * kc.select(1, 1)).unsqueeze(1);
+  auto grad_k_z = field_k * (imag * kc.select(1, 2)).unsqueeze(1);
+  auto grad_k = torch::cat({grad_k_x, grad_k_y, grad_k_z}, 1)
+                    .reshape({mesh_size_, mesh_size_, mesh_size_, 3 * packed_width});
+  auto grad_mesh =
+      torch::view_as_real(torch::fft::ifftn(grad_k, {}, {0, 1, 2})).select(-1, 0) *
+      static_cast<double>(mesh_size_ * mesh_size_ * mesh_size_);
+  auto grad_fields = gather_from_mesh_full(frac, grad_mesh, pbc).reshape({global_pos.size(0), 3, packed_width});
+  return -(packed_source.unsqueeze(1) * grad_fields).sum(-1);
+}
+
+bool MFFReciprocalSolver::try_compute_replicated_multipole_cufft(
+    const torch::Tensor& global_pos,
+    const torch::Tensor& global_source,
+    const EffectiveGeometry& geom,
+    const std::array<int, 3>& pbc,
+    int local_n,
+    int global_n,
+    int local_offset,
+    bool need_energy,
+    const torch::Device& device,
+    ReciprocalOutputs& out) const {
+#if MFF_HAS_CUFFT
+  if (!device.is_cuda()) return false;
+  if (pbc[0] != 1 || pbc[1] != 1 || pbc[2] != 1) return false;
+  if (max_multipole_l_ <= 0 || max_multipole_l_ > 2) return false;
+  if (source_channels_ <= 0) return false;
+  if (std::getenv("MFF_DEBUG_CUFFT_RECIP")) {
+    std::fprintf(
+        stderr,
+        "[mff/torch] cuFFT multipole reciprocal n=%d mesh=%d C=%d L=%d energy=%d\n",
+        global_n,
+        mesh_size_,
+        source_channels_,
+        max_multipole_l_,
+        static_cast<int>(need_energy));
+  }
+
+  c10::cuda::CUDAGuard device_guard(device.index());
+  const auto stream = c10::cuda::getStreamFromPool(false, device.index());
+  c10::cuda::CUDAStreamGuard stream_guard(stream);
+  const int K = mesh_size_ * mesh_size_ * mesh_size_;
+  const int packed_width =
+      source_channels_ * (1 + (max_multipole_l_ >= 1 ? 3 : 0) + (max_multipole_l_ >= 2 ? 9 : 0));
+  const auto float_opts = torch::TensorOptions().dtype(torch::kFloat32).device(device);
+  const auto double_opts = torch::TensorOptions().dtype(torch::kFloat64).device(device);
+  auto forces_global = torch::empty({global_n, 3}, float_opts);
+  auto mesh_complex = torch::empty({packed_width * K, 2}, float_opts);
+  auto grad_complex = torch::empty({3 * packed_width * K, 2}, float_opts);
+  auto kspec = torch::empty({K, 4}, float_opts);
+  auto energy_dev = torch::empty({1}, double_opts);
+  auto cell_dev = geom.effective_cell.to(device, torch::kFloat32).contiguous();
+  auto inv_cell_dev = geom.inv_cell.to(device, torch::kFloat32).contiguous();
+
+  CufftMultipoleParams params;
+  params.n_atoms = global_n;
+  params.mesh = mesh_size_;
+  params.source_channels = source_channels_;
+  params.max_multipole_l = max_multipole_l_;
+  params.pbc[0] = pbc[0];
+  params.pbc[1] = pbc[1];
+  params.pbc[2] = pbc[2];
+  params.volume = static_cast<float>(geom.volume);
+  params.k_norm_floor = static_cast<float>(k_norm_floor_);
+  params.ewald_alpha_prefactor = static_cast<float>(ewald_alpha_prefactor_);
+  params.energy_scale = static_cast<float>(energy_scale_);
+  params.full_ewald = full_ewald_;
+
+  CufftMultipoleWorkspace workspace;
+  workspace.mesh_complex = mesh_complex.data_ptr<float>();
+  workspace.grad_complex = grad_complex.data_ptr<float>();
+  workspace.kspec = kspec.data_ptr<float>();
+  workspace.energy = energy_dev.data_ptr<double>();
+  auto pos_contig = global_pos.contiguous();
+  auto source_contig = global_source.contiguous();
+
+  char errbuf[512] = {0};
+  const bool ok = cufft_multipole_compute(
+      params,
+      pos_contig.data_ptr<float>(),
+      source_contig.data_ptr<float>(),
+      cell_dev.data_ptr<float>(),
+      inv_cell_dev.data_ptr<float>(),
+      forces_global.data_ptr<float>(),
+      workspace,
+      stream.stream(),
+      errbuf,
+      static_cast<int>(sizeof(errbuf)));
+  if (!ok) {
+    throw std::runtime_error(std::string("cuFFT multipole reciprocal failed: ") + errbuf);
+  }
+  stream.synchronize();
+  out.forces_local = forces_global.narrow(0, local_offset, local_n).clone();
+  if (need_energy) {
+    const double total_energy = energy_dev.to(torch::kCPU).item<double>();
+    out.atom_energy_local = torch::full({local_n}, total_energy / static_cast<double>(global_n), float_opts);
+    out.energy = total_energy;
+  } else {
+    out.atom_energy_local = torch::zeros({local_n}, float_opts);
+  }
+  return true;
+#else
+  (void)global_pos;
+  (void)global_source;
+  (void)geom;
+  (void)pbc;
+  (void)local_n;
+  (void)global_n;
+  (void)local_offset;
+  (void)need_energy;
+  (void)device;
+  (void)out;
+  return false;
+#endif
+}
+
 ReciprocalOutputs MFFReciprocalSolver::compute_replicated_atoms(
     const ReciprocalInputs& inputs,
     const EffectiveGeometry& geom,
@@ -1037,53 +1223,87 @@ ReciprocalOutputs MFFReciprocalSolver::compute_replicated_atoms(
     return out;
   }
 
-  std::vector<int> counts_pos(world_size), displs_pos(world_size), counts_src(world_size), displs_src(world_size);
-  for (int i = 0; i < world_size; ++i) {
-    counts_pos[i] = counts[i] * 3;
-    displs_pos[i] = displs[i] * 3;
-    counts_src[i] = counts[i] * source_channels;
-    displs_src[i] = displs[i] * source_channels;
-  }
-  auto pos_local_cpu = ensure_contiguous_cpu_float(inputs.local_pos);
-  auto src_local_cpu = ensure_contiguous_cpu_float(local_source);
-  std::vector<float> pos_global(static_cast<size_t>(global_n) * 3, 0.0f);
-  std::vector<float> src_global(static_cast<size_t>(global_n) * source_channels, 0.0f);
-  MPI_Allgatherv(
-      local_n > 0 ? pos_local_cpu.data_ptr<float>() : nullptr,
-      local_n * 3,
-      MPI_FLOAT,
-      pos_global.data(),
-      counts_pos.data(),
-      displs_pos.data(),
-      MPI_FLOAT,
-      inputs.world);
-  MPI_Allgatherv(
-      local_n > 0 ? src_local_cpu.data_ptr<float>() : nullptr,
-      local_n * source_channels,
-      MPI_FLOAT,
-      src_global.data(),
-      counts_src.data(),
-      displs_src.data(),
-      MPI_FLOAT,
-      inputs.world);
+  torch::Tensor global_pos;
+  torch::Tensor global_source;
+  if (world_size == 1) {
+    global_pos = (inputs.local_pos.device() == device && inputs.local_pos.dtype() == torch::kFloat32)
+                     ? inputs.local_pos.contiguous()
+                     : inputs.local_pos.to(device, torch::kFloat32).contiguous();
+    global_source = (local_source.device() == device && local_source.dtype() == torch::kFloat32)
+                        ? local_source.contiguous()
+                        : local_source.to(device, torch::kFloat32).contiguous();
+  } else {
+    std::vector<int> counts_pos(world_size), displs_pos(world_size), counts_src(world_size), displs_src(world_size);
+    for (int i = 0; i < world_size; ++i) {
+      counts_pos[i] = counts[i] * 3;
+      displs_pos[i] = displs[i] * 3;
+      counts_src[i] = counts[i] * source_channels;
+      displs_src[i] = displs[i] * source_channels;
+    }
+    auto pos_local_cpu = ensure_contiguous_cpu_float(inputs.local_pos);
+    auto src_local_cpu = ensure_contiguous_cpu_float(local_source);
+    std::vector<float> pos_global(static_cast<size_t>(global_n) * 3, 0.0f);
+    std::vector<float> src_global(static_cast<size_t>(global_n) * source_channels, 0.0f);
+    MPI_Allgatherv(
+        local_n > 0 ? pos_local_cpu.data_ptr<float>() : nullptr,
+        local_n * 3,
+        MPI_FLOAT,
+        pos_global.data(),
+        counts_pos.data(),
+        displs_pos.data(),
+        MPI_FLOAT,
+        inputs.world);
+    MPI_Allgatherv(
+        local_n > 0 ? src_local_cpu.data_ptr<float>() : nullptr,
+        local_n * source_channels,
+        MPI_FLOAT,
+        src_global.data(),
+        counts_src.data(),
+        displs_src.data(),
+        MPI_FLOAT,
+        inputs.world);
 
-  auto global_pos =
-      torch::from_blob(pos_global.data(), {global_n, 3}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU))
-          .clone()
-          .to(device)
-          .set_requires_grad(true);
-  auto global_source =
-      torch::from_blob(
-          src_global.data(),
-          {global_n, source_channels},
-          torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU))
-          .clone()
-          .to(device);
+    global_pos =
+        torch::from_blob(
+            pos_global.data(),
+            {global_n, 3},
+            torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU))
+            .clone()
+            .to(device);
+    global_source =
+        torch::from_blob(
+            src_global.data(),
+            {global_n, source_channels},
+            torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU))
+            .clone()
+            .to(device);
+  }
   if (max_multipole_l_ > 0) {
     // Latent multipole reciprocal (|S|^2 PME); packed source = [q | dipole_xyz | quad_3x3].
+    if (world_size == 1 && try_compute_replicated_multipole_cufft(
+                               global_pos,
+                               global_source,
+                               geom,
+                               inputs.pbc,
+                               local_n,
+                               global_n,
+                               displs[world_rank],
+                               inputs.need_energy,
+                               device,
+                               out)) {
+      return out;
+    }
     auto energy = multipole_reciprocal_energy(global_pos, global_source, geom, inputs.pbc, device);
-    auto grads = torch::autograd::grad({energy}, {global_pos}, {}, false, false, false);
-    auto global_forces = -grads[0].detach();
+    torch::Tensor global_forces;
+    if (read_bool_env("MFF_RECIPROCAL_MULTIPOLE_AUTOGRAD", false)) {
+      torch::AutoGradMode enable_grad(true);
+      auto global_pos_for_grad = global_pos.detach().clone().set_requires_grad(true);
+      auto energy_for_grad = multipole_reciprocal_energy(global_pos_for_grad, global_source, geom, inputs.pbc, device);
+      auto grads = torch::autograd::grad({energy_for_grad}, {global_pos_for_grad}, {}, false, false, false);
+      global_forces = -grads[0].detach();
+    } else {
+      global_forces = multipole_reciprocal_forces_explicit(global_pos.detach(), global_source, geom, inputs.pbc, device);
+    }
     out.forces_local = global_forces.narrow(0, displs[world_rank], local_n).clone();
     if (inputs.need_energy) {
       const double total_energy = energy.detach().to(torch::kCPU).item<double>();
@@ -1222,7 +1442,6 @@ ReciprocalOutputs MFFReciprocalSolver::compute(const ReciprocalInputs& inputs) c
     out.backend = ReciprocalBackend::Auto;
     return out;
   }
-
   int world_size = 1;
   MPI_Comm_size(inputs.world, &world_size);
   auto boundary_mode = resolve_boundary_mode(inputs.pbc);

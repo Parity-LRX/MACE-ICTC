@@ -235,6 +235,23 @@ class MFFReciprocalSolver {
       const EffectiveGeometry& geom,
       const std::array<int, 3>& pbc,
       const torch::Device& device) const;
+  torch::Tensor multipole_reciprocal_forces_explicit(
+      const torch::Tensor& global_pos,
+      const torch::Tensor& packed_source,
+      const EffectiveGeometry& geom,
+      const std::array<int, 3>& pbc,
+      const torch::Device& device) const;
+  bool try_compute_replicated_multipole_cufft(
+      const torch::Tensor& global_pos,
+      const torch::Tensor& global_source,
+      const EffectiveGeometry& geom,
+      const std::array<int, 3>& pbc,
+      int local_n,
+      int global_n,
+      int local_offset,
+      bool need_energy,
+      const torch::Device& device,
+      ReciprocalOutputs& out) const;
   ReciprocalOutputs compute_replicated_atoms(
       const ReciprocalInputs& inputs,
       const EffectiveGeometry& geom,

@@ -20,12 +20,16 @@
 #include "mff_tree_fmm_solver.h"
 
 #include <Kokkos_Core.hpp>
+#include <algorithm>
 #include <chrono>
+#include <c10/core/InferenceMode.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <c10/cuda/CUDAStream.h>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <type_traits>
+#include <unordered_map>
 
 using namespace LAMMPS_NS;
 
@@ -130,7 +134,7 @@ void PairMFFTorchKokkos<DeviceType>::init_style() {
     neighbor->add_request(this, NeighConst::REQ_FULL);
   } else {
     neighbor->add_request(this, NeighConst::REQ_FULL | NeighConst::REQ_GHOST);
-    const double halo = static_cast<double>(mp_depth_) * cut_global_;
+    const double halo = std::max(static_cast<double>(mp_depth_) * cut_global_, request_cut_global_);
     if (comm->cutghostuser < halo) comm->cutghostuser = halo;
   }
 
@@ -233,13 +237,13 @@ void PairMFFTorchKokkos<DeviceType>::compute(int eflag_in, int vflag_in) {
     t_last = now;
   };
 
-  if (!engine_loaded_) init_style();
-  if (!engine_ || !engine_->is_cuda()) {
-    PairMFFTorch::compute(eflag_in, vflag_in);
-    return;
-  }
+	  if (!engine_loaded_) init_style();
+	  if (!engine_ || !engine_->is_cuda()) {
+	    PairMFFTorch::compute(eflag_in, vflag_in);
+	    return;
+	  }
 
-  int eflag = eflag_in;
+	  int eflag = eflag_in;
   int vflag = vflag_in;
 
   if (neighflag == FULL) no_virial_fdotr_compute = 1;
@@ -276,10 +280,242 @@ void PairMFFTorchKokkos<DeviceType>::compute(int eflag_in, int vflag_in) {
   auto d_numneigh = k_list->d_numneigh;
   auto d_neighbors = k_list->d_neighbors;
   auto d_ilist = k_list->d_ilist;
-  const int inum = list->inum;
-  auto dev = engine_->device();
-  const CellGeom geom = build_cell_geom(domain);
-  if (nlocal == 0) {
+	  const int inum = list->inum;
+	  auto dev = engine_->device();
+	  const CellGeom geom = build_cell_geom(domain);
+	  const bool host_stage_aoti_dispersion =
+	      fold && engine_->is_aoti_mode() && engine_->aoti_takes_dispersion_edges() && dispersion_cut_global_ > 0.0;
+	  if (host_stage_aoti_dispersion) {
+	    Kokkos::fence();
+	    atomKK->sync(Host, X_MASK | F_MASK | TYPE_MASK | TAG_MASK);
+	    auto h_ilist = Kokkos::create_mirror_view_and_copy(LMPHostType(), k_list->d_ilist);
+	    auto h_numneigh = Kokkos::create_mirror_view_and_copy(LMPHostType(), k_list->d_numneigh);
+	    auto h_neighbors = Kokkos::create_mirror_view_and_copy(LMPHostType(), k_list->d_neighbors);
+
+	    double **x_host = atom->x;
+	    double **f_host = atom->f;
+	    int *type_host = atom->type;
+	    tagint *tag_host = atom->tag;
+	    const int nmodel = nlocal_owned;
+
+	    std::unordered_map<tagint, int> local_owner_by_tag;
+	    local_owner_by_tag.reserve(static_cast<size_t>(std::max(nlocal_owned, 0)));
+	    for (int i = 0; i < nlocal_owned; ++i) local_owner_by_tag[tag_host[i]] = i;
+
+	    buf_A_cpu_.resize(static_cast<size_t>(nmodel));
+	    buf_pos_cpu_.resize(static_cast<size_t>(nmodel) * 3);
+	    for (int i = 0; i < nmodel; ++i) {
+	      const int itype = type_host[i];
+	      buf_A_cpu_[i] = (itype >= 0 && itype < static_cast<int>(type2Z_.size())) ? type2Z_[itype] : 0;
+	      buf_pos_cpu_[static_cast<size_t>(i) * 3 + 0] = static_cast<float>(x_host[i][0]);
+	      buf_pos_cpu_[static_cast<size_t>(i) * 3 + 1] = static_cast<float>(x_host[i][1]);
+	      buf_pos_cpu_[static_cast<size_t>(i) * 3 + 2] = static_cast<float>(x_host[i][2]);
+	    }
+
+	    int64_t Emax = 0;
+	    for (int ii = 0; ii < inum; ++ii) Emax += h_numneigh(h_ilist(ii));
+	    buf_edge_src_cpu_.clear();
+	    buf_edge_dst_cpu_.clear();
+	    buf_edge_shifts_cpu_.clear();
+	    buf_disp_edge_src_cpu_.clear();
+	    buf_disp_edge_dst_cpu_.clear();
+	    buf_disp_edge_shifts_cpu_.clear();
+	    buf_edge_src_cpu_.reserve(static_cast<size_t>(Emax));
+	    buf_edge_dst_cpu_.reserve(static_cast<size_t>(Emax));
+	    buf_edge_shifts_cpu_.reserve(static_cast<size_t>(Emax) * 3);
+	    buf_disp_edge_src_cpu_.reserve(static_cast<size_t>(Emax));
+	    buf_disp_edge_dst_cpu_.reserve(static_cast<size_t>(Emax));
+	    buf_disp_edge_shifts_cpu_.reserve(static_cast<size_t>(Emax) * 3);
+
+	    auto nearest_int_host = [](double x) {
+	      return (x >= 0.0) ? static_cast<int>(x + 0.5) : static_cast<int>(x - 0.5);
+	    };
+	    for (int ii = 0; ii < inum; ++ii) {
+	      const int i = h_ilist(ii);
+	      const int jnum = h_numneigh(i);
+	      for (int jj = 0; jj < jnum; ++jj) {
+	        const int j = h_neighbors(i, jj) & NEIGHMASK;
+	        const double rawx = x_host[j][0] - x_host[i][0];
+	        const double rawy = x_host[j][1] - x_host[i][1];
+	        const double rawz = x_host[j][2] - x_host[i][2];
+	        const double fracx = rawx * geom.inv[0][0] + rawy * geom.inv[1][0] + rawz * geom.inv[2][0];
+	        const double fracy = rawx * geom.inv[0][1] + rawy * geom.inv[1][1] + rawz * geom.inv[2][1];
+	        const double fracz = rawx * geom.inv[0][2] + rawy * geom.inv[1][2] + rawz * geom.inv[2][2];
+	        const int sx = geom.pbc[0] ? -nearest_int_host(fracx) : 0;
+	        const int sy = geom.pbc[1] ? -nearest_int_host(fracy) : 0;
+	        const int sz = geom.pbc[2] ? -nearest_int_host(fracz) : 0;
+	        const double delx = rawx + sx * geom.cell[0][0] + sy * geom.cell[1][0] + sz * geom.cell[2][0];
+	        const double dely = rawy + sx * geom.cell[0][1] + sy * geom.cell[1][1] + sz * geom.cell[2][1];
+	        const double delz = rawz + sx * geom.cell[0][2] + sy * geom.cell[1][2] + sz * geom.cell[2][2];
+	        const double rsq = delx * delx + dely * dely + delz * delz;
+	        if (rsq > cutsq_global_ && rsq > dispersion_cutsq_global_) continue;
+	        const auto owner_it = local_owner_by_tag.find(tag_host[j]);
+	        if (owner_it == local_owner_by_tag.end()) continue;
+	        const int jl = owner_it->second;
+	        const double dxl = x_host[j][0] - x_host[jl][0];
+	        const double dyl = x_host[j][1] - x_host[jl][1];
+	        const double dzl = x_host[j][2] - x_host[jl][2];
+	        const int gx = nearest_int_host(dxl * geom.inv[0][0] + dyl * geom.inv[1][0] + dzl * geom.inv[2][0]);
+	        const int gy = nearest_int_host(dxl * geom.inv[0][1] + dyl * geom.inv[1][1] + dzl * geom.inv[2][1]);
+	        const int gz = nearest_int_host(dxl * geom.inv[0][2] + dyl * geom.inv[1][2] + dzl * geom.inv[2][2]);
+	        const int out_sx = -(gx + sx);
+	        const int out_sy = -(gy + sy);
+	        const int out_sz = -(gz + sz);
+	        if (rsq <= cutsq_global_) {
+	          buf_edge_src_cpu_.push_back(static_cast<int64_t>(jl));
+	          buf_edge_dst_cpu_.push_back(static_cast<int64_t>(i));
+	          buf_edge_shifts_cpu_.push_back(static_cast<float>(out_sx));
+	          buf_edge_shifts_cpu_.push_back(static_cast<float>(out_sy));
+	          buf_edge_shifts_cpu_.push_back(static_cast<float>(out_sz));
+	        }
+	        if (rsq <= dispersion_cutsq_global_ && jl < i) {
+	          buf_disp_edge_src_cpu_.push_back(static_cast<int64_t>(jl));
+	          buf_disp_edge_dst_cpu_.push_back(static_cast<int64_t>(i));
+	          buf_disp_edge_shifts_cpu_.push_back(static_cast<float>(out_sx));
+	          buf_disp_edge_shifts_cpu_.push_back(static_cast<float>(out_sy));
+	          buf_disp_edge_shifts_cpu_.push_back(static_cast<float>(out_sz));
+	        }
+	      }
+	    }
+
+	    const int64_t E = static_cast<int64_t>(buf_edge_src_cpu_.size());
+	    const int64_t Edisp = static_cast<int64_t>(buf_disp_edge_src_cpu_.size());
+	    if (E <= 1 && Edisp <= 1) return;
+	    auto make_i64 = [](const std::vector<int64_t> &v) {
+	      auto t = torch::empty({static_cast<int64_t>(v.size())}, torch::TensorOptions().dtype(torch::kInt64).device(torch::kCPU));
+	      if (!v.empty()) std::memcpy(t.data_ptr<int64_t>(), v.data(), v.size() * sizeof(int64_t));
+	      return t;
+	    };
+	    auto make_f32_2d = [](const std::vector<float> &v) {
+	      auto t = torch::empty({static_cast<int64_t>(v.size() / 3), 3}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU));
+	      if (!v.empty()) std::memcpy(t.data_ptr<float>(), v.data(), v.size() * sizeof(float));
+	      return t;
+	    };
+	    auto pos_t = make_f32_2d(buf_pos_cpu_);
+	    auto A_t = make_i64(buf_A_cpu_);
+	    auto edge_src_t = make_i64(buf_edge_src_cpu_);
+	    auto edge_dst_t = make_i64(buf_edge_dst_cpu_);
+	    auto edge_shifts_t = make_f32_2d(buf_edge_shifts_cpu_);
+	    auto disp_edge_src_t = make_i64(buf_disp_edge_src_cpu_);
+	    auto disp_edge_dst_t = make_i64(buf_disp_edge_dst_cpu_);
+	    auto disp_edge_shifts_t = make_f32_2d(buf_disp_edge_shifts_cpu_);
+	    const float cell_cpu[9] = {
+	        geom.cell[0][0], geom.cell[0][1], geom.cell[0][2],
+	        geom.cell[1][0], geom.cell[1][1], geom.cell[1][2],
+	        geom.cell[2][0], geom.cell[2][1], geom.cell[2][2],
+	    };
+	    auto cell_t = torch::from_blob(
+	                      const_cast<float *>(cell_cpu),
+	                      {1, 3, 3},
+	                      torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU))
+	                      .clone();
+	    mfftorch::MFFOutputs out;
+	    try {
+	      out = engine_->compute(nlocal_owned, nmodel, pos_t, A_t, edge_src_t, edge_dst_t, edge_shifts_t, cell_t,
+	                             disp_edge_src_t, disp_edge_dst_t, disp_edge_shifts_t,
+	                             current_external_tensor(torch::kCPU), current_fidelity_tensor(torch::kCPU),
+	                             static_cast<bool>(eflag_global || eflag_atom), static_cast<bool>(vflag_atom));
+	    } catch (const std::exception &e) {
+	      error->all(FLERR, (std::string("mff/torch/kk host-staged engine compute failed: ") + e.what()).c_str());
+	    }
+	    mfftorch::ReciprocalOutputs reciprocal_out;
+	    const bool exports_runtime_source =
+	        engine_->exports_reciprocal_source() && engine_->reciprocal_source_channels() > 0;
+	    const bool use_tree_fmm =
+	        tree_fmm_solver_ && exports_runtime_source && engine_->long_range_runtime_backend() == "tree_fmm";
+	    const bool use_reciprocal =
+	        reciprocal_solver_ && exports_runtime_source && !use_tree_fmm;
+	    const bool use_runtime_long_range = use_tree_fmm || use_reciprocal;
+	    if (use_tree_fmm || use_reciprocal) {
+	      try {
+	        auto local_source = out.reciprocal_source.defined()
+	                                ? out.reciprocal_source.narrow(0, 0, nlocal_owned).to(dev, torch::kFloat32).contiguous()
+	                                : torch::zeros(
+	                                      {nlocal_owned, engine_->reciprocal_source_channels()},
+	                                      torch::TensorOptions().dtype(torch::kFloat32).device(dev));
+	        if (use_tree_fmm && engine_->long_range_source_kind() != "latent_charge") {
+	          throw std::runtime_error("tree_fmm runtime currently requires long_range_source_kind=latent_charge");
+	        }
+	        auto reciprocal_inputs = make_reciprocal_inputs(
+	            world,
+	            pos_t.to(dev, torch::kFloat32).contiguous(),
+	            local_source,
+	            cell_t.to(dev, torch::kFloat32).contiguous(),
+	            geom,
+	            static_cast<bool>(eflag_global || eflag_atom),
+	            dev);
+	        if (std::getenv("MFF_RECIPROCAL_MULTIPOLE_AUTOGRAD")) {
+	          reciprocal_out = use_tree_fmm ? tree_fmm_solver_->compute(reciprocal_inputs)
+	                                        : reciprocal_solver_->compute(reciprocal_inputs);
+	        } else {
+	          c10::InferenceMode reciprocal_inference_guard(true);
+	          reciprocal_out = use_tree_fmm ? tree_fmm_solver_->compute(reciprocal_inputs)
+	                                        : reciprocal_solver_->compute(reciprocal_inputs);
+	        }
+	      } catch (const std::exception &e) {
+	        error->all(FLERR, (std::string("mff/torch/kk host-staged runtime long-range solver failed: ") + e.what()).c_str());
+	      }
+	    }
+	    cache_physical_outputs(out, nlocal_owned);
+	    if (eflag_global) eng_vdwl += out.energy;
+	    if (eflag_global && use_runtime_long_range) eng_vdwl += reciprocal_out.energy;
+	    auto forces_cpu = out.forces.to(torch::kCPU, torch::kFloat64).contiguous();
+	    const double *force_ptr = forces_cpu.data_ptr<double>();
+	    for (int i = 0; i < nlocal_owned; ++i) {
+	      const double fx = force_ptr[static_cast<size_t>(i) * 3 + 0];
+	      const double fy = force_ptr[static_cast<size_t>(i) * 3 + 1];
+	      const double fz = force_ptr[static_cast<size_t>(i) * 3 + 2];
+	      f_host[i][0] += fx;
+	      f_host[i][1] += fy;
+	      f_host[i][2] += fz;
+#ifdef MFF_ENABLE_VIRIAL
+	      if (vflag_global) {
+	        virial[0] += fx * x_host[i][0];
+	        virial[1] += fy * x_host[i][1];
+	        virial[2] += fz * x_host[i][2];
+	        virial[3] += fy * x_host[i][0];
+	        virial[4] += fz * x_host[i][0];
+	        virial[5] += fz * x_host[i][1];
+	      }
+#endif
+	    }
+	    if (use_runtime_long_range && reciprocal_out.forces_local.defined()) {
+	      auto reciprocal_forces_cpu = reciprocal_out.forces_local.to(torch::kCPU, torch::kFloat64).contiguous();
+	      const double *rfp = reciprocal_forces_cpu.data_ptr<double>();
+	      for (int i = 0; i < nlocal_owned; ++i) {
+	        const double fx = rfp[static_cast<size_t>(i) * 3 + 0];
+	        const double fy = rfp[static_cast<size_t>(i) * 3 + 1];
+	        const double fz = rfp[static_cast<size_t>(i) * 3 + 2];
+	        f_host[i][0] += fx;
+	        f_host[i][1] += fy;
+	        f_host[i][2] += fz;
+#ifdef MFF_ENABLE_VIRIAL
+	        if (vflag_global) {
+	          virial[0] += fx * x_host[i][0];
+	          virial[1] += fy * x_host[i][1];
+	          virial[2] += fz * x_host[i][2];
+	          virial[3] += fy * x_host[i][0];
+	          virial[4] += fz * x_host[i][0];
+	          virial[5] += fz * x_host[i][1];
+	        }
+#endif
+	      }
+	    }
+	    if (eflag_atom && out.atom_energy.defined()) {
+	      auto ae_cpu = out.atom_energy.to(torch::kCPU, torch::kFloat64).contiguous().view({nmodel});
+	      const double *ae = ae_cpu.data_ptr<double>();
+	      for (int i = 0; i < nlocal_owned; ++i) eatom[i] += ae[i];
+	    }
+	    if (eflag_atom && use_runtime_long_range && reciprocal_out.atom_energy_local.defined()) {
+	      auto ae_recip = reciprocal_out.atom_energy_local.to(torch::kCPU, torch::kFloat64).contiguous();
+	      const double *ep = ae_recip.data_ptr<double>();
+	      for (int i = 0; i < nlocal_owned; ++i) eatom[i] += ep[i];
+	    }
+	    atomKK->modified(Host, F_MASK);
+	    if (vflag_fdotr) virial_fdotr_compute();
+	    return;
+	  }
+	  if (nlocal == 0) {
     const std::array<float, 9> cell_values = {
         geom.cell[0][0], geom.cell[0][1], geom.cell[0][2],
         geom.cell[1][0], geom.cell[1][1], geom.cell[1][2],
@@ -362,6 +598,9 @@ void PairMFFTorchKokkos<DeviceType>::compute(int eflag_in, int vflag_in) {
     buf_edge_src_ = torch::empty({Etotal}, torch::TensorOptions().dtype(torch::kInt64).device(dev));
     buf_edge_dst_ = torch::empty({Etotal}, torch::TensorOptions().dtype(torch::kInt64).device(dev));
     buf_edge_shifts_ = torch::empty({Etotal, 3}, torch::TensorOptions().dtype(torch::kFloat32).device(dev));
+    buf_disp_edge_src_ = torch::empty({Etotal}, torch::TensorOptions().dtype(torch::kInt64).device(dev));
+    buf_disp_edge_dst_ = torch::empty({Etotal}, torch::TensorOptions().dtype(torch::kInt64).device(dev));
+    buf_disp_edge_shifts_ = torch::empty({Etotal, 3}, torch::TensorOptions().dtype(torch::kFloat32).device(dev));
     cached_Etotal_ = Etotal;
   }
   if (cached_ntotal_ != static_cast<int64_t>(nmodel)) {
@@ -372,8 +611,11 @@ void PairMFFTorchKokkos<DeviceType>::compute(int eflag_in, int vflag_in) {
 
   Kokkos::View<int64_t *, DeviceType, Unmanaged> edge_src_v(buf_edge_src_.data_ptr<int64_t>(), Etotal);
   Kokkos::View<int64_t *, DeviceType, Unmanaged> edge_dst_v(buf_edge_dst_.data_ptr<int64_t>(), Etotal);
+  Kokkos::View<int64_t *, DeviceType, Unmanaged> disp_edge_src_v(buf_disp_edge_src_.data_ptr<int64_t>(), Etotal);
+  Kokkos::View<int64_t *, DeviceType, Unmanaged> disp_edge_dst_v(buf_disp_edge_dst_.data_ptr<int64_t>(), Etotal);
   Kokkos::View<int64_t *, DeviceType, Unmanaged> type_idx_v(buf_type_idx_.data_ptr<int64_t>(), nmodel);
   Kokkos::View<float **, Kokkos::LayoutRight, DeviceType, Unmanaged> edge_shifts_v(buf_edge_shifts_.data_ptr<float>(), Etotal, 3);
+  Kokkos::View<float **, Kokkos::LayoutRight, DeviceType, Unmanaged> disp_edge_shifts_v(buf_disp_edge_shifts_.data_ptr<float>(), Etotal, 3);
   Kokkos::View<float **, Kokkos::LayoutRight, DeviceType, Unmanaged> pos_v(buf_pos_.data_ptr<float>(), nmodel, 3);
 
   const float i00 = geom.inv[0][0], i01 = geom.inv[0][1], i02 = geom.inv[0][2];
@@ -384,6 +626,8 @@ void PairMFFTorchKokkos<DeviceType>::compute(int eflag_in, int vflag_in) {
   const float c10 = geom.cell[1][0], c11 = geom.cell[1][1], c12 = geom.cell[1][2];
   const float c20 = geom.cell[2][0], c21 = geom.cell[2][1], c22 = geom.cell[2][2];
   const float cutsq = static_cast<float>(cutsq_global_);
+  const bool use_dispersion_edges = dispersion_cut_global_ > 0.0;
+  const float disp_cutsq = static_cast<float>(dispersion_cutsq_global_);
 
   Kokkos::parallel_for(
       "mfftorch::fill_pos_and_type", nmodel,
@@ -394,8 +638,8 @@ void PairMFFTorchKokkos<DeviceType>::compute(int eflag_in, int vflag_in) {
         type_idx_v(i) = static_cast<int64_t>(type(i));
       });
 
-  Kokkos::parallel_for(
-      "mfftorch::fill_edges", inum, KOKKOS_LAMBDA(const int ii) {
+	  Kokkos::parallel_for(
+	      "mfftorch::fill_edges", inum, KOKKOS_LAMBDA(const int ii) {
         const int i = d_ilist[ii];
         const int jnum = d_numneigh[i];
         const int64_t base = d_offsets(ii);
@@ -418,12 +662,19 @@ void PairMFFTorchKokkos<DeviceType>::compute(int eflag_in, int vflag_in) {
           const float dely = rawy + shifty;
           const float delz = rawz + shiftz;
           const float rsq = delx * delx + dely * dely + delz * delz;
-          if (rsq > cutsq) {
+          const bool keep_main = rsq <= cutsq;
+          const bool keep_disp_raw = use_dispersion_edges && rsq <= disp_cutsq;
+          if (!keep_main && !keep_disp_raw) {
             edge_src_v(idx) = static_cast<int64_t>(-1);
             edge_dst_v(idx) = static_cast<int64_t>(-1);
             edge_shifts_v(idx, 0) = 0.0f;
             edge_shifts_v(idx, 1) = 0.0f;
             edge_shifts_v(idx, 2) = 0.0f;
+            disp_edge_src_v(idx) = static_cast<int64_t>(-1);
+            disp_edge_dst_v(idx) = static_cast<int64_t>(-1);
+            disp_edge_shifts_v(idx, 0) = 0.0f;
+            disp_edge_shifts_v(idx, 1) = 0.0f;
+            disp_edge_shifts_v(idx, 2) = 0.0f;
             continue;
           }
           int src = j;
@@ -431,36 +682,84 @@ void PairMFFTorchKokkos<DeviceType>::compute(int eflag_in, int vflag_in) {
           int out_sy = sy;
           int out_sz = sz;
           if (fold) {
+            const auto wanted_tag = tag(j);
             src = AtomKokkos::map_kokkos<DeviceType>(tag(j), map_style, k_map_array, k_map_hash);
+            if (src < 0 || src >= nlocal_owned || tag(src) != wanted_tag) {
+              int found = -1;
+              for (int k = 0; k < nlocal_owned; ++k) {
+                if (tag(k) == wanted_tag) {
+                  found = k;
+                  break;
+                }
+              }
+              src = found;
+            }
             if (src < 0 || src >= nlocal_owned) {
               edge_src_v(idx) = static_cast<int64_t>(-1);
               edge_dst_v(idx) = static_cast<int64_t>(-1);
               edge_shifts_v(idx, 0) = 0.0f;
               edge_shifts_v(idx, 1) = 0.0f;
               edge_shifts_v(idx, 2) = 0.0f;
+              disp_edge_src_v(idx) = static_cast<int64_t>(-1);
+              disp_edge_dst_v(idx) = static_cast<int64_t>(-1);
+              disp_edge_shifts_v(idx, 0) = 0.0f;
+              disp_edge_shifts_v(idx, 1) = 0.0f;
+              disp_edge_shifts_v(idx, 2) = 0.0f;
               continue;
             }
             const float owner_dx = static_cast<float>(x(j, 0) - x(src, 0));
             const float owner_dy = static_cast<float>(x(j, 1) - x(src, 1));
             const float owner_dz = static_cast<float>(x(j, 2) - x(src, 2));
-            out_sx = nearest_int_device(owner_dx * i00 + owner_dy * i10 + owner_dz * i20);
-            out_sy = nearest_int_device(owner_dx * i01 + owner_dy * i11 + owner_dz * i21);
-            out_sz = nearest_int_device(owner_dx * i02 + owner_dy * i12 + owner_dz * i22);
+            out_sx = nearest_int_device(owner_dx * i00 + owner_dy * i10 + owner_dz * i20) + sx;
+            out_sy = nearest_int_device(owner_dx * i01 + owner_dy * i11 + owner_dz * i21) + sy;
+            out_sz = nearest_int_device(owner_dx * i02 + owner_dy * i12 + owner_dz * i22) + sz;
           }
           // Match the CPU pair builder and model convention: edge_src is the
           // neighbor/owner and edge_dst is the center that receives the message.
-          edge_src_v(idx) = static_cast<int64_t>(src);
-          edge_dst_v(idx) = static_cast<int64_t>(i);
-          edge_shifts_v(idx, 0) = static_cast<float>(-out_sx);
-          edge_shifts_v(idx, 1) = static_cast<float>(-out_sy);
-          edge_shifts_v(idx, 2) = static_cast<float>(-out_sz);
-        }
-      });
-  finish_segment(fill_ms);
+          if (keep_main) {
+            edge_src_v(idx) = static_cast<int64_t>(src);
+            edge_dst_v(idx) = static_cast<int64_t>(i);
+            edge_shifts_v(idx, 0) = static_cast<float>(-out_sx);
+            edge_shifts_v(idx, 1) = static_cast<float>(-out_sy);
+            edge_shifts_v(idx, 2) = static_cast<float>(-out_sz);
+          } else {
+            edge_src_v(idx) = static_cast<int64_t>(-1);
+            edge_dst_v(idx) = static_cast<int64_t>(-1);
+            edge_shifts_v(idx, 0) = 0.0f;
+            edge_shifts_v(idx, 1) = 0.0f;
+            edge_shifts_v(idx, 2) = 0.0f;
+          }
+          // MBD/SLQ-MBD consumes an undirected oscillator graph. Keep only one
+          // canonical orientation; the Python term would zero the reverse half
+          // anyway, and AOTI's dynamic sparse path is more stable with this form.
+          const bool keep_disp = keep_disp_raw && src < i;
+          if (keep_disp) {
+            disp_edge_src_v(idx) = static_cast<int64_t>(src);
+            disp_edge_dst_v(idx) = static_cast<int64_t>(i);
+            disp_edge_shifts_v(idx, 0) = static_cast<float>(-out_sx);
+            disp_edge_shifts_v(idx, 1) = static_cast<float>(-out_sy);
+            disp_edge_shifts_v(idx, 2) = static_cast<float>(-out_sz);
+          } else {
+            disp_edge_src_v(idx) = static_cast<int64_t>(-1);
+            disp_edge_dst_v(idx) = static_cast<int64_t>(-1);
+            disp_edge_shifts_v(idx, 0) = 0.0f;
+            disp_edge_shifts_v(idx, 1) = 0.0f;
+            disp_edge_shifts_v(idx, 2) = 0.0f;
+          }
+	        }
+	      });
+	  Kokkos::fence();
+	  finish_segment(fill_ms);
 
   auto valid_mask = buf_edge_src_.ge(0);
   const int64_t Efiltered = valid_mask.sum().item<int64_t>();
-  if (Efiltered <= 1) return;
+  int64_t Edispfiltered = 0;
+  torch::Tensor disp_valid_mask;
+  if (use_dispersion_edges) {
+    disp_valid_mask = buf_disp_edge_src_.ge(0);
+    Edispfiltered = disp_valid_mask.sum().item<int64_t>();
+  }
+  if (Efiltered <= 1 && (!use_dispersion_edges || Edispfiltered <= 1)) return;
   if (Efiltered != Etotal) {
     auto valid_idx = torch::nonzero(valid_mask).view({-1});
     buf_edge_src_ = buf_edge_src_.index_select(0, valid_idx);
@@ -468,6 +767,107 @@ void PairMFFTorchKokkos<DeviceType>::compute(int eflag_in, int vflag_in) {
     buf_edge_shifts_ = buf_edge_shifts_.index_select(0, valid_idx);
     cached_Etotal_ = Efiltered;
     Etotal = Efiltered;
+  }
+	  if (use_dispersion_edges && Edispfiltered != static_cast<int64_t>(buf_disp_edge_src_.size(0))) {
+	    auto disp_valid_idx = torch::nonzero(disp_valid_mask).view({-1});
+	    buf_disp_edge_src_ = buf_disp_edge_src_.index_select(0, disp_valid_idx);
+	    buf_disp_edge_dst_ = buf_disp_edge_dst_.index_select(0, disp_valid_idx);
+	    buf_disp_edge_shifts_ = buf_disp_edge_shifts_.index_select(0, disp_valid_idx);
+	    cached_Etotal_ = -1;
+	  }
+	  auto sort_edges_by_dst_src = [nmodel](torch::Tensor &src, torch::Tensor &dst, torch::Tensor &shifts) {
+	    if (!src.defined() || src.numel() <= 1) return;
+	    auto key = dst * static_cast<int64_t>(nmodel) + src;
+	    auto order = torch::argsort(key);
+	    src = src.index_select(0, order).contiguous();
+	    dst = dst.index_select(0, order).contiguous();
+	    shifts = shifts.index_select(0, order).contiguous();
+	  };
+	  sort_edges_by_dst_src(buf_edge_src_, buf_edge_dst_, buf_edge_shifts_);
+	  if (use_dispersion_edges) {
+	    sort_edges_by_dst_src(buf_disp_edge_src_, buf_disp_edge_dst_, buf_disp_edge_shifts_);
+	  }
+	  if (std::getenv("MFF_VALIDATE_GRAPH") || std::getenv("MFF_DUMP_GRAPH")) {
+    auto edge_src_cpu = buf_edge_src_.to(torch::kCPU, torch::kInt64).contiguous();
+    auto edge_dst_cpu = buf_edge_dst_.to(torch::kCPU, torch::kInt64).contiguous();
+    auto disp_src_cpu =
+        use_dispersion_edges ? buf_disp_edge_src_.to(torch::kCPU, torch::kInt64).contiguous() : torch::Tensor();
+    auto disp_dst_cpu =
+        use_dispersion_edges ? buf_disp_edge_dst_.to(torch::kCPU, torch::kInt64).contiguous() : torch::Tensor();
+    auto check_bounds = [&](const torch::Tensor &src_t, const torch::Tensor &dst_t, const char *label) {
+      const int64_t *src = src_t.data_ptr<int64_t>();
+      const int64_t *dst = dst_t.data_ptr<int64_t>();
+      const int64_t ne = src_t.size(0);
+      for (int64_t k = 0; k < ne; ++k) {
+        if (src[k] < 0 || src[k] >= nmodel || dst[k] < 0 || dst[k] >= nmodel) {
+          error->all(FLERR,
+                     (std::string("mff/torch/kk built out-of-range ") + label + " edge at " +
+                      std::to_string(k) + ": src=" + std::to_string(src[k]) +
+                      " dst=" + std::to_string(dst[k]) + " nmodel=" + std::to_string(nmodel) +
+                      " nlocal=" + std::to_string(nlocal) + " ntotal=" + std::to_string(ntotal))
+                         .c_str());
+        }
+      }
+    };
+    if (std::getenv("MFF_VALIDATE_GRAPH")) {
+      check_bounds(edge_src_cpu, edge_dst_cpu, "main");
+      if (use_dispersion_edges) check_bounds(disp_src_cpu, disp_dst_cpu, "dispersion");
+    }
+	    if (std::getenv("MFF_DUMP_GRAPH")) {
+	      std::fprintf(stderr, "[MFF_DUMP_GRAPH_KK] nmodel=%d nlocal=%d ntotal=%d E=%lld Edisp=%lld\n",
+	                   nmodel, nlocal, ntotal, (long long)Etotal, (long long)Edispfiltered);
+	      auto pos_cpu = buf_pos_.to(torch::kCPU, torch::kFloat32).contiguous();
+	      auto A_cpu = type2Z_cuda_.index_select(0, buf_type_idx_).to(torch::kCPU, torch::kInt64).contiguous();
+	      auto edge_shifts_cpu = buf_edge_shifts_.to(torch::kCPU, torch::kFloat32).contiguous();
+	      auto disp_shifts_cpu =
+	          use_dispersion_edges ? buf_disp_edge_shifts_.to(torch::kCPU, torch::kFloat32).contiguous() : torch::Tensor();
+	      std::ofstream dbg("/tmp/mff_pair_edges_kk.txt");
+	      dbg << "n_model " << nmodel << " nlocal " << nlocal << " ntotal " << ntotal
+	          << " E " << Etotal << " Edisp " << Edispfiltered << "\n";
+	      dbg << "atoms\n";
+	      const auto *A_ptr = A_cpu.data_ptr<int64_t>();
+	      const auto *pos_ptr = pos_cpu.data_ptr<float>();
+	      for (int i = 0; i < nmodel; ++i) {
+	        dbg << i << " " << A_ptr[i] << " "
+	            << pos_ptr[static_cast<size_t>(i) * 3 + 0] << " "
+	            << pos_ptr[static_cast<size_t>(i) * 3 + 1] << " "
+	            << pos_ptr[static_cast<size_t>(i) * 3 + 2] << "\n";
+	      }
+	      dbg << "main\n";
+	      const auto *src_ptr = edge_src_cpu.data_ptr<int64_t>();
+	      const auto *dst_ptr = edge_dst_cpu.data_ptr<int64_t>();
+	      const auto *shift_ptr = edge_shifts_cpu.data_ptr<float>();
+	      for (int64_t k = 0; k < std::min<int64_t>(Etotal, 64); ++k) {
+	        dbg << k << " " << src_ptr[k] << " " << dst_ptr[k] << " "
+	            << shift_ptr[3 * k + 0] << " " << shift_ptr[3 * k + 1] << " "
+	            << shift_ptr[3 * k + 2] << "\n";
+	      }
+	      dbg << "dispersion\n";
+	      if (use_dispersion_edges) {
+	        const auto *disp_src_ptr = disp_src_cpu.data_ptr<int64_t>();
+	        const auto *disp_dst_ptr = disp_dst_cpu.data_ptr<int64_t>();
+	        const auto *disp_shift_ptr = disp_shifts_cpu.data_ptr<float>();
+	        for (int64_t k = 0; k < std::min<int64_t>(Edispfiltered, 64); ++k) {
+	          dbg << k << " " << disp_src_ptr[k] << " " << disp_dst_ptr[k] << " "
+	              << disp_shift_ptr[3 * k + 0] << " " << disp_shift_ptr[3 * k + 1] << " "
+	              << disp_shift_ptr[3 * k + 2] << "\n";
+	        }
+	      }
+	      auto print_minmax = [&](const torch::Tensor &src_t, const torch::Tensor &dst_t, const char *label) {
+	        if (src_t.numel() == 0) {
+	          std::fprintf(stderr, "[MFF_DUMP_GRAPH_KK] %s empty\n", label);
+          return;
+        }
+        const auto smin = src_t.min().item<int64_t>();
+        const auto smax = src_t.max().item<int64_t>();
+        const auto dmin = dst_t.min().item<int64_t>();
+        const auto dmax = dst_t.max().item<int64_t>();
+        std::fprintf(stderr, "[MFF_DUMP_GRAPH_KK] %s src=[%lld,%lld] dst=[%lld,%lld]\n",
+                     label, (long long)smin, (long long)smax, (long long)dmin, (long long)dmax);
+      };
+      print_minmax(edge_src_cpu, edge_dst_cpu, "main");
+      if (use_dispersion_edges) print_minmax(disp_src_cpu, disp_dst_cpu, "dispersion");
+    }
   }
 
   const bool need_energy = static_cast<bool>(eflag_global || eflag_atom);
@@ -502,7 +902,10 @@ void PairMFFTorchKokkos<DeviceType>::compute(int eflag_in, int vflag_in) {
       prepared_nedges_ = Etotal;
     }
     finish_segment(prepare_ms);
-    if (engine_->prefers_kokkos_host_staging()) {
+    const bool stage_for_aoti_dispersion =
+        engine_->is_aoti_mode() && engine_->aoti_takes_dispersion_edges() && use_dispersion_edges;
+    if (engine_->prefers_kokkos_host_staging() || stage_for_aoti_dispersion) {
+      c10::cuda::CUDAStreamGuard default_stream_guard(c10::cuda::getDefaultCUDAStream(dev.index()));
       // Native cue custom CUDA ops are unstable when fed Kokkos-managed device
       // tensors and an external CUDA stream. Stage inputs through CPU so the
       // engine follows the same stable transfer path as plain mff/torch.
@@ -511,6 +914,12 @@ void PairMFFTorchKokkos<DeviceType>::compute(int eflag_in, int vflag_in) {
       auto edge_src_cpu = buf_edge_src_.to(torch::kCPU, torch::kInt64).contiguous();
       auto edge_dst_cpu = buf_edge_dst_.to(torch::kCPU, torch::kInt64).contiguous();
       auto edge_shifts_cpu = buf_edge_shifts_.to(torch::kCPU, torch::kFloat32).contiguous();
+      auto disp_edge_src_cpu =
+          use_dispersion_edges ? buf_disp_edge_src_.to(torch::kCPU, torch::kInt64).contiguous() : torch::Tensor();
+      auto disp_edge_dst_cpu =
+          use_dispersion_edges ? buf_disp_edge_dst_.to(torch::kCPU, torch::kInt64).contiguous() : torch::Tensor();
+      auto disp_edge_shifts_cpu =
+          use_dispersion_edges ? buf_disp_edge_shifts_.to(torch::kCPU, torch::kFloat32).contiguous() : torch::Tensor();
       auto external_tensor = current_external_tensor(torch::kCPU);
       auto fidelity_ids = current_fidelity_tensor(torch::kCPU);
       out = engine_->compute(
@@ -522,6 +931,9 @@ void PairMFFTorchKokkos<DeviceType>::compute(int eflag_in, int vflag_in) {
           edge_dst_cpu,
           edge_shifts_cpu,
           cell_t.to(torch::kCPU, torch::kFloat32).contiguous(),
+          disp_edge_src_cpu,
+          disp_edge_dst_cpu,
+          disp_edge_shifts_cpu,
           external_tensor,
           fidelity_ids,
           need_energy,
@@ -535,7 +947,11 @@ void PairMFFTorchKokkos<DeviceType>::compute(int eflag_in, int vflag_in) {
       auto A = type2Z_cuda_.index_select(0, buf_type_idx_);
       auto external_tensor = current_external_tensor(dev);
       auto fidelity_ids = current_fidelity_tensor(dev);
-      out = engine_->compute(nlocal, nmodel, buf_pos_, A, buf_edge_src_, buf_edge_dst_, buf_edge_shifts_, cell_t, external_tensor,
+      out = engine_->compute(nlocal, nmodel, buf_pos_, A, buf_edge_src_, buf_edge_dst_, buf_edge_shifts_, cell_t,
+                             use_dispersion_edges ? buf_disp_edge_src_ : torch::Tensor(),
+                             use_dispersion_edges ? buf_disp_edge_dst_ : torch::Tensor(),
+                             use_dispersion_edges ? buf_disp_edge_shifts_ : torch::Tensor(),
+                             external_tensor,
                              fidelity_ids,
                              need_energy, need_atom_virial);
     }
@@ -571,8 +987,14 @@ void PairMFFTorchKokkos<DeviceType>::compute(int eflag_in, int vflag_in) {
           geom,
           need_energy,
           dev);
-      reciprocal_out = use_tree_fmm ? tree_fmm_solver_->compute(reciprocal_inputs)
-                                    : reciprocal_solver_->compute(reciprocal_inputs);
+      if (std::getenv("MFF_RECIPROCAL_MULTIPOLE_AUTOGRAD")) {
+        reciprocal_out = use_tree_fmm ? tree_fmm_solver_->compute(reciprocal_inputs)
+                                      : reciprocal_solver_->compute(reciprocal_inputs);
+      } else {
+        c10::InferenceMode reciprocal_inference_guard(true);
+        reciprocal_out = use_tree_fmm ? tree_fmm_solver_->compute(reciprocal_inputs)
+                                      : reciprocal_solver_->compute(reciprocal_inputs);
+      }
     } catch (const std::exception &e) {
       error->all(FLERR, (std::string("mff/torch/kk runtime long-range solver failed: ") + e.what()).c_str());
     }

@@ -1,6 +1,7 @@
 # USER-MFFTORCH package: LibTorch-powered pair style(s)
 
 find_package(Torch REQUIRED)
+find_package(CUDAToolkit QUIET)
 
 option(MFF_ENABLE_VIRIAL "Enable virial/stress calculation in mff/torch Kokkos pair style" OFF)
 
@@ -12,6 +13,15 @@ target_sources(lammps PRIVATE
   ${LAMMPS_SOURCE_DIR}/USER-MFFTORCH/compute_mff_torch_phys.cpp
   ${LAMMPS_SOURCE_DIR}/USER-MFFTORCH/pair_mff_torch.cpp
 )
+
+if(CUDAToolkit_FOUND)
+  enable_language(CUDA)
+  target_sources(lammps PRIVATE
+    ${LAMMPS_SOURCE_DIR}/USER-MFFTORCH/mff_cufft_multipole.cu
+  )
+  target_compile_definitions(lammps PRIVATE MFF_HAS_CUFFT=1)
+  target_link_libraries(lammps PRIVATE CUDA::cufft CUDA::cudart)
+endif()
 
 # Kokkos variant (only when KOKKOS package is enabled)
 if(PKG_KOKKOS)
@@ -31,4 +41,3 @@ if(TORCH_CXX_FLAGS)
   separate_arguments(_TORCH_CXX_FLAGS_LIST NATIVE_COMMAND "${TORCH_CXX_FLAGS}")
   target_compile_options(lammps PRIVATE ${_TORCH_CXX_FLAGS_LIST})
 endif()
-

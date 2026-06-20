@@ -363,6 +363,8 @@ def build_baseline_model(
     long_range_max_multipole_l: int = 0,
     long_range_dispersion_mode: str = "none",
     dispersion_cutoff: float = 10.0,
+    dispersion_slq_num_probes: int = 8,
+    dispersion_slq_lanczos_steps: int = 16,
 ) -> PureCartesianICTDFix:
     """Construct the model exactly the way from_checkpoint rebuilds it (so the saved
     weights reload into an identical module). All structural choices come from ``cfg``
@@ -425,6 +427,8 @@ def build_baseline_model(
         long_range_max_multipole_l=long_range_max_multipole_l,
         long_range_dispersion_mode=long_range_dispersion_mode,
         dispersion_cutoff=dispersion_cutoff,
+        dispersion_slq_num_probes=dispersion_slq_num_probes,
+        dispersion_slq_lanczos_steps=dispersion_slq_lanczos_steps,
         internal_compute_dtype=cfg.internal_compute_dtype,
         device=device,
     ).to(device=device, dtype=dtype)
@@ -508,13 +512,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
                     help="Use full-Ewald-style mesh FFT correction terms for mesh_fft.")
     ap.add_argument("--long-range-max-multipole-l", type=int, default=0,
                     help="Maximum learned multipole rank emitted for mesh_fft reciprocal long-range export.")
-    ap.add_argument("--long-range-dispersion-mode", default="none", choices=["none", "pairwise-c6"],
-                    help="Optional long-range dispersion term. pairwise-c6 is the existing learned C6/R0 model.")
+    ap.add_argument("--long-range-dispersion-mode", default="none", choices=["none", "pairwise-c6", "mbd", "mbd-slq"],
+                    help="Optional long-range dispersion term. pairwise-c6 is the existing learned C6/R0 model; "
+                         "mbd is a dense QHO many-body baseline; mbd-slq is the matrix-free stochastic-Lanczos "
+                         "cutoff approximation.")
     ap.add_argument("--long-range-dispersion", dest="long_range_dispersion_mode",
                     action="store_const", const="pairwise-c6",
                     help="Deprecated alias for --long-range-dispersion-mode pairwise-c6.")
     ap.add_argument("--dispersion-cutoff", type=float, default=10.0,
                     help="Cutoff for the long-range dispersion neighbor list. Use 0 to reuse the input edge list.")
+    ap.add_argument("--dispersion-slq-num-probes", type=int, default=8,
+                    help="Number of deterministic Hutchinson probes for --long-range-dispersion-mode mbd-slq.")
+    ap.add_argument("--dispersion-slq-lanczos-steps", type=int, default=16,
+                    help="Lanczos steps per probe for --long-range-dispersion-mode mbd-slq.")
     # atomic-energy E0 offset
     ap.add_argument("--atomic-energy-keys", default=None, help='e.g. "1,6,7,8"')
     ap.add_argument("--atomic-energy-values", default=None, help='e.g. "-430.5,-821.0,-1488.2,-2044.4"')
@@ -726,6 +736,11 @@ def main(argv=None):
                 raise ValueError("--long-range-max-multipole-l > 0 requires --long-range-mesh-fft-full-ewald")
     if args.long_range_dispersion_mode != "none" and args.dispersion_cutoff < 0:
         raise ValueError("--dispersion-cutoff must be >= 0")
+    if args.long_range_dispersion_mode == "mbd-slq":
+        if int(args.dispersion_slq_num_probes) <= 0:
+            raise ValueError("--dispersion-slq-num-probes must be > 0")
+        if int(args.dispersion_slq_lanczos_steps) <= 0:
+            raise ValueError("--dispersion-slq-lanczos-steps must be > 0")
     energy_output_scale_enabled = args.scaling != "no_scaling" or args.atomic_inter_scale is not None
     energy_output_shift_enabled = (
         (args.scaling != "no_scaling" and not args.no_atomic_inter_shift)
@@ -791,6 +806,8 @@ def main(argv=None):
         long_range_max_multipole_l=args.long_range_max_multipole_l,
         long_range_dispersion_mode=args.long_range_dispersion_mode,
         dispersion_cutoff=args.dispersion_cutoff,
+        dispersion_slq_num_probes=args.dispersion_slq_num_probes,
+        dispersion_slq_lanczos_steps=args.dispersion_slq_lanczos_steps,
         device=device, dtype=dtype,
     )
     if args.mace_compatible_random_init:
@@ -911,6 +928,8 @@ def main(argv=None):
         long_range_dispersion_mode=args.long_range_dispersion_mode,
         long_range_dispersion=bool(args.long_range_dispersion_mode != "none"),
         dispersion_cutoff=float(args.dispersion_cutoff),
+        dispersion_slq_num_probes=int(args.dispersion_slq_num_probes),
+        dispersion_slq_lanczos_steps=int(args.dispersion_slq_lanczos_steps),
     )
 
     trainer = ForceTrainer(

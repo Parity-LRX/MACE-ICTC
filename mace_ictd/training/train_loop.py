@@ -909,6 +909,15 @@ class ForceTrainer:
                 "ictd_fix_fusion_scale_init", "ictd_fix_gmix_gate_init",
                 "ictd_fix_gmix_output_lmax", "avg_num_neighbors",
                 "polynomial_cutoff_p", "long_range_mode", "angular_basis",
+                "long_range_hidden_dim", "long_range_boundary", "long_range_neutralize",
+                "long_range_filter_hidden_dim", "long_range_kmax", "long_range_mesh_size",
+                "long_range_slab_padding_factor", "long_range_include_k0",
+                "long_range_source_channels", "long_range_backend",
+                "long_range_reciprocal_backend", "long_range_energy_partition",
+                "long_range_green_mode", "long_range_assignment",
+                "long_range_mesh_fft_full_ewald", "long_range_max_multipole_l",
+                "long_range_dispersion_mode", "long_range_dispersion", "dispersion_cutoff",
+                "dispersion_slq_num_probes", "dispersion_slq_lanczos_steps",
             ):
                 if hasattr(base, attr):
                     val = getattr(base, attr)

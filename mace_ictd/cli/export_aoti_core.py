@@ -33,7 +33,7 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 import torch
 
 _script_dir = os.path.dirname(os.path.abspath(__file__))
-_repo_root = os.path.dirname(_script_dir)
+_repo_root = os.path.dirname(os.path.dirname(_script_dir))
 if _repo_root not in sys.path:
     sys.path.insert(0, _repo_root)
 
@@ -75,26 +75,67 @@ class _E0Wrap(torch.nn.Module):
         self.model = model
         self.register_buffer("e0_lut", e0_lut)
 
-    def forward(self, pos, A, batch, edge_src, edge_dst, edge_shifts, cell, return_reciprocal_source: bool = False):
+    def forward(
+        self,
+        pos,
+        A,
+        batch,
+        edge_src,
+        edge_dst,
+        edge_shifts,
+        cell,
+        *,
+        dispersion_edge_src=None,
+        dispersion_edge_dst=None,
+        dispersion_edge_shifts=None,
+        return_reciprocal_source: bool = False,
+    ):
         if return_reciprocal_source:
-            out = self.model(pos, A, batch, edge_src, edge_dst, edge_shifts, cell, return_reciprocal_source=True)
+            out = self.model(
+                pos,
+                A,
+                batch,
+                edge_src,
+                edge_dst,
+                edge_shifts,
+                cell,
+                dispersion_edge_src=dispersion_edge_src,
+                dispersion_edge_dst=dispersion_edge_dst,
+                dispersion_edge_shifts=dispersion_edge_shifts,
+                return_reciprocal_source=True,
+            )
             e_atom, rs = out[0], out[1]
             e0 = self.e0_lut[A].to(e_atom.dtype).reshape(e_atom.shape)
             return e_atom + e0, rs
-        out = self.model(pos, A, batch, edge_src, edge_dst, edge_shifts, cell)
+        out = self.model(
+            pos,
+            A,
+            batch,
+            edge_src,
+            edge_dst,
+            edge_shifts,
+            cell,
+            dispersion_edge_src=dispersion_edge_src,
+            dispersion_edge_dst=dispersion_edge_dst,
+            dispersion_edge_shifts=dispersion_edge_shifts,
+        )
         e_atom = out[0] if isinstance(out, tuple) else out
         e0 = self.e0_lut[A].to(e_atom.dtype).reshape(e_atom.shape)
         return e_atom + e0
 
 
-def force_compute_fn_factory(model, *, training: bool, emit_reciprocal_source: bool = False):
+def force_compute_fn_factory(
+    model,
+    *,
+    training: bool,
+    emit_reciprocal_source: bool = False,
+    use_dispersion_edges: bool = False,
+):
     """compute_fn returning (E_atom, force=-dE/dpos[, reciprocal_source]) -- force traced into the
     graph. With emit_reciprocal_source the model defers the reciprocal energy and emits the packed
     [q|mu|Q] source as a 3rd output (the C++ reciprocal solver does the sum); the force is then the
     short-range force only (the C++ adds the reciprocal force)."""
-    def compute_fn(pos, A, batch, edge_src, edge_dst, edge_shifts, cell):
-        p = pos.detach().requires_grad_(True)
-        out = model(p, A, batch, edge_src, edge_dst, edge_shifts, cell, return_reciprocal_source=emit_reciprocal_source)
+    def _finish(p, out):
         if emit_reciprocal_source:
             e_atom, rs = out[0], out[1]
         else:
@@ -103,6 +144,42 @@ def force_compute_fn_factory(model, *, training: bool, emit_reciprocal_source: b
         if emit_reciprocal_source:
             return e_atom, -grad, rs
         return e_atom, -grad
+
+    if use_dispersion_edges:
+        def compute_fn(
+            pos,
+            A,
+            batch,
+            edge_src,
+            edge_dst,
+            edge_shifts,
+            cell,
+            dispersion_edge_src,
+            dispersion_edge_dst,
+            dispersion_edge_shifts,
+        ):
+            p = pos.detach().requires_grad_(True)
+            out = model(
+                p,
+                A,
+                batch,
+                edge_src,
+                edge_dst,
+                edge_shifts,
+                cell,
+                dispersion_edge_src=dispersion_edge_src,
+                dispersion_edge_dst=dispersion_edge_dst,
+                dispersion_edge_shifts=dispersion_edge_shifts,
+                return_reciprocal_source=emit_reciprocal_source,
+            )
+            return _finish(p, out)
+
+        return compute_fn
+
+    def compute_fn(pos, A, batch, edge_src, edge_dst, edge_shifts, cell):
+        p = pos.detach().requires_grad_(True)
+        out = model(p, A, batch, edge_src, edge_dst, edge_shifts, cell, return_reciprocal_source=emit_reciprocal_source)
+        return _finish(p, out)
     return compute_fn
 
 
@@ -618,10 +695,9 @@ def main() -> int:
         return (g[0], A_new) + tuple(g[2:])
 
     graph = _apply_species(make_fixed_graph(num_nodes=args.atoms, avg_degree=args.degree, dtype=dtype, device=device))
-    example_inputs = (graph[0],) + tuple(graph[1:])
 
-    print(f"[aoti] device={device} dtype={dtype} atoms={args.atoms} edges={args.atoms*args.degree} "
-          f"route={args.route} attn_heads={args.attn_heads} torch={torch.__version__}")
+    def _with_dispersion_edges(g):
+        return (g[0],) + tuple(g[1:]) + (g[3], g[4], g[5])
 
     # Multipole long-range models emit a packed reciprocal_source as a 3rd graph output (E, force,
     # reciprocal_source); the C++ reciprocal solver does the sum at deploy time. Detect off the bare
@@ -630,17 +706,45 @@ def main() -> int:
     emit_rs = bool(getattr(_bare, "long_range_exports_reciprocal_source", False))
     if emit_rs:
         print("[aoti] multipole long-range: exporting (E, force, reciprocal_source) 3-tuple")
-    # C6 dispersion rides in the graph (added to the model energy). make_fx/AOTI cannot trace the
-    # data-dependent dispersion_neighbor_list (variable pair count), so for export fall back to the
-    # short-range edge list (dispersion_cutoff=0): dispersion is then summed over the LAMMPS neighbor
-    # list -> set the pair_style cutoff to the desired dispersion range.
+    use_explicit_dispersion_edges = False
+    # Pairwise C6 dispersion can ride on the deployment edge list. MBD/SLQ-MBD needs a second
+    # explicit dispersion edge list so its cutoff can differ from the short-range MACE cutoff.
     if getattr(_bare, "dispersion", None) is not None and float(getattr(_bare, "dispersion_cutoff", 0.0) or 0.0) > 0.0:
-        print(f"[aoti] dispersion: export uses the edge list (dispersion_cutoff "
+        if str(getattr(_bare, "long_range_dispersion_mode", "pairwise-c6")) in {"mbd", "mbd-slq"}:
+            if str(getattr(_bare, "long_range_dispersion_mode", "pairwise-c6")) == "mbd":
+                raise NotImplementedError(
+                    "AOTI export still does not support dense MBD: torch.linalg.eigh on the dense "
+                    "3N x 3N oscillator matrix is not a deployable AOTI path. Use mbd-slq for AOTI."
+                )
+            use_explicit_dispersion_edges = True
+            term = getattr(getattr(_bare, "dispersion", None), "term", None)
+            if term is not None and hasattr(term, "quadrature"):
+                term.quadrature = "newton-schulz"
+                if hasattr(term, "probe_mode"):
+                    term.probe_mode = "atom-rademacher"
+                if hasattr(term, "sqrt_iterations"):
+                    term.sqrt_iterations = max(int(getattr(term, "sqrt_iterations", 8)), 8)
+                print("[aoti] dispersion: using SLQ atom-rademacher probes + newton-schulz quadrature for AOTI")
+            print(f"[aoti] dispersion: exporting explicit dispersion edge inputs for "
+                  f"{_bare.long_range_dispersion_mode} (cutoff={_bare.dispersion_cutoff})")
+        else:
+            print(f"[aoti] dispersion: export uses the edge list (dispersion_cutoff "
               f"{_bare.dispersion_cutoff} -> 0; set the LAMMPS pair cutoff to the dispersion range)")
-        _bare.dispersion_cutoff = 0.0
+            _bare.dispersion_cutoff = 0.0
+
+    example_inputs = _with_dispersion_edges(graph) if use_explicit_dispersion_edges else (graph[0],) + tuple(graph[1:])
+
+    print(f"[aoti] device={device} dtype={dtype} atoms={args.atoms} edges={args.atoms*args.degree} "
+          + (f"disp_edges={args.atoms*args.degree} " if use_explicit_dispersion_edges else "")
+          + f"route={args.route} attn_heads={args.attn_heads} torch={torch.__version__}")
 
     # ---- eager reference ----
-    eager_fn = force_compute_fn_factory(model, training=False, emit_reciprocal_source=emit_rs)
+    eager_fn = force_compute_fn_factory(
+        model,
+        training=False,
+        emit_reciprocal_source=emit_rs,
+        use_dispersion_edges=use_explicit_dispersion_edges,
+    )
     e_ref, f_ref = _ef(eager_fn(*example_inputs))
     e_ref = e_ref.detach(); f_ref = f_ref.detach()
     print(f"[aoti] eager energy_sum={e_ref.sum().item():.6e}  force_absmax={f_ref.abs().max().item():.6e}")
@@ -649,7 +753,12 @@ def main() -> int:
     try:
         gm = trace_and_compile_force(
             model, example_inputs, training=False,
-            compute_fn=force_compute_fn_factory(model, training=False, emit_reciprocal_source=emit_rs),
+            compute_fn=force_compute_fn_factory(
+                model,
+                training=False,
+                emit_reciprocal_source=emit_rs,
+                use_dispersion_edges=use_explicit_dispersion_edges,
+            ),
             do_compile=False,
         )
     except Exception as ex:
@@ -664,19 +773,26 @@ def main() -> int:
     dyn = None
     if args.dynamic:
         from torch.export import Dim
-        # inputs order: (pos[N,3], A[N], batch[N], edge_src[E], edge_dst[E], edge_shifts[E,3], cell[M,3,3])
+        # inputs order: (pos[N,3], A[N], batch[N], edge_src[E], edge_dst[E], edge_shifts[E,3],
+        #                cell[M,3,3][, dispersion_edge_src[D], dispersion_edge_dst[D],
+        #                dispersion_edge_shifts[D,3]])
         Edim = Dim("n_edges", min=2)
+        Ddim = Dim("n_dispersion_edges", min=2)
         if args.n_dynamic:
             # N-DYNAMIC: with e3nn jit_script_fx=False (set above) the make_fx flatten no longer bakes the
             # atom count -- N is a symbol -- so make N a Dim too. ONE .pt2 for ANY atom count AND any edge
             # count (no padding, no N_max, no fallback). num_mol (cell dim 0) stays 1 (LAMMPS is 1 graph).
             Ndim = Dim("n_atoms", min=2)
             dyn = ({0: Ndim}, {0: Ndim}, {0: Ndim}, {0: Edim}, {0: Edim}, {0: Edim}, None)
+            if use_explicit_dispersion_edges:
+                dyn = dyn + ({0: Ddim}, {0: Ddim}, {0: Ddim})
         else:
             # E-only dynamic (legacy padding path): make_fx BAKES N (the view(*x.shape[:-1], C, 2l+1) in the
             # ICTD layers via e3nn's scripted o3.Linear), so N stays static (one .pt2 per system size, padded
             # in LAMMPS). The EDGE count E stays symbolic (scatter/index_select) -- right for fixed-N NVE/NVT.
             dyn = (None, None, None, {0: Edim}, {0: Edim}, {0: Edim}, None)
+            if use_explicit_dispersion_edges:
+                dyn = dyn + ({0: Ddim}, {0: Ddim}, {0: Ddim})
     prefer_export_strict = not _model_uses_cueq_product(model)
     try:
         exported, export_strict = _torch_export_with_strict_fallback(
@@ -710,11 +826,15 @@ def main() -> int:
             # nmax 0 signals "no padding" to the engine (aoti_nmax_==0 -> legacy/dynamic path).
             mf.write("dynamic 1\n")
             mf.write("nmax 0\n")
+            if use_explicit_dispersion_edges:
+                mf.write("dispersion_edges 1\n")
             if _model_uses_cueq_product(model):
                 mf.write("requires_torch_ops cuequivariance_ops_torch\n")
         else:
             mf.write(f"nmax {args.atoms}\n")
             mf.write(f"pad_z {pad_z}\n")
+            if use_explicit_dispersion_edges:
+                mf.write("dispersion_edges 1\n")
             if _model_uses_cueq_product(model):
                 mf.write("requires_torch_ops cuequivariance_ops_torch\n")
             if args.fallback:
@@ -749,6 +869,9 @@ def main() -> int:
             "long_range_dispersion_mode": str(getattr(_bare, "long_range_dispersion_mode", "none")),
             "long_range_dispersion": bool(getattr(_bare, "long_range_dispersion", False)),
             "dispersion_cutoff": float(getattr(_bare, "dispersion_cutoff", 0.0)),
+            "aoti_dispersion_edges": bool(use_explicit_dispersion_edges),
+            "dispersion_slq_num_probes": int(getattr(_bare, "dispersion_slq_num_probes", 8)),
+            "dispersion_slq_lanczos_steps": int(getattr(_bare, "dispersion_slq_lanczos_steps", 16)),
             "long_range_ewald_alpha_prefactor": float(getattr(getattr(lrm, "kernel", None), "ewald_alpha_prefactor", 5.0)),
             "long_range_energy_scale": (float(es_attr.detach().cpu().item()) if es_attr is not None else 1.0),
             "long_range_theta": 0.5, "long_range_leaf_size": 32, "long_range_multipole_order": 0,
@@ -798,7 +921,7 @@ def main() -> int:
     # ---- dynamic-E proof: call the SAME .pt2 at a different EDGE count (same N) ----
     if args.dynamic and args.vary_degree > 0 and args.vary_degree != args.degree:
         g2 = _apply_species(make_fixed_graph(num_nodes=args.atoms, avg_degree=args.vary_degree, dtype=dtype, device=device))
-        inp2 = (g2[0],) + tuple(g2[1:])
+        inp2 = _with_dispersion_edges(g2) if use_explicit_dispersion_edges else (g2[0],) + tuple(g2[1:])
         e2e, f2e = _ef(eager_fn(*inp2)); e2e = e2e.detach(); f2e = f2e.detach()
         try:
             e2a, f2a = _ef(loaded(*inp2))
@@ -816,7 +939,7 @@ def main() -> int:
     # ---- dynamic-N proof: call the SAME .pt2 at a DIFFERENT ATOM COUNT N (the whole point) ----
     if args.n_dynamic and args.vary_atoms > 0 and args.vary_atoms != args.atoms:
         gN = _apply_species(make_fixed_graph(num_nodes=args.vary_atoms, avg_degree=args.degree, dtype=dtype, device=device))
-        inpN = (gN[0],) + tuple(gN[1:])
+        inpN = _with_dispersion_edges(gN) if use_explicit_dispersion_edges else (gN[0],) + tuple(gN[1:])
         eNe, fNe = _ef(eager_fn(*inpN)); eNe = eNe.detach(); fNe = fNe.detach()
         try:
             eNa, fNa = _ef(loaded(*inpN))

@@ -8,7 +8,9 @@ Difference from torch.save(obj):
 
 This script exports core.pt with:
 - forward signature:
-    (pos, A, batch, edge_src, edge_dst, edge_shifts, cell, edge_vec, external_tensor) -> atom_energies
+    (pos, A, batch, edge_src, edge_dst, edge_shifts, cell, edge_vec,
+     dispersion_edge_src, dispersion_edge_dst, dispersion_edge_shifts, dispersion_edge_vec,
+     external_tensor) -> atom_energies
 - **LAMMPS 接口仅需能量和力**：TorchScript trace 时 model 不输出物理张量（dipole/polarizability 等），
   只输出 per-atom energy；力由 C++ 侧 dE/dpos 计算。
 - **Optional embedded E0** (option B): embed per-element constant energy (E0) from preprocessing/fitting
@@ -193,6 +195,10 @@ class _E0WrappedModel(torch.nn.Module):
         cell: torch.Tensor,
         *,
         precomputed_edge_vec: Optional[torch.Tensor] = None,
+        dispersion_edge_src: Optional[torch.Tensor] = None,
+        dispersion_edge_dst: Optional[torch.Tensor] = None,
+        dispersion_edge_shifts: Optional[torch.Tensor] = None,
+        precomputed_dispersion_edge_vec: Optional[torch.Tensor] = None,
         external_tensor: Optional[torch.Tensor] = None,
         fidelity_ids: Optional[torch.Tensor] = None,
         return_physical_tensors: bool = False,
@@ -204,6 +210,14 @@ class _E0WrappedModel(torch.nn.Module):
             "precomputed_edge_vec": precomputed_edge_vec,
             "sync_after_scatter": sync_after_scatter,
         }
+        if dispersion_edge_src is not None:
+            kwargs["dispersion_edge_src"] = dispersion_edge_src
+        if dispersion_edge_dst is not None:
+            kwargs["dispersion_edge_dst"] = dispersion_edge_dst
+        if dispersion_edge_shifts is not None:
+            kwargs["dispersion_edge_shifts"] = dispersion_edge_shifts
+        if precomputed_dispersion_edge_vec is not None:
+            kwargs["precomputed_dispersion_edge_vec"] = precomputed_dispersion_edge_vec
         if return_physical_tensors and self.has_physical_tensor_heads:
             kwargs["return_physical_tensors"] = True
         if return_reciprocal_source:
@@ -274,6 +288,10 @@ class _FixedFidelityWrappedModel(torch.nn.Module):
         cell: torch.Tensor,
         *,
         precomputed_edge_vec: Optional[torch.Tensor] = None,
+        dispersion_edge_src: Optional[torch.Tensor] = None,
+        dispersion_edge_dst: Optional[torch.Tensor] = None,
+        dispersion_edge_shifts: Optional[torch.Tensor] = None,
+        precomputed_dispersion_edge_vec: Optional[torch.Tensor] = None,
         external_tensor: Optional[torch.Tensor] = None,
         fidelity_ids: Optional[torch.Tensor] = None,
         return_physical_tensors: bool = False,
@@ -284,6 +302,14 @@ class _FixedFidelityWrappedModel(torch.nn.Module):
             "precomputed_edge_vec": precomputed_edge_vec,
             "sync_after_scatter": sync_after_scatter,
         }
+        if dispersion_edge_src is not None:
+            kwargs["dispersion_edge_src"] = dispersion_edge_src
+        if dispersion_edge_dst is not None:
+            kwargs["dispersion_edge_dst"] = dispersion_edge_dst
+        if dispersion_edge_shifts is not None:
+            kwargs["dispersion_edge_shifts"] = dispersion_edge_shifts
+        if precomputed_dispersion_edge_vec is not None:
+            kwargs["precomputed_dispersion_edge_vec"] = precomputed_dispersion_edge_vec
         if return_physical_tensors and self.has_physical_tensor_heads:
             kwargs["return_physical_tensors"] = True
         if return_reciprocal_source:
@@ -312,6 +338,10 @@ class _ExportOnlyTraceCoreInterface:
         edge_shifts: torch.Tensor,
         cell: torch.Tensor,
         edge_vec: torch.Tensor,
+        dispersion_edge_src: torch.Tensor,
+        dispersion_edge_dst: torch.Tensor,
+        dispersion_edge_shifts: torch.Tensor,
+        dispersion_edge_vec: torch.Tensor,
         external_tensor: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         pass
@@ -329,6 +359,10 @@ class _ExportOnlyTraceCoreInterfaceWithFidelity:
         edge_shifts: torch.Tensor,
         cell: torch.Tensor,
         edge_vec: torch.Tensor,
+        dispersion_edge_src: torch.Tensor,
+        dispersion_edge_dst: torch.Tensor,
+        dispersion_edge_shifts: torch.Tensor,
+        dispersion_edge_vec: torch.Tensor,
         external_tensor: torch.Tensor,
         fidelity_ids: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -352,9 +386,27 @@ class _ExportOnlyTraceCoreAdapter(torch.nn.Module):
         edge_shifts: torch.Tensor,
         cell: torch.Tensor,
         edge_vec: torch.Tensor,
+        dispersion_edge_src: torch.Tensor,
+        dispersion_edge_dst: torch.Tensor,
+        dispersion_edge_shifts: torch.Tensor,
+        dispersion_edge_vec: torch.Tensor,
         external_tensor: torch.Tensor,
     ):
-        return self.core.forward(pos, A, batch, edge_src, edge_dst, edge_shifts, cell, edge_vec, external_tensor)
+        return self.core.forward(
+            pos,
+            A,
+            batch,
+            edge_src,
+            edge_dst,
+            edge_shifts,
+            cell,
+            edge_vec,
+            dispersion_edge_src,
+            dispersion_edge_dst,
+            dispersion_edge_shifts,
+            dispersion_edge_vec,
+            external_tensor,
+        )
 
 
 class _ExportOnlyTraceCoreAdapterWithFidelity(torch.nn.Module):
@@ -374,11 +426,28 @@ class _ExportOnlyTraceCoreAdapterWithFidelity(torch.nn.Module):
         edge_shifts: torch.Tensor,
         cell: torch.Tensor,
         edge_vec: torch.Tensor,
+        dispersion_edge_src: torch.Tensor,
+        dispersion_edge_dst: torch.Tensor,
+        dispersion_edge_shifts: torch.Tensor,
+        dispersion_edge_vec: torch.Tensor,
         external_tensor: torch.Tensor,
         fidelity_ids: torch.Tensor,
     ):
         return self.core.forward(
-            pos, A, batch, edge_src, edge_dst, edge_shifts, cell, edge_vec, external_tensor, fidelity_ids
+            pos,
+            A,
+            batch,
+            edge_src,
+            edge_dst,
+            edge_shifts,
+            cell,
+            edge_vec,
+            dispersion_edge_src,
+            dispersion_edge_dst,
+            dispersion_edge_shifts,
+            dispersion_edge_vec,
+            external_tensor,
+            fidelity_ids,
         )
 
 
@@ -416,6 +485,10 @@ def _trace_model_for_export(
     edge_shifts = torch.zeros(E, 3, device=device, dtype=dtype)
     cell = (torch.eye(3, device=device, dtype=dtype).unsqueeze(0) * 100.0)
     edge_vec = torch.randn(E, 3, device=device, dtype=dtype)
+    dispersion_edge_src = edge_src.clone()
+    dispersion_edge_dst = edge_dst.clone()
+    dispersion_edge_shifts = edge_shifts.clone()
+    dispersion_edge_vec = edge_vec.clone()
     external_tensor = (
         torch.empty(0, device=device, dtype=dtype)
         if ext_total_numel <= 0
@@ -430,17 +503,74 @@ def _trace_model_for_export(
                 if callable(prewarm):
                     prewarm(device=device, dtype=dtype)
             if runtime_fidelity:
-                _ = core(pos, A, batch, edge_src, edge_dst, edge_shifts, cell, edge_vec, external_tensor, fidelity_ids)
+                _ = core(
+                    pos,
+                    A,
+                    batch,
+                    edge_src,
+                    edge_dst,
+                    edge_shifts,
+                    cell,
+                    edge_vec,
+                    dispersion_edge_src,
+                    dispersion_edge_dst,
+                    dispersion_edge_shifts,
+                    dispersion_edge_vec,
+                    external_tensor,
+                    fidelity_ids,
+                )
             else:
-                _ = core(pos, A, batch, edge_src, edge_dst, edge_shifts, cell, edge_vec, external_tensor)
+                _ = core(
+                    pos,
+                    A,
+                    batch,
+                    edge_src,
+                    edge_dst,
+                    edge_shifts,
+                    cell,
+                    edge_vec,
+                    dispersion_edge_src,
+                    dispersion_edge_dst,
+                    dispersion_edge_shifts,
+                    dispersion_edge_vec,
+                    external_tensor,
+                )
     except Exception:
         pass
 
-    trace_inputs = (
-        (pos, A, batch, edge_src, edge_dst, edge_shifts, cell, edge_vec, external_tensor, fidelity_ids)
-        if runtime_fidelity
-        else (pos, A, batch, edge_src, edge_dst, edge_shifts, cell, edge_vec, external_tensor)
-    )
+    if runtime_fidelity:
+        trace_inputs = (
+            pos,
+            A,
+            batch,
+            edge_src,
+            edge_dst,
+            edge_shifts,
+            cell,
+            edge_vec,
+            dispersion_edge_src,
+            dispersion_edge_dst,
+            dispersion_edge_shifts,
+            dispersion_edge_vec,
+            external_tensor,
+            fidelity_ids,
+        )
+    else:
+        trace_inputs = (
+            pos,
+            A,
+            batch,
+            edge_src,
+            edge_dst,
+            edge_shifts,
+            cell,
+            edge_vec,
+            dispersion_edge_src,
+            dispersion_edge_dst,
+            dispersion_edge_shifts,
+            dispersion_edge_vec,
+            external_tensor,
+        )
     core_ts = torch.jit.trace(core, trace_inputs, check_trace=False, strict=False)
     try:
         core_ts = torch.jit.freeze(core_ts.eval())
@@ -591,14 +721,9 @@ def _export_single_core(
     # automatically so the core .pt always includes the source slot even without the explicit CLI flag.
     if getattr(metadata_model, "long_range_exports_reciprocal_source", False):
         export_reciprocal_source = True
-    # C6 dispersion rides in the graph (added to the model energy). The data-dependent
-    # dispersion_neighbor_list does not trace cleanly; for export fall back to the short-range edge
-    # list (dispersion_cutoff=0) so dispersion is summed over the LAMMPS neighbor list at deploy time
-    # (set the pair_style cutoff to the desired dispersion range).
-    if getattr(metadata_model, "dispersion", None) is not None and float(getattr(metadata_model, "dispersion_cutoff", 0.0) or 0.0) > 0.0:
-        print(f"[export_core] dispersion: export uses the edge list (dispersion_cutoff "
-              f"{metadata_model.dispersion_cutoff} -> 0; set the LAMMPS pair cutoff to the dispersion range)")
-        metadata_model.dispersion_cutoff = 0.0
+    # Exported cores take a second explicit dispersion edge list. This avoids tracing
+    # the data-dependent Python dispersion_neighbor_list while preserving the trained
+    # dispersion_cutoff in metadata for mff/torch deployment.
     num_fidelity_levels = int(getattr(model_eager, "num_fidelity_levels", 0) or 0)
     multi_fidelity_mode = str(getattr(model_eager, "multi_fidelity_mode", "conditioning") or "conditioning")
     runtime_fidelity_input = False
@@ -679,6 +804,13 @@ def _export_single_core(
         energy_scale = getattr(long_range_module, "energy_scale")
         if energy_scale is not None:
             long_range_energy_scale = float(energy_scale.detach().cpu().item())
+    reciprocal_backend = str(
+        getattr(
+            metadata_model,
+            "long_range_reciprocal_backend",
+            getattr(long_range_module, "reciprocal_backend", "direct_kspace"),
+        )
+    )
 
     meta = {
         "elements": elements,
@@ -750,7 +882,7 @@ def _export_single_core(
             )
         ),
         "long_range_slab_padding_factor": int(getattr(metadata_model, "long_range_slab_padding_factor", 2)),
-        "long_range_reciprocal_backend": str(getattr(metadata_model, "long_range_reciprocal_backend", "direct_kspace")),
+        "long_range_reciprocal_backend": reciprocal_backend,
         "long_range_energy_partition": str(getattr(metadata_model, "long_range_energy_partition", "potential")),
         "long_range_neutralize": bool(getattr(metadata_model, "long_range_neutralize", True)),
         "long_range_green_mode": str(getattr(metadata_model, "long_range_green_mode", "poisson")),
@@ -758,6 +890,8 @@ def _export_single_core(
         "long_range_dispersion_mode": str(getattr(metadata_model, "long_range_dispersion_mode", "none")),
         "long_range_dispersion": bool(getattr(metadata_model, "long_range_dispersion", False)),
         "dispersion_cutoff": float(getattr(metadata_model, "dispersion_cutoff", 0.0)),
+        "dispersion_slq_num_probes": int(getattr(metadata_model, "dispersion_slq_num_probes", 8)),
+        "dispersion_slq_lanczos_steps": int(getattr(metadata_model, "dispersion_slq_lanczos_steps", 16)),
         # Ewald screening prefactor: alpha = prefactor / (0.5 * min periodic box length). The C++
         # multipole_reciprocal_energy applies exp(-k^2/4 alpha^2) when full_ewald is set, matching the
         # in-model MeshLongRangeKernel3D.multipole_energy (kernel.ewald_alpha_prefactor, default 5.0).

@@ -59,6 +59,7 @@ int main(int argc, char** argv) {
       auto pos_s = pos + 0.01f * torch::randn({ntotal, 3}, fopt);
       auto out = engine.compute(nlocal, ntotal, pos_s, A, edge_src, edge_dst,
                                 edge_shifts, cell, torch::Tensor(), torch::Tensor(),
+                                torch::Tensor(), torch::Tensor(), torch::Tensor(),
                                 /*need_energy=*/true, /*need_atom_virial=*/false);
       double fnorm = out.forces.defined() ? out.forces.norm().item<double>() : -1.0;
       std::printf("[repro] step %d  energy=%.6f  |F|=%.6f\n", s, out.energy, fnorm);

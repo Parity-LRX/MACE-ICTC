@@ -7,6 +7,7 @@
 # style headers included from generated style_pair.h can compile.
 
 find_package(Torch REQUIRED)
+find_package(CUDAToolkit QUIET)
 
 option(MFF_ENABLE_VIRIAL "Enable virial/stress calculation in mff/torch Kokkos pair style" OFF)
 if(MFF_ENABLE_VIRIAL)
@@ -20,6 +21,15 @@ target_sources(lammps PRIVATE
   ${LAMMPS_SOURCE_DIR}/USER-MFFTORCH/compute_mff_torch_phys.cpp
   ${LAMMPS_SOURCE_DIR}/USER-MFFTORCH/pair_mff_torch.cpp
 )
+
+if(CUDAToolkit_FOUND)
+  enable_language(CUDA)
+  target_sources(lammps PRIVATE
+    ${LAMMPS_SOURCE_DIR}/USER-MFFTORCH/mff_cufft_multipole.cu
+  )
+  target_compile_definitions(lammps PRIVATE MFF_HAS_CUFFT=1)
+  target_link_libraries(lammps PRIVATE CUDA::cufft CUDA::cudart)
+endif()
 
 if(PKG_KOKKOS)
   target_sources(lammps PRIVATE
@@ -38,4 +48,3 @@ else()
     target_compile_options(lammps PRIVATE ${_TORCH_CXX_FLAGS_LIST})
   endif()
 endif()
-

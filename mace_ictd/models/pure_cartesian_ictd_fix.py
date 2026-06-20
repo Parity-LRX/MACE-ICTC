@@ -2130,6 +2130,8 @@ class PureCartesianICTDFix(nn.Module):
         long_range_dispersion: bool = False,
         long_range_dispersion_mode: str | None = None,
         dispersion_cutoff: float = 10.0,
+        dispersion_slq_num_probes: int = 8,
+        dispersion_slq_lanczos_steps: int = 16,
         long_range_theta: float = 0.5,
         long_range_leaf_size: int = 32,
         long_range_multipole_order: int = 0,
@@ -2526,6 +2528,16 @@ class PureCartesianICTDFix(nn.Module):
         # layer_states[-1] for baseline, both invariant -> equivariance-safe);
         # energy_scale inits to 0 -> zero contribution at init.
         self.long_range_mode = str(long_range_mode)
+        self.long_range_reciprocal_backend = str(long_range_reciprocal_backend)
+        self.long_range_assignment = str(long_range_assignment)
+        self.long_range_backend = str(long_range_backend)
+        self.long_range_energy_partition = str(long_range_energy_partition)
+        self.long_range_green_mode = str(long_range_green_mode)
+        self.long_range_boundary = str(long_range_boundary)
+        self.long_range_neutralize = bool(long_range_neutralize)
+        self.long_range_mesh_fft_full_ewald = bool(long_range_mesh_fft_full_ewald)
+        self.long_range_mesh_size = int(long_range_mesh_size)
+        self.long_range_slab_padding_factor = int(long_range_slab_padding_factor)
         self.long_range_module = build_long_range_module(
             mode=self.long_range_mode,
             feature_dim=self.channels,
@@ -2632,12 +2644,16 @@ class PureCartesianICTDFix(nn.Module):
         )
         self.long_range_dispersion = self.long_range_dispersion_mode != "none"
         self.dispersion_cutoff = float(dispersion_cutoff)
+        self.dispersion_slq_num_probes = int(dispersion_slq_num_probes)
+        self.dispersion_slq_lanczos_steps = int(dispersion_slq_lanczos_steps)
         self.dispersion_pbc = str(long_range_boundary) == "periodic"
         self.dispersion = build_long_range_dispersion(
             mode=self.long_range_dispersion_mode,
             feature_dim=self.channels,
             cutoff=self.dispersion_cutoff,
             pbc=self.dispersion_pbc,
+            slq_num_probes=self.dispersion_slq_num_probes,
+            slq_lanczos_steps=self.dispersion_slq_lanczos_steps,
         )
 
         # Optional fixed scale/shift on the network (short-range) per-atom interaction energy.
@@ -2811,6 +2827,10 @@ class PureCartesianICTDFix(nn.Module):
         cell,
         *,
         precomputed_edge_vec=None,
+        dispersion_edge_src=None,
+        dispersion_edge_dst=None,
+        dispersion_edge_shifts=None,
+        precomputed_dispersion_edge_vec=None,
         return_combined_features: bool = False,
         sync_after_scatter: callable | None = None,
         return_physical_tensors: bool = False,
@@ -3018,15 +3038,40 @@ class PureCartesianICTDFix(nn.Module):
                 disp_feat = _split_irreps(last_state, self.channels, self.lmax)[0].reshape(
                     last_state.shape[0], self.channels
                 )
+            disp_edge_src = edge_src
+            disp_edge_dst = edge_dst
+            disp_edge_length = edge_length
+            disp_edge_vec = edge_vec
+            disp_cutoff = self.dispersion_cutoff
+            if dispersion_edge_src is not None or dispersion_edge_dst is not None:
+                if dispersion_edge_src is None or dispersion_edge_dst is None:
+                    raise ValueError("dispersion_edge_src and dispersion_edge_dst must be provided together")
+                disp_edge_src = dispersion_edge_src
+                disp_edge_dst = dispersion_edge_dst
+                disp_cutoff = 0.0
+                if precomputed_dispersion_edge_vec is not None:
+                    disp_edge_vec = precomputed_dispersion_edge_vec
+                else:
+                    if dispersion_edge_shifts is None:
+                        raise ValueError(
+                            "dispersion_edge_shifts or precomputed_dispersion_edge_vec is required "
+                            "when explicit dispersion edges are provided"
+                        )
+                    disp_shift = dispersion_edge_shifts.to(dtype=dtype)
+                    disp_cells = cell[batch[disp_edge_dst]]
+                    disp_shift_vec = torch.einsum("ni,nij->nj", disp_shift, disp_cells)
+                    disp_edge_vec = pos[disp_edge_dst] - pos[disp_edge_src] + disp_shift_vec
+                disp_edge_length = disp_edge_vec.norm(dim=1)
             out = out + self.dispersion(
                 disp_feat,
                 pos,
                 batch,
                 cell,
-                edge_src=edge_src,
-                edge_dst=edge_dst,
-                edge_lengths=edge_length,
-                cutoff=self.dispersion_cutoff,
+                edge_src=disp_edge_src,
+                edge_dst=disp_edge_dst,
+                edge_lengths=disp_edge_length,
+                edge_vec=disp_edge_vec,
+                cutoff=disp_cutoff,
                 pbc=self.dispersion_pbc,
             )
 

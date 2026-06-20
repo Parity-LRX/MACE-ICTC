@@ -21,7 +21,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <stdexcept>
+#include <unordered_map>
 #include <vector>
 
 using namespace LAMMPS_NS;
@@ -143,6 +145,10 @@ void PairMFFTorch::settings(int narg, char **arg) {
   cut_global_ = utils::numeric(FLERR, arg[0], false, lmp);
   if (cut_global_ <= 0.0) error->all(FLERR, "pair_style mff/torch cutoff must be > 0");
   cutsq_global_ = cut_global_ * cut_global_;
+  dispersion_cut_global_ = 0.0;
+  dispersion_cutsq_global_ = 0.0;
+  request_cut_global_ = cut_global_;
+  request_cutsq_global_ = cutsq_global_;
 
   use_external_field_ = false;
   use_electric_field_ = false;
@@ -163,6 +169,20 @@ void PairMFFTorch::settings(int narg, char **arg) {
     const std::string opt(arg[i]);
     if (opt == "cpu" || opt == "cuda") {
       device_str_ = opt;
+      continue;
+    }
+    if (opt == "dispersion") {
+      if (i + 1 >= narg) {
+        error->all(FLERR, "pair_style mff/torch dispersion expects a cutoff");
+      }
+      dispersion_cut_global_ = utils::numeric(FLERR, arg[i + 1], false, lmp);
+      if (dispersion_cut_global_ <= 0.0) {
+        error->all(FLERR, "pair_style mff/torch dispersion cutoff must be > 0");
+      }
+      dispersion_cutsq_global_ = dispersion_cut_global_ * dispersion_cut_global_;
+      request_cut_global_ = std::max(request_cut_global_, dispersion_cut_global_);
+      request_cutsq_global_ = request_cut_global_ * request_cut_global_;
+      i += 1;
       continue;
     }
     if (opt == "field") {
@@ -278,9 +298,9 @@ void PairMFFTorch::coeff(int narg, char **arg) {
   for (int i = 1; i <= ntypes; i++) {
     for (int j = i; j <= ntypes; j++) {
       setflag[i][j] = 1;
-      cutsq[i][j] = cutsq_global_;
+      cutsq[i][j] = request_cutsq_global_;
       setflag[j][i] = 1;
-      cutsq[j][i] = cutsq_global_;
+      cutsq[j][i] = request_cutsq_global_;
     }
   }
 
@@ -311,7 +331,7 @@ void PairMFFTorch::init_style() {
     neighbor->add_request(this, NeighConst::REQ_FULL);  // 1x halo: default ghost cutoff is enough
   } else {
     neighbor->add_request(this, NeighConst::REQ_FULL | NeighConst::REQ_GHOST);
-    const double halo = static_cast<double>(mp_depth_) * cut_global_;
+    const double halo = std::max(static_cast<double>(mp_depth_) * cut_global_, request_cut_global_);
     if (comm->cutghostuser < halo) comm->cutghostuser = halo;
   }
 
@@ -361,7 +381,7 @@ void PairMFFTorch::init_style() {
 }
 
 double PairMFFTorch::init_one(int i, int j) {
-  return cut_global_;
+  return request_cut_global_;
 }
 
 void PairMFFTorch::validate_external_field_configuration() {
@@ -579,6 +599,15 @@ void PairMFFTorch::compute(int eflag, int vflag) {
   double **x = atom->x;
   double **f = atom->f;
   int *type = atom->type;
+  tagint *tag = atom->tag;
+
+  std::unordered_map<tagint, int> local_owner_by_tag;
+  if (fold_mode_) {
+    local_owner_by_tag.reserve(static_cast<size_t>(std::max(nlocal, 0)));
+    for (int i = 0; i < nlocal; ++i) {
+      local_owner_by_tag[tag[i]] = i;
+    }
+  }
 
   // Build type->Z mapped A (CPU then move to engine device).
   // Reuse persistent buffers to avoid heap allocation every step.
@@ -632,6 +661,7 @@ void PairMFFTorch::compute(int eflag, int vflag) {
   }
 
   // Count edges (upper bound) and build edges + lattice shifts (reuse persistent buffers).
+  const bool use_dispersion_edges = dispersion_cut_global_ > 0.0;
   if (fold_mode_) {
     // FOLD (single rank): edges from every local center i to its neighbours, each neighbour folded to
     // its LOCAL owner jl + integer cell offset g (x[j]=x[jl]+g@cell). Edge (src=jl, dst=i, shift=-g) ->
@@ -643,9 +673,17 @@ void PairMFFTorch::compute(int eflag, int vflag) {
     buf_edge_src_cpu_.clear();
     buf_edge_dst_cpu_.clear();
     buf_edge_shifts_cpu_.clear();
+    buf_disp_edge_src_cpu_.clear();
+    buf_disp_edge_dst_cpu_.clear();
+    buf_disp_edge_shifts_cpu_.clear();
     buf_edge_src_cpu_.reserve(static_cast<size_t>(Emax));
     buf_edge_dst_cpu_.reserve(static_cast<size_t>(Emax));
     buf_edge_shifts_cpu_.reserve(static_cast<size_t>(Emax) * 3);
+    if (use_dispersion_edges) {
+      buf_disp_edge_src_cpu_.reserve(static_cast<size_t>(Emax));
+      buf_disp_edge_dst_cpu_.reserve(static_cast<size_t>(Emax));
+      buf_disp_edge_shifts_cpu_.reserve(static_cast<size_t>(Emax) * 3);
+    }
     for (int ii = 0; ii < inum; ii++) {
       int i = ilist[ii];
       int jnum = numneigh[i];
@@ -664,19 +702,37 @@ void PairMFFTorch::compute(int eflag, int vflag) {
         const double delx = rawx + sx * geom.cell[0][0] + sy * geom.cell[1][0] + sz * geom.cell[2][0];
         const double dely = rawy + sx * geom.cell[0][1] + sy * geom.cell[1][1] + sz * geom.cell[2][1];
         const double delz = rawz + sx * geom.cell[0][2] + sy * geom.cell[1][2] + sz * geom.cell[2][2];
-        if (delx * delx + dely * dely + delz * delz > cutsq_global_) continue;
-        const int jl = atom->map(atom->tag[j]);
+        const double rsq = delx * delx + dely * dely + delz * delz;
+        if (rsq > cutsq_global_ && (!use_dispersion_edges || rsq > dispersion_cutsq_global_)) continue;
+        const auto owner_it = local_owner_by_tag.find(tag[j]);
+        if (owner_it == local_owner_by_tag.end()) continue;
+        const int jl = owner_it->second;
         const double dxl = x[j][0] - x[jl][0];
         const double dyl = x[j][1] - x[jl][1];
         const double dzl = x[j][2] - x[jl][2];
         const int gx = nearest_int(dxl * geom.inv[0][0] + dyl * geom.inv[1][0] + dzl * geom.inv[2][0]);
         const int gy = nearest_int(dxl * geom.inv[0][1] + dyl * geom.inv[1][1] + dzl * geom.inv[2][1]);
         const int gz = nearest_int(dxl * geom.inv[0][2] + dyl * geom.inv[1][2] + dzl * geom.inv[2][2]);
-        buf_edge_src_cpu_.push_back(static_cast<int64_t>(jl));
-        buf_edge_dst_cpu_.push_back(static_cast<int64_t>(i));
-        buf_edge_shifts_cpu_.push_back(static_cast<float>(-gx));
-        buf_edge_shifts_cpu_.push_back(static_cast<float>(-gy));
-        buf_edge_shifts_cpu_.push_back(static_cast<float>(-gz));
+        const int out_sx = -(gx + sx);
+        const int out_sy = -(gy + sy);
+        const int out_sz = -(gz + sz);
+        if (rsq <= cutsq_global_) {
+          buf_edge_src_cpu_.push_back(static_cast<int64_t>(jl));
+          buf_edge_dst_cpu_.push_back(static_cast<int64_t>(i));
+          buf_edge_shifts_cpu_.push_back(static_cast<float>(out_sx));
+          buf_edge_shifts_cpu_.push_back(static_cast<float>(out_sy));
+          buf_edge_shifts_cpu_.push_back(static_cast<float>(out_sz));
+        }
+        // MBD/SLQ-MBD consumes an undirected oscillator graph. Keep only one
+        // canonical orientation; the Python term would zero the reverse half
+        // anyway, and AOTI's dynamic sparse path is more stable with this form.
+        if (use_dispersion_edges && rsq <= dispersion_cutsq_global_ && jl < i) {
+          buf_disp_edge_src_cpu_.push_back(static_cast<int64_t>(jl));
+          buf_disp_edge_dst_cpu_.push_back(static_cast<int64_t>(i));
+          buf_disp_edge_shifts_cpu_.push_back(static_cast<float>(out_sx));
+          buf_disp_edge_shifts_cpu_.push_back(static_cast<float>(out_sy));
+          buf_disp_edge_shifts_cpu_.push_back(static_cast<float>(out_sz));
+        }
       }
     }
   } else {
@@ -714,9 +770,17 @@ void PairMFFTorch::compute(int eflag, int vflag) {
   buf_edge_src_cpu_.clear();
   buf_edge_dst_cpu_.clear();
   buf_edge_shifts_cpu_.clear();
+  buf_disp_edge_src_cpu_.clear();
+  buf_disp_edge_dst_cpu_.clear();
+  buf_disp_edge_shifts_cpu_.clear();
   buf_edge_src_cpu_.reserve(static_cast<size_t>(Emax));
   buf_edge_dst_cpu_.reserve(static_cast<size_t>(Emax));
   buf_edge_shifts_cpu_.reserve(static_cast<size_t>(Emax) * 3);
+  if (use_dispersion_edges) {
+    buf_disp_edge_src_cpu_.reserve(static_cast<size_t>(Emax));
+    buf_disp_edge_dst_cpu_.reserve(static_cast<size_t>(Emax));
+    buf_disp_edge_shifts_cpu_.reserve(static_cast<size_t>(Emax) * 3);
+  }
 
   for (int ii = 0; ii < ncenters; ii++) {
     int i = ilist[ii];
@@ -741,7 +805,7 @@ void PairMFFTorch::compute(int eflag, int vflag) {
       const double dely = rawy + shifty;
       const double delz = rawz + shiftz;
       const double rsq = delx * delx + dely * dely + delz * delz;
-      if (rsq > cutsq_global_) continue;
+      if (rsq > cutsq_global_ && (!use_dispersion_edges || rsq > dispersion_cutsq_global_)) continue;
 
       // Edge: neighbor j -> center i (the model puts edge features on edge_src and scatters into
       // edge_dst, so the CENTER must be the dst). j keeps its (possibly ghost) index -- ghosts are
@@ -750,17 +814,73 @@ void PairMFFTorch::compute(int eflag, int vflag) {
       // halo), so shift = -(sx,sy,sz) is the robust value (0 for ghost edges). This is the convention
       // the model was trained with (center aggregates neighbours) and is correct under MPI domain
       // decomposition because j's features come from j-as-a-center, not from a cross-rank owner.
-      buf_edge_src_cpu_.push_back(static_cast<int64_t>(j));
-      buf_edge_dst_cpu_.push_back(static_cast<int64_t>(i));
-      buf_edge_shifts_cpu_.push_back(static_cast<float>(-sx));
-      buf_edge_shifts_cpu_.push_back(static_cast<float>(-sy));
-      buf_edge_shifts_cpu_.push_back(static_cast<float>(-sz));
+      if (rsq <= cutsq_global_) {
+        buf_edge_src_cpu_.push_back(static_cast<int64_t>(j));
+        buf_edge_dst_cpu_.push_back(static_cast<int64_t>(i));
+        buf_edge_shifts_cpu_.push_back(static_cast<float>(-sx));
+        buf_edge_shifts_cpu_.push_back(static_cast<float>(-sy));
+        buf_edge_shifts_cpu_.push_back(static_cast<float>(-sz));
+      }
+      // MBD/SLQ-MBD consumes an undirected oscillator graph. Keep only one
+      // canonical orientation; the Python term would zero the reverse half
+      // anyway, and AOTI's dynamic sparse path is more stable with this form.
+      if (use_dispersion_edges && rsq <= dispersion_cutsq_global_ && j < i) {
+        buf_disp_edge_src_cpu_.push_back(static_cast<int64_t>(j));
+        buf_disp_edge_dst_cpu_.push_back(static_cast<int64_t>(i));
+        buf_disp_edge_shifts_cpu_.push_back(static_cast<float>(-sx));
+        buf_disp_edge_shifts_cpu_.push_back(static_cast<float>(-sy));
+        buf_disp_edge_shifts_cpu_.push_back(static_cast<float>(-sz));
+      }
     }
   }
   }  // end else (refined-A multi-rank path)
 
   const int64_t E = static_cast<int64_t>(buf_edge_src_cpu_.size());
-  if (E <= 1) return;
+  const int64_t Edisp = use_dispersion_edges ? static_cast<int64_t>(buf_disp_edge_src_cpu_.size()) : 0;
+  if (E <= 1 && (!use_dispersion_edges || Edisp <= 1)) return;
+  auto validate_edge_bounds = [&](const std::vector<int64_t>& src, const std::vector<int64_t>& dst,
+                                  const char* label) {
+    for (size_t k = 0; k < src.size(); ++k) {
+      if (src[k] < 0 || src[k] >= n_model || dst[k] < 0 || dst[k] >= n_model) {
+        error->all(FLERR,
+                   (std::string("mff/torch built out-of-range ") + label + " edge at " +
+                    std::to_string(k) + ": src=" + std::to_string(src[k]) +
+                    " dst=" + std::to_string(dst[k]) + " n_model=" + std::to_string(n_model) +
+                    " nlocal=" + std::to_string(nlocal) + " ntotal=" + std::to_string(ntotal))
+                       .c_str());
+      }
+    }
+  };
+  if (std::getenv("MFF_VALIDATE_GRAPH")) {
+    validate_edge_bounds(buf_edge_src_cpu_, buf_edge_dst_cpu_, "main");
+    if (use_dispersion_edges) {
+      validate_edge_bounds(buf_disp_edge_src_cpu_, buf_disp_edge_dst_cpu_, "dispersion");
+    }
+  }
+  if (std::getenv("MFF_DUMP_GRAPH")) {
+    std::ofstream dbg("/tmp/mff_pair_edges.txt");
+    dbg << "n_model " << n_model << " nlocal " << nlocal << " ntotal " << ntotal
+        << " E " << E << " Edisp " << Edisp << "\n";
+    dbg << "atoms\n";
+    for (int i = 0; i < n_model; ++i) {
+      dbg << i << " " << buf_A_cpu_[static_cast<size_t>(i)] << " "
+          << buf_pos_cpu_[static_cast<size_t>(i) * 3 + 0] << " "
+          << buf_pos_cpu_[static_cast<size_t>(i) * 3 + 1] << " "
+          << buf_pos_cpu_[static_cast<size_t>(i) * 3 + 2] << "\n";
+    }
+    dbg << "main\n";
+    for (size_t k = 0; k < std::min<size_t>(buf_edge_src_cpu_.size(), 64); ++k) {
+      dbg << k << " " << buf_edge_src_cpu_[k] << " " << buf_edge_dst_cpu_[k] << " "
+          << buf_edge_shifts_cpu_[3 * k + 0] << " " << buf_edge_shifts_cpu_[3 * k + 1] << " "
+          << buf_edge_shifts_cpu_[3 * k + 2] << "\n";
+    }
+    dbg << "dispersion\n";
+    for (size_t k = 0; k < std::min<size_t>(buf_disp_edge_src_cpu_.size(), 64); ++k) {
+      dbg << k << " " << buf_disp_edge_src_cpu_[k] << " " << buf_disp_edge_dst_cpu_[k] << " "
+          << buf_disp_edge_shifts_cpu_[3 * k + 0] << " " << buf_disp_edge_shifts_cpu_[3 * k + 1] << " "
+          << buf_disp_edge_shifts_cpu_[3 * k + 2] << "\n";
+    }
+  }
 
   // Reuse persistent torch tensors; only reallocate when sizes change.
   if (cached_compute_ntotal_ != static_cast<int64_t>(n_model)) {
@@ -774,6 +894,12 @@ void PairMFFTorch::compute(int eflag, int vflag) {
     cached_edge_shifts_t_ = torch::empty({E, 3}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU));
     cached_compute_nedges_ = E;
   }
+  if (cached_compute_disp_nedges_ != Edisp) {
+    cached_disp_edge_src_t_ = torch::empty({Edisp}, torch::TensorOptions().dtype(torch::kInt64).device(torch::kCPU));
+    cached_disp_edge_dst_t_ = torch::empty({Edisp}, torch::TensorOptions().dtype(torch::kInt64).device(torch::kCPU));
+    cached_disp_edge_shifts_t_ = torch::empty({Edisp, 3}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU));
+    cached_compute_disp_nedges_ = Edisp;
+  }
   std::memcpy(cached_pos_t_.data_ptr<float>(), buf_pos_cpu_.data(),
               static_cast<size_t>(n_model) * 3 * sizeof(float));
   std::memcpy(cached_A_t_.data_ptr<int64_t>(), buf_A_cpu_.data(),
@@ -784,6 +910,14 @@ void PairMFFTorch::compute(int eflag, int vflag) {
               static_cast<size_t>(E) * sizeof(int64_t));
   std::memcpy(cached_edge_shifts_t_.data_ptr<float>(), buf_edge_shifts_cpu_.data(),
               static_cast<size_t>(E) * 3 * sizeof(float));
+  if (Edisp > 0) {
+    std::memcpy(cached_disp_edge_src_t_.data_ptr<int64_t>(), buf_disp_edge_src_cpu_.data(),
+                static_cast<size_t>(Edisp) * sizeof(int64_t));
+    std::memcpy(cached_disp_edge_dst_t_.data_ptr<int64_t>(), buf_disp_edge_dst_cpu_.data(),
+                static_cast<size_t>(Edisp) * sizeof(int64_t));
+    std::memcpy(cached_disp_edge_shifts_t_.data_ptr<float>(), buf_disp_edge_shifts_cpu_.data(),
+                static_cast<size_t>(Edisp) * 3 * sizeof(float));
+  }
   auto external_tensor_t = current_external_tensor(torch::kCPU);
   auto fidelity_ids_t = current_fidelity_tensor(torch::kCPU);
 
@@ -792,7 +926,8 @@ void PairMFFTorch::compute(int eflag, int vflag) {
   try {
     out = engine_->compute(nlocal, n_model, cached_pos_t_, cached_A_t_,
                            cached_edge_src_t_, cached_edge_dst_t_, cached_edge_shifts_t_,
-                           cell_t, external_tensor_t, fidelity_ids_t,
+                           cell_t, cached_disp_edge_src_t_, cached_disp_edge_dst_t_, cached_disp_edge_shifts_t_,
+                           external_tensor_t, fidelity_ids_t,
                            static_cast<bool>(eflag), want_atom_virial);
   } catch (const std::exception &e) {
     error->all(FLERR, (std::string("mff/torch engine compute failed: ") + e.what()).c_str());
@@ -825,11 +960,21 @@ void PairMFFTorch::compute(int eflag, int vflag) {
           geom,
           static_cast<bool>(eflag),
           reciprocal_device);
-      reciprocal_out = use_tree_fmm ? tree_fmm_solver_->compute(reciprocal_inputs)
-                                    : reciprocal_solver_->compute(reciprocal_inputs);
-    } catch (const std::exception &e) {
-      error->all(FLERR, (std::string("mff/torch runtime long-range solver failed: ") + e.what()).c_str());
-    }
+	      if (std::getenv("MFF_RECIPROCAL_MULTIPOLE_AUTOGRAD")) {
+	        reciprocal_out = use_tree_fmm ? tree_fmm_solver_->compute(reciprocal_inputs)
+	                                      : reciprocal_solver_->compute(reciprocal_inputs);
+	      } else {
+	        c10::InferenceMode reciprocal_inference_guard(true);
+	        reciprocal_out = use_tree_fmm ? tree_fmm_solver_->compute(reciprocal_inputs)
+	                                      : reciprocal_solver_->compute(reciprocal_inputs);
+	      }
+	      torch::GradMode::set_enabled(false);
+	      if (std::getenv("MFF_SYNC_AFTER_RECIPROCAL") && reciprocal_device.is_cuda()) {
+	        torch::cuda::synchronize();
+	      }
+	    } catch (const std::exception &e) {
+	      error->all(FLERR, (std::string("mff/torch runtime long-range solver failed: ") + e.what()).c_str());
+	    }
   }
 
   if (eflag) eng_vdwl += out.energy;

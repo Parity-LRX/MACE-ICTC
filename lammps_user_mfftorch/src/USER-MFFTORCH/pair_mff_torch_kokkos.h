@@ -49,6 +49,9 @@ class PairMFFTorchKokkos : public PairMFFTorch {
   torch::Tensor buf_edge_src_;
   torch::Tensor buf_edge_dst_;
   torch::Tensor buf_edge_shifts_;
+  torch::Tensor buf_disp_edge_src_;
+  torch::Tensor buf_disp_edge_dst_;
+  torch::Tensor buf_disp_edge_shifts_;
   torch::Tensor buf_pos_;
   torch::Tensor buf_type_idx_;
 

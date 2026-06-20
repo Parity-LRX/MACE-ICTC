@@ -52,6 +52,10 @@ class PairMFFTorch : public Pair {
 
   double cut_global_ = 0.0;
   double cutsq_global_ = 0.0;
+  double dispersion_cut_global_ = 0.0;
+  double dispersion_cutsq_global_ = 0.0;
+  double request_cut_global_ = 0.0;
+  double request_cutsq_global_ = 0.0;
   // Message-passing depth (num_interaction). The ghost halo is extended to mp_depth_*cutoff so each
   // local atom's full K-hop environment is present -> correct under MPI domain decomposition.
   int mp_depth_ = 2;
@@ -99,15 +103,22 @@ class PairMFFTorch : public Pair {
   std::vector<int64_t> buf_edge_src_cpu_;
   std::vector<int64_t> buf_edge_dst_cpu_;
   std::vector<float> buf_edge_shifts_cpu_;
+  std::vector<int64_t> buf_disp_edge_src_cpu_;
+  std::vector<int64_t> buf_disp_edge_dst_cpu_;
+  std::vector<float> buf_disp_edge_shifts_cpu_;
 
   // Persistent torch tensors (avoid from_blob().clone() every step).
   int64_t cached_compute_ntotal_ = 0;
   int64_t cached_compute_nedges_ = 0;
+  int64_t cached_compute_disp_nedges_ = 0;
   torch::Tensor cached_pos_t_;
   torch::Tensor cached_A_t_;
   torch::Tensor cached_edge_src_t_;
   torch::Tensor cached_edge_dst_t_;
   torch::Tensor cached_edge_shifts_t_;
+  torch::Tensor cached_disp_edge_src_t_;
+  torch::Tensor cached_disp_edge_dst_t_;
+  torch::Tensor cached_disp_edge_shifts_t_;
   torch::Tensor cached_cell_t_;
 };
 
