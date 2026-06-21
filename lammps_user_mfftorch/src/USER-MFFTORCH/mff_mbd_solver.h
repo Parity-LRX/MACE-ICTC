@@ -115,7 +115,10 @@ class MFFMBDSolver {
       const torch::Tensor& x, const torch::Tensor& omega, const torch::Tensor& alpha,
       const torch::Tensor& pos, const torch::Tensor& cell, double alpha_ewald,
       const torch::Tensor& src, const torch::Tensor& dst, const torch::Tensor& shifts,
-      const torch::Device& device) const;
+      const torch::Device& device, const torch::Tensor& W = {}) const;
+
+  // Per-atom 3x3 coupling factor W = omega*B from an [N,8] anisotropic source ([N,2] -> undefined).
+  torch::Tensor build_W(const torch::Tensor& src, const torch::Tensor& omega) const;
 
   // vectorized assignment: flat mesh indices [N,S^3] (long) + stencil weights [N,S^3] for one
   // scatter_add/gather (instead of an S^3 launch loop) -- the GPU hot-path win.

@@ -1102,15 +1102,14 @@ def ictd_l2_to_rank2(c: torch.Tensor) -> torch.Tensor:
     B = _harmonic_basis_t(2, device=c.device, dtype=c.dtype)  # (6, 5)
     t = torch.einsum("dm,...m->...d", B, c)  # (..., 6) monomial coeffs
     # t order: [zz, yz, yy, xz, xy, xx]. Multinomial: xy,xz,yz have factor 2.
-    # T_ij from polynomial: T[0,1]=coef_xy/2, etc.
-    T = torch.zeros(*c.shape[:-1], 3, 3, device=c.device, dtype=c.dtype)
-    T[..., 0, 0] = t[..., 5]
-    T[..., 0, 1] = T[..., 1, 0] = t[..., 4] * 0.5
-    T[..., 0, 2] = T[..., 2, 0] = t[..., 3] * 0.5
-    T[..., 1, 1] = t[..., 2]
-    T[..., 1, 2] = T[..., 2, 1] = t[..., 1] * 0.5
-    T[..., 2, 2] = t[..., 0]
-    return T
+    # T_ij from polynomial: T[0,1]=coef_xy/2, etc.  Built with stack (not in-place index on a
+    # symbolic-shape zeros) so torch.export/AOTInductor codegens it without a segfault.
+    t0, t1, t2, t3, t4, t5 = (t[..., i] for i in range(6))  # zz, yz, yy, xz, xy, xx
+    h_xy, h_xz, h_yz = t4 * 0.5, t3 * 0.5, t1 * 0.5
+    row0 = torch.stack([t5, h_xy, h_xz], dim=-1)   # [T00, T01, T02]
+    row1 = torch.stack([h_xy, t2, h_yz], dim=-1)   # [T10, T11, T12]
+    row2 = torch.stack([h_xz, h_yz, t0], dim=-1)   # [T20, T21, T22]
+    return torch.stack([row0, row1, row2], dim=-2)  # (..., 3, 3) symmetric traceless
 
 
 @dataclass(frozen=True)

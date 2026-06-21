@@ -959,11 +959,19 @@ class ManyBodyDispersionSLQ(nn.Module):
         self.omega_head = nn.Sequential(
             nn.Linear(self.feature_dim, hidden_dim), nn.SiLU(), nn.Linear(hidden_dim, 1)
         )
+        # AOTInductor-safe constants as buffers: a buffer moves with module.to(device) and the export
+        # treats it as an on-device input, whereas torch.eye(...,device=) / _harmonic_basis (built on CPU
+        # then .to'd) get const-folded onto CPU -> the GPU Triton kernels can't read them ("cpu tensor"
+        # autotuning failure). Non-persistent: not in the state_dict (no checkpoint-compat change).
+        self.register_buffer("_eye3", torch.eye(3, dtype=torch.float64), persistent=False)
         if self.anisotropic_polarizability:
             # equivariant l=2 readout: channel-mix the l=2 node block -> one l=2 tensor (5D), then
             # ictd_l2_to_rank2 -> 3x3 traceless symmetric anisotropy; an l=0 gate bounds it for PD.
             self.l2_mix = nn.Linear(self.feature_dim, 1, bias=False)
             self.l2_gate = nn.Linear(self.feature_dim, 1)
+            # 5 basis matrices: ictd_l2_to_rank2(c) == einsum("nk,kij->nij", c, l2_basis) by linearity.
+            self.register_buffer(
+                "_l2_basis", ictd_l2_to_rank2(torch.eye(5, dtype=torch.float64)), persistent=False)
         self.coupling_scale = nn.Parameter(torch.tensor(0.03))
         self.beta_raw = nn.Parameter(torch.tensor(1.0))
 
@@ -973,11 +981,11 @@ class ManyBodyDispersionSLQ(nn.Module):
         traceless) bounded so ||D|| < gate < 1 (PD guaranteed). Equivariant: B(R) = R B R^T."""
         # b0 = sqrt(alpha_iso): the isotropic code uses wsa=omega*sqrt(alpha), so the factor B=sqrt(alpha)*I.
         b0 = (F.softplus(self.alpha_head(node_feats)).squeeze(-1) + self.alpha_floor).sqrt()  # [N]
-        eye = torch.eye(3, dtype=node_feats.dtype, device=node_feats.device)
+        eye = self._eye3.to(node_feats.dtype)                                          # [3,3] on-device buffer
         if not self.anisotropic_polarizability or l2_feats is None:
             return b0.view(-1, 1, 1) * eye                                            # [N,3,3] isotropic
         t = self.l2_mix(l2_feats.transpose(1, 2)).squeeze(-1)                          # [N,5] one l=2 tensor
-        d_raw = ictd_l2_to_rank2(t)                                                    # [N,3,3] traceless sym, equivariant
+        d_raw = torch.einsum("nk,kij->nij", t, self._l2_basis.to(t.dtype))             # [N,3,3] traceless sym, equivariant
         gate = 0.9 * torch.sigmoid(self.l2_gate(node_feats)).squeeze(-1)              # [N] in (0, 0.9)
         dn = d_raw.flatten(1).norm(dim=1).clamp_min(1e-9)                              # [N]
         D = (gate / (1.0 + dn)).view(-1, 1, 1) * d_raw                                 # ||D||_F < gate < 1
@@ -988,12 +996,13 @@ class ManyBodyDispersionSLQ(nn.Module):
         C++ (no double count). Isotropic: [omega, alpha] [N,2]. Anisotropic: [omega, Bxx,Byy,Bzz,Bxy,Bxz,Byz]
         [N,7] -- the 6 unique components of the symmetric factor B=alpha^{1/2}. Mirrors forward()."""
         omega = F.softplus(self.omega_head(node_feats)).squeeze(-1) + self.omega_floor
+        alpha = F.softplus(self.alpha_head(node_feats)).squeeze(-1) + self.alpha_floor    # alpha_iso (=b0^2)
         if not self.anisotropic_polarizability:
-            alpha = F.softplus(self.alpha_head(node_feats)).squeeze(-1) + self.alpha_floor
             return torch.stack([omega, alpha], dim=-1)                                    # [N,2]
-        b = self.polarizability_factor(node_feats, l2_feats)                              # [N,3,3] sym B
-        return torch.stack([omega, b[:, 0, 0], b[:, 1, 1], b[:, 2, 2],
-                            b[:, 0, 1], b[:, 0, 2], b[:, 1, 2]], dim=-1)                  # [N,7]
+        b = self.polarizability_factor(node_feats, l2_feats)                              # [N,3,3] sym B=alpha^{1/2}
+        # [omega, alpha_iso (for the damping radius), 6 unique B components] -- the C++ rebuilds W=omega*B.
+        return torch.stack([omega, alpha, b[:, 0, 0], b[:, 1, 1], b[:, 2, 2],
+                            b[:, 0, 1], b[:, 0, 2], b[:, 1, 2]], dim=-1)                  # [N,8]
 
     def mbd_beta(self) -> float:
         return float(F.softplus(self.beta_raw) + 1.0e-6)

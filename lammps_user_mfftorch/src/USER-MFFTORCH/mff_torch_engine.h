@@ -92,6 +92,7 @@ class MFFTorchEngine {
   double dispersion_cutoff() const { return dispersion_cutoff_; }
   bool long_range_mbd_source_enabled() const { return long_range_mbd_source_enabled_; }
   int64_t long_range_mbd_source_offset() const { return long_range_mbd_source_offset_; }
+  int64_t long_range_mbd_source_channels() const { return long_range_mbd_source_channels_; }
   double long_range_mbd_beta() const { return long_range_mbd_beta_; }
   double long_range_mbd_coupling_scale() const { return long_range_mbd_coupling_scale_; }
   // pme_fft deploy: the MBD solver runs the reciprocal-only PME operator (use_fft) with the SAME mesh/
@@ -215,6 +216,7 @@ class MFFTorchEngine {
   double dispersion_cutoff_ = 0.0;
   bool long_range_mbd_source_enabled_ = false;
   int64_t long_range_mbd_source_offset_ = 0;
+  int64_t long_range_mbd_source_channels_ = 2;
   double long_range_mbd_beta_ = 1.0;
   double long_range_mbd_coupling_scale_ = 1.0;
   int mbd_pme_mesh_size_ = 16;

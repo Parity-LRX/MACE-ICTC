@@ -164,12 +164,28 @@ torch::Tensor MFFMBDSolver::coupled_matvec(
     const torch::Tensor& x, const torch::Tensor& omega, const torch::Tensor& alpha,
     const torch::Tensor& pos, const torch::Tensor& cell, double alpha_ewald,
     const torch::Tensor& src, const torch::Tensor& dst, const torch::Tensor& shifts,
-    const torch::Device& device) const {
-  auto wsa = (omega * alpha.clamp_min(0).sqrt()).unsqueeze(-1);             // [N,1]
-  // off-diagonal C_ij = coupling_scale * w_i w_j sqrt(a_i a_j) damp(r) T_ij ; damp via dipole_field.
-  auto fld = dipole_field(pos, wsa * x, cell, alpha_ewald, src, dst, shifts, device,
+    const torch::Device& device, const torch::Tensor& W) const {
+  // Off-diagonal C_ij = coupling_scale * damp(r) * W_i T_ij W_j  (W = omega*alpha^{1/2}). ANISOTROPIC: W is
+  // a per-atom 3x3 (mu_i = W_i x_i, matmul). ISOTROPIC: W undefined -> scalar wsa = omega*sqrt(alpha).
+  const bool aniso = W.defined();
+  auto wsa = aniso ? torch::Tensor() : (omega * alpha.clamp_min(0).sqrt()).unsqueeze(-1);   // [N,1]
+  auto mu = aniso ? torch::matmul(W, x.unsqueeze(-1)).squeeze(-1) : (wsa * x);
+  auto fld = dipole_field(pos, mu, cell, alpha_ewald, src, dst, shifts, device,
                           alpha, config_.mbd_beta, config_.damping);
-  return (omega.unsqueeze(-1) * omega.unsqueeze(-1)) * x + config_.coupling_scale * wsa * fld;
+  auto coupled = aniso ? torch::matmul(W, fld.unsqueeze(-1)).squeeze(-1) : (wsa * fld);
+  return (omega.unsqueeze(-1) * omega.unsqueeze(-1)) * x + config_.coupling_scale * coupled;
+}
+
+// Reconstruct the per-atom coupling factor W = omega * B from an [N,8] anisotropic source
+// [omega, alpha_iso, Bxx,Byy,Bzz,Bxy,Bxz,Byz]; returns an undefined tensor for an isotropic [N,2] source.
+torch::Tensor MFFMBDSolver::build_W(const torch::Tensor& src, const torch::Tensor& omega) const {
+  if (src.size(1) < 8) return {};
+  auto Bxx = src.select(1, 2), Byy = src.select(1, 3), Bzz = src.select(1, 4);
+  auto Bxy = src.select(1, 5), Bxz = src.select(1, 6), Byz = src.select(1, 7);
+  auto r0 = torch::stack({Bxx, Bxy, Bxz}, 1);
+  auto r1 = torch::stack({Bxy, Byy, Byz}, 1);
+  auto r2 = torch::stack({Bxz, Byz, Bzz}, 1);
+  return omega.view({-1, 1, 1}) * torch::stack({r0, r1, r2}, 1);   // [N,3,3]
 }
 
 double MFFMBDSolver::mbd_energy_dense(
@@ -180,13 +196,14 @@ double MFFMBDSolver::mbd_energy_dense(
   const int N = global_pos.size(0), n = 3 * N;
   auto omega = mbd_source.select(1, 0).contiguous();
   auto alpha = mbd_source.select(1, 1).contiguous();
+  auto W = build_W(mbd_source, omega);                // anisotropic [N,3,3] (undefined for isotropic [N,2])
   double Lmin = torch::linalg_vector_norm(cell.to(torch::kFloat64), 2, 1).min().item<double>();
   double alpha_ew = (alpha_ewald > 0.0) ? alpha_ewald : config_.ewald_alpha_prefactor / (0.5 * Lmin);
   auto opt = torch::TensorOptions().dtype(torch::kFloat64).device(device);
   std::vector<torch::Tensor> cols;
   for (int i = 0; i < n; ++i) {
     auto e = torch::zeros({n}, opt); e[i] = 1.0;
-    cols.push_back(coupled_matvec(e.view({N, 3}), omega, alpha, global_pos, cell, alpha_ew, src, dst, shifts, device)
+    cols.push_back(coupled_matvec(e.view({N, 3}), omega, alpha, global_pos, cell, alpha_ew, src, dst, shifts, device, W)
                        .reshape({-1}));
   }
   auto C = torch::stack(cols, 1);                  // [n,n], column i = C.e_i
@@ -204,7 +221,8 @@ torch::Tensor MFFMBDSolver::mbd_energy(
   const int N = global_pos.size(0);
   const int n = 3 * N;
   auto omega = mbd_source.select(1, 0).contiguous();   // [N]
-  auto alpha = mbd_source.select(1, 1).contiguous();   // [N]
+  auto alpha = mbd_source.select(1, 1).contiguous();   // [N]  (isotropic alpha, or alpha_iso for the damping)
+  auto W = build_W(mbd_source, omega);                 // anisotropic [N,3,3] (undefined for isotropic [N,2])
   // alpha (Ewald) = prefactor / (0.5 * min periodic box length)
   auto rownorm = torch::linalg_vector_norm(cell.to(torch::kFloat64), 2, 1);
   double Lmin = rownorm.min().item<double>();
@@ -212,7 +230,7 @@ torch::Tensor MFFMBDSolver::mbd_energy(
 
   auto mv = [&](const torch::Tensor& v) {
     // v is [n] (one vector) or [P,n] (P probes) -> [.,N,3] -> coupled matvec -> back to v's shape.
-    auto y = coupled_matvec(v.reshape({-1, N, 3}), omega, alpha, global_pos, cell, alpha_ew, src, dst, shifts, device);
+    auto y = coupled_matvec(v.reshape({-1, N, 3}), omega, alpha, global_pos, cell, alpha_ew, src, dst, shifts, device, W);
     return y.reshape(v.sizes());
   };
 

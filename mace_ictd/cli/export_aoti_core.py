@@ -127,7 +127,7 @@ def _long_range_deploy_metadata(
         # reads source[:, offset:offset+channels] and uses these learned damping params.
         "long_range_mbd_source_enabled": mbd_source_enabled,
         "long_range_mbd_source_offset": int(getattr(model, "long_range_mbd_source_offset", 0)),
-        "long_range_mbd_source_channels": 2,
+        "long_range_mbd_source_channels": int(getattr(model, "long_range_mbd_source_channels", 2)),
         "long_range_mbd_beta": _mbd_beta,
         "long_range_mbd_coupling_scale": _mbd_cs,
     }
@@ -628,6 +628,8 @@ def main() -> int:
                    choices=["edge_sparse", "pme_fft"],
                    help="synthetic combined export: MBD-SLQ operator backend (edge_sparse=direct cutoff sum; "
                         "pme_fft=reciprocal-only PME). Deploy runs the matching C++ MBD operator.")
+    p.add_argument("--mbd-anisotropic", dest="mbd_anisotropic_arg", action="store_true",
+                   help="synthetic combined export: anisotropic (l=2 tensor) polarizability -> [N,8] MBD source.")
     p.add_argument("--out", default="/tmp/fscetp_aoti.pt2")
     p.add_argument("--fallback", default=None,
                    help="path to an N-flexible TorchScript core (.pt) the LAMMPS engine should fall back to "
@@ -766,6 +768,8 @@ def main() -> int:
                              dispersion_cutoff=args.dispersion_cutoff_arg, mbd_pme_mesh_size=args.lr_mesh_size_arg)
             if args.mbd_operator_backend_arg:
                 _lr_extra.update(mbd_operator_backend=args.mbd_operator_backend_arg)
+            if getattr(args, "mbd_anisotropic_arg", False):
+                _lr_extra.update(mbd_anisotropic_polarizability=True)
         if _lr_extra:
             print(f"[aoti] synthetic combined export extras: {sorted(_lr_extra)}")
         model = build_model(

@@ -1135,10 +1135,12 @@ void PairMFFTorch::compute(int eflag, int vflag) {
       // Chebyshev bounds (cfg.cheb_lmin/lmax) skip the power-iteration .item() syncs.
       const auto mbd_device = engine_->device();
       torch::Tensor mbd_source;
+      const int64_t mbd_chan = engine_->long_range_mbd_source_channels();   // 2 isotropic, 8 anisotropic
       if (engine_->long_range_mbd_source_enabled() && out.reciprocal_source.defined()
-          && out.reciprocal_source.size(1) >= elec_width + 2) {
-        // DEPLOY: the model emitted (omega, alpha) packed after the electrostatic source [elec | w,a].
-        mbd_source = out.reciprocal_source.narrow(0, 0, nlocal).narrow(1, elec_width, 2)
+          && out.reciprocal_source.size(1) >= elec_width + mbd_chan) {
+        // DEPLOY: the model emitted the MBD source packed after the electrostatic source [elec | omega,alpha
+        // (,B...)]. Width 2 = isotropic, 8 = anisotropic ([omega, alpha_iso, 6*B]); the solver rebuilds W.
+        mbd_source = out.reciprocal_source.narrow(0, 0, nlocal).narrow(1, elec_width, mbd_chan)
                          .to(mbd_device, torch::kFloat32).contiguous();
       } else {
         // env-gated demo (MFF_MBD_TEST): (omega, alpha) from atom types (built on host, moved on-device)

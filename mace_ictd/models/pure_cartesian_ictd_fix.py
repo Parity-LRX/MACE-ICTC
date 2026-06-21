@@ -2700,6 +2700,8 @@ class PureCartesianICTDFix(nn.Module):
         self.long_range_mbd_source_enabled = bool(
             self.dispersion is not None and self.dispersion.exports_mbd_source()
         )
+        # MBD source width: isotropic [omega, alpha] = 2; anisotropic [omega, alpha_iso, 6*B] = 8.
+        self.long_range_mbd_source_channels = 8 if self.mbd_anisotropic_polarizability else 2
         _l = self.long_range_max_multipole_l
         self.long_range_mbd_source_offset = (
             int(getattr(self, "long_range_runtime_source_channels", 0))

@@ -628,6 +628,7 @@ void MFFTorchEngine::load_single_core_file(const std::string& core_pt_path) {
         (void)parse_double_from_metadata(content, "\"dispersion_cutoff\"", dispersion_cutoff_);
         (void)parse_bool_from_metadata(content, "\"long_range_mbd_source_enabled\"", long_range_mbd_source_enabled_);
         (void)parse_int64_from_metadata(content, "\"long_range_mbd_source_offset\"", long_range_mbd_source_offset_);
+        (void)parse_int64_from_metadata(content, "\"long_range_mbd_source_channels\"", long_range_mbd_source_channels_);
         (void)parse_double_from_metadata(content, "\"long_range_mbd_beta\"", long_range_mbd_beta_);
         (void)parse_double_from_metadata(content, "\"long_range_mbd_coupling_scale\"", long_range_mbd_coupling_scale_);
         { int64_t _mpm = mbd_pme_mesh_size_; (void)parse_int64_from_metadata(content, "\"mbd_pme_mesh_size\"", _mpm); mbd_pme_mesh_size_ = static_cast<int>(_mpm); }
@@ -761,6 +762,7 @@ void MFFTorchEngine::load_single_core_file(const std::string& core_pt_path) {
       (void)parse_double_from_metadata(content, "\"dispersion_cutoff\"", dispersion_cutoff_);
       (void)parse_bool_from_metadata(content, "\"long_range_mbd_source_enabled\"", long_range_mbd_source_enabled_);
       (void)parse_int64_from_metadata(content, "\"long_range_mbd_source_offset\"", long_range_mbd_source_offset_);
+      (void)parse_int64_from_metadata(content, "\"long_range_mbd_source_channels\"", long_range_mbd_source_channels_);
       (void)parse_double_from_metadata(content, "\"long_range_mbd_beta\"", long_range_mbd_beta_);
       (void)parse_double_from_metadata(content, "\"long_range_mbd_coupling_scale\"", long_range_mbd_coupling_scale_);
       { int64_t _mpm = mbd_pme_mesh_size_; (void)parse_int64_from_metadata(content, "\"mbd_pme_mesh_size\"", _mpm); mbd_pme_mesh_size_ = static_cast<int>(_mpm); }
