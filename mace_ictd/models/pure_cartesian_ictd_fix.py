@@ -3073,42 +3073,48 @@ class PureCartesianICTDFix(nn.Module):
                 disp_feat = _split_irreps(last_state, self.channels, self.lmax)[0].reshape(
                     last_state.shape[0], self.channels
                 )
-            disp_edge_src = edge_src
-            disp_edge_dst = edge_dst
-            disp_edge_length = edge_length
-            disp_edge_vec = edge_vec
-            disp_cutoff = self.dispersion_cutoff
-            if dispersion_edge_src is not None or dispersion_edge_dst is not None:
-                if dispersion_edge_src is None or dispersion_edge_dst is None:
-                    raise ValueError("dispersion_edge_src and dispersion_edge_dst must be provided together")
-                disp_edge_src = dispersion_edge_src
-                disp_edge_dst = dispersion_edge_dst
-                disp_cutoff = 0.0
-                if precomputed_dispersion_edge_vec is not None:
-                    disp_edge_vec = precomputed_dispersion_edge_vec
-                else:
-                    if dispersion_edge_shifts is None:
-                        raise ValueError(
-                            "dispersion_edge_shifts or precomputed_dispersion_edge_vec is required "
-                            "when explicit dispersion edges are provided"
-                        )
-                    disp_shift = dispersion_edge_shifts.to(dtype=dtype)
-                    disp_cells = cell[batch[disp_edge_dst]]
-                    disp_shift_vec = torch.einsum("ni,nij->nj", disp_shift, disp_cells)
-                    disp_edge_vec = pos[disp_edge_dst] - pos[disp_edge_src] + disp_shift_vec
-                disp_edge_length = disp_edge_vec.norm(dim=1)
-            out = out + self.dispersion(
-                disp_feat,
-                pos,
-                batch,
-                cell,
-                edge_src=disp_edge_src,
-                edge_dst=disp_edge_dst,
-                edge_lengths=disp_edge_length,
-                edge_vec=disp_edge_vec,
-                cutoff=disp_cutoff,
-                pbc=self.dispersion_pbc,
-            )
+            if return_reciprocal_source and self.dispersion.exports_mbd_source():
+                # Deploy: emit the head's (omega, alpha) as the MBD reciprocal_source and DEFER the
+                # coupled-dipole energy to the C++ MBD solver -- do NOT add self.dispersion(...) here,
+                # else the traced Python dispersion energy would be double-counted with the C++ one.
+                reciprocal_source = self.dispersion.emit_source(disp_feat)
+            else:
+                disp_edge_src = edge_src
+                disp_edge_dst = edge_dst
+                disp_edge_length = edge_length
+                disp_edge_vec = edge_vec
+                disp_cutoff = self.dispersion_cutoff
+                if dispersion_edge_src is not None or dispersion_edge_dst is not None:
+                    if dispersion_edge_src is None or dispersion_edge_dst is None:
+                        raise ValueError("dispersion_edge_src and dispersion_edge_dst must be provided together")
+                    disp_edge_src = dispersion_edge_src
+                    disp_edge_dst = dispersion_edge_dst
+                    disp_cutoff = 0.0
+                    if precomputed_dispersion_edge_vec is not None:
+                        disp_edge_vec = precomputed_dispersion_edge_vec
+                    else:
+                        if dispersion_edge_shifts is None:
+                            raise ValueError(
+                                "dispersion_edge_shifts or precomputed_dispersion_edge_vec is required "
+                                "when explicit dispersion edges are provided"
+                            )
+                        disp_shift = dispersion_edge_shifts.to(dtype=dtype)
+                        disp_cells = cell[batch[disp_edge_dst]]
+                        disp_shift_vec = torch.einsum("ni,nij->nj", disp_shift, disp_cells)
+                        disp_edge_vec = pos[disp_edge_dst] - pos[disp_edge_src] + disp_shift_vec
+                    disp_edge_length = disp_edge_vec.norm(dim=1)
+                out = out + self.dispersion(
+                    disp_feat,
+                    pos,
+                    batch,
+                    cell,
+                    edge_src=disp_edge_src,
+                    edge_dst=disp_edge_dst,
+                    edge_lengths=disp_edge_length,
+                    edge_vec=disp_edge_vec,
+                    cutoff=disp_cutoff,
+                    pbc=self.dispersion_pbc,
+                )
 
         if return_combined_features:
             combined_features = torch.cat(layer_states, dim=-1)

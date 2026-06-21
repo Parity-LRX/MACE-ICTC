@@ -1376,6 +1376,21 @@ class LongRangeDispersion(nn.Module):
     def uses_canonical_undirected_edges(self) -> bool:
         return dispersion_mode_uses_canonical_edges(self.mode)
 
+    def exports_mbd_source(self) -> bool:
+        """True when this dispersion term can emit a per-atom (omega, alpha) source for the C++ MBD
+        backend (the mbd-slq head). The model defers the coupled-dipole energy to C++ when it emits."""
+        return self.mode == "mbd-slq" and hasattr(self.term, "emit_source")
+
+    def emit_source(self, node_feats: torch.Tensor) -> torch.Tensor:
+        """Deploy: per-atom MBD (omega, alpha) [N,2] from the SLQ head, for the C++ MBD solver."""
+        return self.term.emit_source(node_feats)
+
+    def mbd_beta(self) -> float:
+        return float(self.term.mbd_beta())
+
+    def mbd_coupling_scale(self) -> float:
+        return float(self.term.mbd_coupling_scale())
+
     def forward(
         self,
         node_feats: torch.Tensor,
