@@ -155,6 +155,7 @@ class MFFTorchEngine {
   int64_t aoti_pad_z_ = 1;          // atomic number for dummy padding atoms (must be a valid embedding Z)
   bool have_ts_fallback_ = false;   // core_ holds an N-flexible TorchScript core for ntotal > nmax_
   bool aoti_fallback_warned_ = false;
+  bool aoti_combined_warned_ = false;
   bool aoti_takes_dispersion_edges_arg_ = false;
   bool aoti_reload_warned_ = false;
   std::string aoti_package_path_;

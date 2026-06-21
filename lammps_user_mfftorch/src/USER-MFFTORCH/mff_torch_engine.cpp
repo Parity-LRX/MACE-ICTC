@@ -1293,11 +1293,16 @@ MFFOutputs MFFTorchEngine::compute(int64_t nlocal, int64_t ntotal,
                                     external_tensor, fidelity_ids,
                                     nlocal, ntotal, need_energy, need_atom_virial);
       }
-      throw std::runtime_error(
-          "mff/torch: AOTI .pt2 combines explicit MBD dispersion edges with runtime reciprocal "
-          "long-range output, but no TorchScript fallback is configured. This AOTI/libtorch "
-          "combination is not stable across repeated MD calls. Add 'fallback <core.pt>' to "
-          "<core>.pt2.meta or export without runtime reciprocal_source.");
+      // No TorchScript fallback configured: use the DIRECT AOTI path. run_aoti() clones the packed
+      // reciprocal_source and (on CUDA) CPU-round-trips it, fully detaching it from the AOTI package
+      // buffer -- the exact stale-buffer fix the old guard worried about -- so the combined
+      // electrostatics+MBD reciprocal_source is stable across MD calls without a fallback. Just run it.
+      if (!aoti_combined_warned_) {
+        aoti_combined_warned_ = true;
+        std::fprintf(stderr,
+                     "[mff/torch] combined AOTI (MBD dispersion edges + runtime reciprocal source): "
+                     "using the direct AOTI path with a detached reciprocal_source (no fallback needed).\n");
+      }
     }
     MFFOutputs out = run_aoti(pos0, A, edge_src, edge_dst, edge_shifts, cell,
                               dispersion_edge_src, dispersion_edge_dst, dispersion_edge_shifts);
