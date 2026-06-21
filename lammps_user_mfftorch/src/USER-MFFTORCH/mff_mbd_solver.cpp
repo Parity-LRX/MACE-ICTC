@@ -94,57 +94,69 @@ torch::Tensor MFFMBDSolver::dipole_field(
     const torch::Tensor& pos, const torch::Tensor& mu, const torch::Tensor& cell, double alpha,
     const torch::Tensor& src, const torch::Tensor& dst, const torch::Tensor& shifts,
     const torch::Device& device, const torch::Tensor& alpha_pol, double beta, bool damping) const {
-  const int M = config_.mesh_size;
   auto eff = cell.to(device);  // inherit input dtype (float32 on GPU; float64 in the tests)
-  auto inv = torch::linalg_inv(eff);
-  auto frac = torch::matmul(pos, inv);
-  frac = frac - torch::floor(frac);
-  auto k_cart = k_grid_cart(eff, device);                                   // [K,3]
-  auto k2 = (k_cart * k_cart).sum(-1).clamp_min(1e-12);                      // [K]
-  auto volume = torch::det(eff).abs();
+  auto field = torch::zeros_like(mu);
 
-  auto mu_mesh = spread_to_mesh(frac, mu, config_.pbc);
-  auto mu_k = torch::fft::fftn(mu_mesh, {}, {0, 1, 2}).reshape({-1, 3});     // [K,3] complex
-  auto kc = k_cart.to(mu_k.dtype());
-  auto kdotmu = (kc * mu_k).sum(-1);                                        // [K] complex
-  auto screen = torch::exp(-k2 / (4.0 * alpha * alpha));
-  // assignment-window deconvolution 1/|W|^2, W = prod_axes sinc(m/M)^exp (exp=2 cic / 4 pcs; Python backend).
-  auto dopt = torch::TensorOptions().dtype(eff.scalar_type()).device(device);  // on-device, input dtype
-  auto sinc1d = torch::sinc(fft_freqs(M, dopt) / (double)M).pow(assignment_stencil(config_.assignment));  // [M]
-  auto win = (sinc1d.view({M, 1, 1}) * sinc1d.view({1, M, 1}) * sinc1d.view({1, 1, M})).reshape({-1});
-  auto wdeconv = torch::reciprocal(win.clamp_min(1e-6).square());                // [K]
-  auto scale = -(4.0 * M_PI) / volume * screen * wdeconv / k2;              // [K]  (-4pi/V k k/k^2 / |W|^2)
-  scale = torch::where(k2 > 1e-12, scale, torch::zeros_like(scale));        // tinfoil k=0
-  auto e_k = (scale.to(mu_k.dtype()).unsqueeze(-1) * kc) * kdotmu.unsqueeze(-1);  // [K,3]
-  auto e_mesh = torch::real(torch::fft::ifftn(e_k.reshape({M, M, M, 3}), {}, {0, 1, 2})) * std::pow((double)M, 3);
-  auto field = gather_from_mesh(frac, e_mesh, config_.pbc);                 // [N,3]
-
-  double a3 = alpha * alpha * alpha;
-  field = field + (4.0 * a3 / (3.0 * SQRT_PI)) * mu;                        // self term
+  if (config_.use_fft) {
+    // ---- periodic PME far field + self (the "future scalable backend"; adds the long-range 1/r^3 tail).
+    // ONLY physically consistent if the model was TRAINED with PME -- edge_sparse training has no tail. ----
+    const int M = config_.mesh_size;
+    auto inv = torch::linalg_inv(eff);
+    auto frac = torch::matmul(pos, inv);
+    frac = frac - torch::floor(frac);
+    auto k_cart = k_grid_cart(eff, device);                                   // [K,3]
+    auto k2 = (k_cart * k_cart).sum(-1).clamp_min(1e-12);                      // [K]
+    auto volume = torch::det(eff).abs();
+    auto mu_mesh = spread_to_mesh(frac, mu, config_.pbc);
+    auto mu_k = torch::fft::fftn(mu_mesh, {}, {0, 1, 2}).reshape({-1, 3});     // [K,3] complex
+    auto kc = k_cart.to(mu_k.dtype());
+    auto kdotmu = (kc * mu_k).sum(-1);                                        // [K] complex
+    auto screen = torch::exp(-k2 / (4.0 * alpha * alpha));
+    // assignment-window deconvolution 1/|W|^2, W = prod_axes sinc(m/M)^exp (exp=2 cic / 4 pcs).
+    auto dopt = torch::TensorOptions().dtype(eff.scalar_type()).device(device);
+    auto sinc1d = torch::sinc(fft_freqs(M, dopt) / (double)M).pow(assignment_stencil(config_.assignment));
+    auto win = (sinc1d.view({M, 1, 1}) * sinc1d.view({1, M, 1}) * sinc1d.view({1, 1, M})).reshape({-1});
+    auto wdeconv = torch::reciprocal(win.clamp_min(1e-6).square());                // [K]
+    auto scale = -(4.0 * M_PI) / volume * screen * wdeconv / k2;              // [K]  (-4pi/V k k/k^2 / |W|^2)
+    scale = torch::where(k2 > 1e-12, scale, torch::zeros_like(scale));        // tinfoil k=0
+    auto e_k = (scale.to(mu_k.dtype()).unsqueeze(-1) * kc) * kdotmu.unsqueeze(-1);  // [K,3]
+    auto e_mesh = torch::real(torch::fft::ifftn(e_k.reshape({M, M, M, 3}), {}, {0, 1, 2})) * std::pow((double)M, 3);
+    field = gather_from_mesh(frac, e_mesh, config_.pbc);                      // [N,3]
+    double a3 = alpha * alpha * alpha;
+    field = field + (4.0 * a3 / (3.0 * SQRT_PI)) * mu;                        // self term
+  }
 
   if (src.numel() > 0) {
     auto shift_cart = torch::matmul(shifts.to(eff.scalar_type()), eff);
     auto rvec = pos.index_select(0, dst) - pos.index_select(0, src) + shift_cart;  // [E,3]
     auto r = torch::linalg_vector_norm(rvec, 2, -1).clamp_min(1e-12);
-    auto r2 = r * r;
-    auto gauss = torch::exp(-(alpha * alpha) * r2);
-    auto b0 = torch::erfc(alpha * r) / r;
-    auto b1 = (b0 + (2.0 * alpha * alpha) / (alpha * SQRT_PI) * gauss) / r2;
-    auto b2 = (3.0 * b1 + std::pow(2.0 * alpha * alpha, 2) / (alpha * SQRT_PI) * gauss) / r2;
+    auto r2 = r * r, r3 = r2 * r, r5 = r3 * r2;
     auto mu_src = mu.index_select(0, src);
     auto rdotmu = (rvec * mu_src).sum(-1);
-    auto contrib = -b1.unsqueeze(-1) * mu_src + b2.unsqueeze(-1) * rvec * rdotmu.unsqueeze(-1);
-    field = field.index_add(0, dst, contrib);
+    // bare dipole tensor contraction: T_bare.mu = 3(r.mu)r/r^5 - mu/r^3,  T_bare = (3 rr - I)/r^3.
+    auto t_bare = 3.0 * rdotmu.unsqueeze(-1) * rvec / r5.unsqueeze(-1) - mu_src / r3.unsqueeze(-1);
+    // rsSCS damping: (1-damp) = exp(-(r/(beta*R))^6), R = a_i^1/3 + a_j^1/3.
+    torch::Tensor one_minus_damp;
     if (damping && alpha_pol.defined()) {
-      // rsSCS range separation: the coupling must carry damp*T = T - (1-damp)*T_bare. The Ewald field
-      // above is the full (undamped) periodic T; subtract the real-space (1-damp)*T_bare here.
-      // T_bare = (3 rr - I)/r^3 (the BARE tensor, not erfc): T_bare.mu = 3(r.mu)r/r^5 - mu/r^3.
-      auto r3 = r2 * r, r5 = r3 * r2;
-      auto t_bare = 3.0 * rdotmu.unsqueeze(-1) * rvec / r5.unsqueeze(-1) - mu_src / r3.unsqueeze(-1);
       auto radius = (alpha_pol.index_select(0, src).clamp_min(0.0).pow(1.0 / 3.0)
                      + alpha_pol.index_select(0, dst).clamp_min(0.0).pow(1.0 / 3.0)).clamp_min(1e-6);
-      auto one_minus_damp = torch::exp(-torch::pow((r / (beta * radius)).clamp_min(0.0), 6));  // = 1-damp
-      field = field.index_add(0, dst, -(one_minus_damp.unsqueeze(-1)) * t_bare);
+      one_minus_damp = torch::exp(-torch::pow((r / (beta * radius)).clamp_min(0.0), 6));
+    }
+    if (config_.use_fft) {
+      // PME near field: erfc T_SR, then subtract (1-damp)*T_bare so the total carries damp*T.
+      auto gauss = torch::exp(-(alpha * alpha) * r2);
+      auto b0 = torch::erfc(alpha * r) / r;
+      auto b1 = (b0 + (2.0 * alpha * alpha) / (alpha * SQRT_PI) * gauss) / r2;
+      auto b2 = (3.0 * b1 + std::pow(2.0 * alpha * alpha, 2) / (alpha * SQRT_PI) * gauss) / r2;
+      auto contrib = -b1.unsqueeze(-1) * mu_src + b2.unsqueeze(-1) * rvec * rdotmu.unsqueeze(-1);
+      field = field.index_add(0, dst, contrib);
+      if (one_minus_damp.defined())
+        field = field.index_add(0, dst, -(one_minus_damp.unsqueeze(-1)) * t_bare);
+    } else {
+      // DIRECT edge_sparse: field += sum_edges damp*T_bare.mu  (matches the trained ManyBodyDispersionSLQ;
+      // no FFT/reciprocal/self -> the diagonal omega^2 lives in coupled_matvec). O(E) -> fast.
+      auto damp = one_minus_damp.defined() ? (1.0 - one_minus_damp) : torch::ones_like(r);
+      field = field.index_add(0, dst, damp.unsqueeze(-1) * t_bare);
     }
   }
   return field;
@@ -373,14 +385,14 @@ int main() {
   auto sh = torch::zeros({2, 3}, o);
   const char* names[2] = {"CIC", "PCS"};
   for (int a = 0; a < 2; ++a) {  // verify BOTH assignments match the Python backend
-    MBDConfig cfg; cfg.mesh_size = 32; cfg.assignment = a;
+    MBDConfig cfg; cfg.mesh_size = 32; cfg.assignment = a; cfg.use_fft = true;  // parity vs Python PME
     MFFMBDSolver solver; solver.set_config(cfg);
     auto f = solver.dipole_field(pos, mu, cell, /*alpha=*/1.0, src, dst, sh, torch::kCPU);
     std::printf("CPP_%s_SUM %.10f\n", names[a], f.sum().item<double>());
     std::printf("CPP_%s_SQ %.10f\n", names[a], (f * f).sum().item<double>());
   }
   // full solver end-to-end (pcs): source [N,2] = (omega, alpha); power-iter bounds + Chebyshev energy.
-  MBDConfig cfg; cfg.mesh_size = 32; cfg.cheb_degree = 20; cfg.num_probes = 64;  // assignment defaults to pcs
+  MBDConfig cfg; cfg.mesh_size = 32; cfg.cheb_degree = 20; cfg.num_probes = 64; cfg.use_fft = true;  // pcs
   MFFMBDSolver solver; solver.set_config(cfg);
   auto source = torch::tensor({{1.0, 0.3}, {1.1, 0.3}}, o);  // (omega, alpha_pol)
   auto E = solver.mbd_energy(pos, source, cell, src, dst, sh, torch::kCPU);
@@ -414,7 +426,7 @@ int main() {
   const char* names[2] = {"CIC", "PCS"};
   for (int asg = 0; asg < 2; ++asg) {
     // mesh 12: z=k*3 -> scaled 4k = integer -> atoms 0,26 ON cell boundaries; small for the FD sweep.
-    MBDConfig cfg; cfg.assignment = asg; cfg.mesh_min = cfg.mesh_max = 12;
+    MBDConfig cfg; cfg.assignment = asg; cfg.mesh_min = cfg.mesh_max = 12; cfg.use_fft = true;  // mesh test
     cfg.cheb_degree = 14; cfg.num_probes = 16; cfg.ewald_alpha_prefactor = 5.0;
     MFFMBDSolver solver; solver.set_config(cfg);
     auto out = solver.compute(pos, source, cell, torch::kCPU);

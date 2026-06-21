@@ -40,6 +40,11 @@ struct MBDConfig {
   bool damping = true;                 // rsSCS-style range separation: coupling *= 1-exp(-(r/(beta*R))^6)
   double mbd_beta = 1.0;               //   damping length scale (R = alpha_i^1/3 + alpha_j^1/3)
   double coupling_scale = 1.0;         //   overall coupling prefactor (learned in the real model)
+  bool use_fft = false;                // dipole field backend. false = DIRECT edge_sparse (sum damp*T_bare
+                                       // over the cutoff edge list) -- matches the trained
+                                       // ManyBodyDispersionSLQ + O(E) fast. true = periodic PME/cuFFT far
+                                       // field (the "future scalable backend"; ONLY correct if trained
+                                       // with PME -- it adds a long-range tail edge_sparse training lacks).
   double real_cutoff = 0.0;            // real-space T_SR cutoff (0 -> derive from alpha)
   std::array<int, 3> pbc{{1, 1, 1}};
 };
