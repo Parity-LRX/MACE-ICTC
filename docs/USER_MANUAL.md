@@ -848,7 +848,214 @@ Device mapping details:
   but large differences indicate a decomposition, cutoff, or exported-capacity
   problem.
 
-## 12. Benchmarking
+## 12. Long-Range and Dispersion (Train → Export → Deploy)
+
+MACE-ICTD learns two families of long-range correction, both in-network (no external Ewald or
+libMBD) and both LAMMPS-deployable through the `mff/torch` pair style. This section is the
+end-to-end reference: what is available, how to train it, how to export it, and how to run it in
+LAMMPS.
+
+The unifying mechanism: the network emits **per-atom latent sources** from its descriptors. At
+training time the long-range energy is computed inline and learned from the same
+energy/force/stress losses (no charge labels). At deploy time the source is exported and the
+long-range energy is either kept in the compiled graph (pairwise-C6 dispersion) or **deferred to a
+dedicated C++ solver** in LAMMPS (reciprocal electrostatics, MBD), so it stays separable and scales.
+
+### 12.1 What is available
+
+| Family | Mode (train flag) | Physics | Deploy route |
+|---|---|---|---|
+| Electrostatics | `--long-range-mode reciprocal-spectral-v1` | learned latent scalar charge, reciprocal-space | C++ reciprocal solver (in-core for `direct_kspace`) |
+| Electrostatics (multipole) | `… --long-range-reciprocal-backend mesh_fft --long-range-max-multipole-l {1,2}` | learned monopole/dipole/quadrupole, mesh-FFT | C++ mesh-FFT reciprocal solver |
+| Dispersion (pairwise) | `--long-range-dispersion-mode pairwise-c6` | learned C6 + Becke–Johnson damping, r⁻⁶ | in-graph (rides inside the `.pt2`) |
+| Dispersion (many-body) | `--long-range-dispersion-mode mbd-slq` | MBD@rsSCS coupled-dipole, matrix-free Tr[√C] | C++ MBD solver |
+| Dispersion (dense) | `--long-range-dispersion-mode mbd` | dense QHO eigensolve | reference/validation only |
+
+MBD-SLQ has two further axes:
+
+- **Operator backend** `--mbd-operator-backend edge_sparse|pme_fft`. `edge_sparse` (default) sums the
+  damped dipole tensor over the cutoff dispersion graph (direct, O(E), fastest at small/medium N);
+  `pme_fft` is a reciprocal-only FFT matvec for large periodic boxes. **Match this across train and
+  deploy** — the C++ solver runs the matching operator.
+- **Polarizability rank** `--mbd-anisotropic`. Off = isotropic scalar α (emits an `[N,2]` source
+  `(ω, α)`); on = **anisotropic l=2 tensor** α (emits `[N,8]` `(ω, α_iso, 6×B)`, coupling W=ω·B). The
+  tensor is built from the l=2 node block, so it needs `--lmax ≥ 2`. It is ICTD-distinctive and nearly
+  free (Section 12.5).
+
+Electrostatics and dispersion are independent and combine in one model (e.g. multipole l=2 + MBD).
+
+### 12.2 Training
+
+MBD-SLQ, isotropic, default `edge_sparse` backend:
+
+```bash
+python -m mace_ictd.cli.train \
+  --data-dir DATA \
+  --channels 128 --lmax 2 --num-interaction 2 \
+  --long-range-dispersion-mode mbd-slq \
+  --dispersion-cutoff 8.0 \
+  --mbd-operator-backend edge_sparse \
+  --checkpoint model_mbd.pth
+```
+
+Anisotropic (l=2 tensor) MBD — add `--mbd-anisotropic` (needs `--lmax >= 2`):
+
+```bash
+python -m mace_ictd.cli.train ... \
+  --long-range-dispersion-mode mbd-slq --dispersion-cutoff 8.0 \
+  --mbd-operator-backend edge_sparse --mbd-anisotropic \
+  --checkpoint model_mbd_aniso.pth
+```
+
+Pairwise-C6 dispersion (cheapest, in-graph):
+
+```bash
+python -m mace_ictd.cli.train ... --long-range-dispersion-mode pairwise-c6 --dispersion-cutoff 8.0 --checkpoint model_c6.pth
+```
+
+Multipole electrostatics (mesh-FFT, dipole+quadrupole) — the mesh-FFT multipole path requires
+full-Ewald screening:
+
+```bash
+python -m mace_ictd.cli.train ... \
+  --long-range-mode reciprocal-spectral-v1 \
+  --long-range-reciprocal-backend mesh_fft --long-range-mesh-size 32 \
+  --long-range-max-multipole-l 2 --long-range-mesh-fft-full-ewald \
+  --long-range-assignment pcs --checkpoint model_mp.pth
+```
+
+Key dispersion/MBD flags:
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--long-range-dispersion-mode` | `none` | `none` / `pairwise-c6` / `mbd` / `mbd-slq` |
+| `--dispersion-cutoff` | `8.0` | dispersion neighbor cutoff (Å); ~8 ≈ 5% MBD-energy convergence; `0` reuses the model edge list |
+| `--mbd-operator-backend` | `edge_sparse` | `edge_sparse` (direct) / `pme_fft` (reciprocal); match at deploy |
+| `--mbd-anisotropic` | off | l=2 tensor polarizability (`[N,8]` source); needs `lmax ≥ 2` |
+| `--mbd-pme-mesh-size` | `32` | PME mesh for `pme_fft` |
+| `--dispersion-slq-num-probes` | `8` | Hutchinson probes for Tr[√C] |
+| `--dispersion-slq-lanczos-steps` | `16` | Lanczos steps per probe |
+
+The checkpoint stores every long-range hyperparameter in `model_hyperparameters`, so export rebuilds
+the identical architecture.
+
+### 12.3 Export
+
+Two cores; both are parity-correct — choose by target:
+
+| | AOTI `.pt2` (production) | TorchScript `.pt` (portable) |
+|---|---|---|
+| Tool | `mace_ictd.cli.export_aoti_core` | `mace_ictd.cli.export_libtorch_core` |
+| Speed | Inductor-fused fwd+bwd, ~3.7–5.4× faster | C++ autograd, no fusion |
+| N | static-N or N-dynamic | N-flexible (one core, any N) |
+| Long-range | full (defers reciprocal/MBD to C++; C6 in-graph) | minimal |
+
+Export from a trained checkpoint (inherits the long-range config, see Section 9):
+
+```bash
+python -m mace_ictd.cli.export_aoti_core --checkpoint model_mbd_aniso.pth --out model.pt2
+```
+
+The synthetic/combined export builds a long-range config at export time (for testing) and accepts:
+
+| Flag | Meaning |
+|---|---|
+| `--dispersion-mode mbd-slq` | dispersion family |
+| `--dispersion-cutoff 8.0` | dispersion cutoff (Å) |
+| `--mbd-operator-backend edge_sparse\|pme_fft` | MBD operator (match training) |
+| `--mbd-anisotropic` | anisotropic l=2 tensor (`[N,8]` source) |
+| `--lr-mesh-size 32` | mesh size for mesh-FFT / `pme_fft` |
+| `--long-range-mode`, `--long-range-multipole-l` | electrostatics block |
+
+```bash
+python -m mace_ictd.cli.export_aoti_core --route baseline --channels 128 --lmax 2 \
+  --num-interaction 2 --dtype float32 --device cuda \
+  --dispersion-mode mbd-slq --dispersion-cutoff 8.0 --mbd-operator-backend edge_sparse \
+  --mbd-anisotropic --out model_aniso.pt2
+```
+
+The export writes a `model.pt2.json` sidecar with the deploy metadata; for MBD it includes
+`long_range_mbd_source_channels` (2 isotropic / 8 anisotropic), `mbd_operator_backend`,
+`long_range_mbd_beta`, and `long_range_mbd_coupling_scale`, which the C++ engine reads.
+
+> **Deploy-defer**: the AOTI forward of an MBD or reciprocal model emits the per-atom source but
+> **defers the long-range energy to the C++ solver**, so the forward stays ~constant regardless of the
+> long-range method. The long-range cost appears only in the MD step (Section 12.5).
+
+### 12.4 LAMMPS deployment
+
+Pair-style grammar (`pair_mff_torch.cpp`):
+
+```
+pair_style mff/torch <model_cutoff> [cpu|cuda] [dispersion <disp_cutoff>]
+pair_coeff * * <model.pt2> <elem_1> [<elem_2> ...]
+```
+
+A dispersion/MBD model **must** be given the `dispersion <disp_cutoff>` keyword: it builds the LAMMPS
+ghost neighbor list (to `disp_cutoff`) that the C++ MBD/dispersion solver reuses. Use the **same
+cutoff you trained with**. Everything else — operator backend, anisotropic source width, β, coupling
+scale, probe counts — is baked into the `.pt2` metadata, so the LAMMPS input is identical for
+isotropic and anisotropic MBD (the source width comes from metadata):
+
+```lammps
+units metal
+atom_style atomic
+atom_modify map yes
+boundary p p p
+read_data system.data
+neighbor 1.0 bin
+neigh_modify every 1 delay 0 check yes
+
+pair_style mff/torch 5.0 cuda dispersion 8.0
+pair_coeff * * model_mbd_aniso.pt2 H C N O
+
+fix 1 all nve
+run 1000
+```
+
+- **Pairwise-C6** also takes `dispersion <cutoff>` (to supply its neighbor list); the energy itself
+  rides in-graph inside the `.pt2`.
+- **Reciprocal electrostatics** needs no extra keyword — the engine runs its reciprocal solver from
+  metadata and the mesh.
+- The `pair_coeff` element order must match the export `--elements` order; `NULL` skips a type.
+
+Matching rules and constraints:
+
+- **Backend must match** train↔deploy (`edge_sparse` vs `pme_fft`); the C++ runs whichever the
+  metadata names.
+- **Single-image cutoff** (`edge_sparse`): `2·dispersion_cutoff ≤` the smallest box face height
+  (nearest image); otherwise the pair style errors — raise the box or lower the cutoff. `pme_fft` has
+  no such limit.
+- The deploy MBD energy uses a C++ Chebyshev trace estimator vs training's Lanczos/Newton–Schulz: the
+  *operator* matches exactly, but the stochastic Tr[√C] estimator differs (not bit-exact; the same for
+  isotropic and anisotropic).
+- `pair_style mff/torch/kk` is the Kokkos/GPU variant; same grammar.
+
+### 12.5 Cost and how to choose
+
+Anisotropic vs isotropic MBD — 512 atoms, ch128, lmax2, `edge_sparse`, cutoff 8 (RTX 4090):
+
+| Mode | Isotropic | Anisotropic | Δ |
+|---|---|---|---|
+| Train (fwd + force-bwd + loss-bwd) | 304.9 ms | 304.9 ms | +0.0% |
+| Inference (fwd + force) | 109.3 ms | 109.6 ms | +0.3% |
+| MD (deploy) | 35.3 ms/step | 37.3 ms/step | +5.7% |
+
+Anisotropic adds the l=2 readout plus a per-atom 3×3 W matmul in each SLQ matvec: essentially free to
+train/infer (MBD is launch/autograd overhead-bound) and ~6% in MD. (The eager train/infer absolutes
+include an O(N²) dispersion search that real training avoids with precomputed edges; the Δ is clean.)
+
+Decision rules:
+
+- **Dispersion**: `pairwise-c6` is cheapest (in-graph, ~free) and a fine default when many-body effects
+  are not needed; `mbd-slq` for many-body screening / polarization response.
+- **MBD backend**: `edge_sparse` for small/medium systems (faster through ~8k atoms); `pme_fft` for
+  large periodic boxes.
+- **Anisotropic**: enable when the l=2 representation should drive directional polarizability (the
+  ICTD-distinctive path); the cost is small.
+- **Core**: AOTI `.pt2` for throughput; TorchScript `.pt` for N-flexible / portable deployment.
+
+## 13. Benchmarking
 
 Main benchmark harness:
 
@@ -882,7 +1089,7 @@ Always separate:
 - neighbor-list overhead,
 - LAMMPS throughput.
 
-## 13. Tests and Validation
+## 14. Tests and Validation
 
 Core smoke tests:
 
@@ -913,7 +1120,7 @@ Expected parity levels depend on dtype and backend:
 - Float32 cuEq paths should be judged with float32 tolerances.
 - AOTI and make_fx paths must be compared against eager outputs after compile/load.
 
-## 14. Common Pitfalls
+## 15. Common Pitfalls
 
 ### Bridge-U and `angular_basis=e3nn`
 
@@ -965,7 +1172,7 @@ Dynamic AOTI and make_fx paths are sensitive to PyTorch/Inductor version. If a d
 - PyTorch 2.7+,
 - disabling optional fusion/autotune flags.
 
-## 15. Development Notes
+## 16. Development Notes
 
 Local code style is intentionally conservative:
 

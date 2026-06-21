@@ -831,7 +831,198 @@ pair_coeff * * /path/to/model.pt2 H C N O
   和归约顺序不同，可能有很小差异；大差异通常说明 domain decomposition、cutoff
   或导出容量有问题。
 
-## 12. Benchmark
+## 12. 长程与色散（训练 → 导出 → 部署）
+
+MACE-ICTD 学习两类长程修正，都是网络内置的（不依赖外部 Ewald 或 libMBD），都能通过
+`mff/torch` pair style 部署到 LAMMPS。本节是端到端参考：有哪些方法、怎么训练、怎么导出、
+怎么在 LAMMPS 里跑。
+
+统一机制：网络从描述符发射**每原子隐变量源**。训练时长程能量内联计算，从同样的
+energy/force/stress 损失里学（无需电荷标签）。部署时把源导出，长程能量要么留在编译图里
+（pairwise-C6 色散），要么**延后到专用 C++ 求解器**（倒空间静电、MBD），保持可分离 + 可扩展。
+
+### 12.1 有哪些方法
+
+| 类别 | 模式（训练 flag） | 物理 | 部署路径 |
+|---|---|---|---|
+| 静电 | `--long-range-mode reciprocal-spectral-v1` | 学习的隐变量标量电荷，倒空间 | C++ 倒空间求解器（`direct_kspace` 留在 core 内） |
+| 静电（多极） | `… --long-range-reciprocal-backend mesh_fft --long-range-max-multipole-l {1,2}` | 学习的单极/偶极/四极，mesh-FFT | C++ mesh-FFT 倒空间求解器 |
+| 色散（pairwise） | `--long-range-dispersion-mode pairwise-c6` | 学习的 C6 + Becke–Johnson 阻尼，r⁻⁶ | 图内（随 `.pt2` 一起） |
+| 色散（多体） | `--long-range-dispersion-mode mbd-slq` | MBD@rsSCS 耦合偶极，无矩阵 Tr[√C] | C++ MBD 求解器 |
+| 色散（稠密） | `--long-range-dispersion-mode mbd` | 稠密 QHO 本征分解 | 仅参考/验证 |
+
+MBD-SLQ 还有两个维度：
+
+- **算子后端** `--mbd-operator-backend edge_sparse|pme_fft`。`edge_sparse`（默认）在 cutoff 色散图
+  上直接求和阻尼偶极张量（O(E)，中小体系最快）；`pme_fft` 是 reciprocal-only 的 FFT matvec（大
+  周期盒子）。**训练和部署必须一致**——C++ 求解器跑对应的算子。
+- **极化率阶数** `--mbd-anisotropic`。关 = 各向同性标量 α（发射 `[N,2]` 源 `(ω, α)`）；开 =
+  **各向异性 l=2 张量** α（发射 `[N,8]` `(ω, α_iso, 6×B)`，耦合 W=ω·B）。张量从 l=2 节点块构造，
+  需要 `--lmax ≥ 2`。这是 ICTD 独有的路径，且几乎免费（见 12.5）。
+
+静电和色散相互独立，可在一个模型里组合（如 multipole l=2 + MBD）。
+
+### 12.2 训练
+
+MBD-SLQ，各向同性，默认 `edge_sparse` 后端：
+
+```bash
+python -m mace_ictd.cli.train \
+  --data-dir DATA \
+  --channels 128 --lmax 2 --num-interaction 2 \
+  --long-range-dispersion-mode mbd-slq \
+  --dispersion-cutoff 8.0 \
+  --mbd-operator-backend edge_sparse \
+  --checkpoint model_mbd.pth
+```
+
+各向异性（l=2 张量）MBD——加 `--mbd-anisotropic`（需要 `--lmax >= 2`）：
+
+```bash
+python -m mace_ictd.cli.train ... \
+  --long-range-dispersion-mode mbd-slq --dispersion-cutoff 8.0 \
+  --mbd-operator-backend edge_sparse --mbd-anisotropic \
+  --checkpoint model_mbd_aniso.pth
+```
+
+Pairwise-C6 色散（最便宜，图内）：
+
+```bash
+python -m mace_ictd.cli.train ... --long-range-dispersion-mode pairwise-c6 --dispersion-cutoff 8.0 --checkpoint model_c6.pth
+```
+
+多极静电（mesh-FFT，偶极+四极）——mesh-FFT 多极路径要求 full-Ewald 屏蔽：
+
+```bash
+python -m mace_ictd.cli.train ... \
+  --long-range-mode reciprocal-spectral-v1 \
+  --long-range-reciprocal-backend mesh_fft --long-range-mesh-size 32 \
+  --long-range-max-multipole-l 2 --long-range-mesh-fft-full-ewald \
+  --long-range-assignment pcs --checkpoint model_mp.pth
+```
+
+主要色散/MBD flag：
+
+| Flag | 默认 | 含义 |
+|---|---|---|
+| `--long-range-dispersion-mode` | `none` | `none` / `pairwise-c6` / `mbd` / `mbd-slq` |
+| `--dispersion-cutoff` | `8.0` | 色散邻居 cutoff（Å）；~8 ≈ MBD 能量收敛到 ~5%；`0` 复用模型边表 |
+| `--mbd-operator-backend` | `edge_sparse` | `edge_sparse`（直接）/ `pme_fft`（倒空间）；部署须一致 |
+| `--mbd-anisotropic` | 关 | l=2 张量极化率（`[N,8]` 源）；需要 `lmax ≥ 2` |
+| `--mbd-pme-mesh-size` | `32` | `pme_fft` 的 PME 网格 |
+| `--dispersion-slq-num-probes` | `8` | Tr[√C] 的 Hutchinson 探针数 |
+| `--dispersion-slq-lanczos-steps` | `16` | 每探针的 Lanczos 步数 |
+
+checkpoint 把所有长程超参存在 `model_hyperparameters` 里，导出时重建完全相同的结构。
+
+### 12.3 导出
+
+两种 core，都是 parity 正确的——按目标选：
+
+| | AOTI `.pt2`（生产） | TorchScript `.pt`（便携） |
+|---|---|---|
+| 工具 | `mace_ictd.cli.export_aoti_core` | `mace_ictd.cli.export_libtorch_core` |
+| 速度 | Inductor 融合 fwd+bwd，快 ~3.7–5.4× | C++ autograd，不融合 |
+| N | static-N 或 N-dynamic | N 灵活（一个 core 任意 N） |
+| 长程 | 完整（倒空间/MBD 延后到 C++；C6 图内） | 极少 |
+
+从训练好的 checkpoint 导出（继承模型的长程配置，见第 9 节）：
+
+```bash
+python -m mace_ictd.cli.export_aoti_core --checkpoint model_mbd_aniso.pth --out model.pt2
+```
+
+合成/组合导出（导出时现搭长程配置，用于测试）接受：
+
+| Flag | 含义 |
+|---|---|
+| `--dispersion-mode mbd-slq` | 色散类别 |
+| `--dispersion-cutoff 8.0` | 色散 cutoff（Å） |
+| `--mbd-operator-backend edge_sparse\|pme_fft` | MBD 算子（与训练一致） |
+| `--mbd-anisotropic` | 各向异性 l=2 张量（`[N,8]` 源） |
+| `--lr-mesh-size 32` | mesh-FFT / `pme_fft` 的网格 |
+| `--long-range-mode`, `--long-range-multipole-l` | 静电块 |
+
+```bash
+python -m mace_ictd.cli.export_aoti_core --route baseline --channels 128 --lmax 2 \
+  --num-interaction 2 --dtype float32 --device cuda \
+  --dispersion-mode mbd-slq --dispersion-cutoff 8.0 --mbd-operator-backend edge_sparse \
+  --mbd-anisotropic --out model_aniso.pt2
+```
+
+导出会写一个 `model.pt2.json` 旁文件，含部署元数据；MBD 部分包含
+`long_range_mbd_source_channels`（2 各向同性 / 8 各向异性）、`mbd_operator_backend`、
+`long_range_mbd_beta`、`long_range_mbd_coupling_scale`，C++ engine 读这些。
+
+> **延后部署**：MBD/倒空间模型的 AOTI forward 只发射每原子源，**长程能量延后到 C++ 求解器**，
+> 所以无论用哪种长程方法，forward 时间 ~不变。长程开销只出现在 MD 步里（见 12.5）。
+
+### 12.4 LAMMPS 部署
+
+pair style 语法（`pair_mff_torch.cpp`）：
+
+```
+pair_style mff/torch <model_cutoff> [cpu|cuda] [dispersion <disp_cutoff>]
+pair_coeff * * <model.pt2> <elem_1> [<elem_2> ...]
+```
+
+色散/MBD 模型**必须**带 `dispersion <disp_cutoff>` 关键字：它建 LAMMPS ghost 邻居表（到
+`disp_cutoff`），C++ MBD/色散求解器复用这个表。用**和训练相同的 cutoff**。其余（算子后端、各向
+异性源宽度、β、coupling scale、探针数）都烘焙进 `.pt2` 元数据，所以各向同性和各向异性 MBD 的
+LAMMPS 输入完全相同（源宽度从元数据来）：
+
+```lammps
+units metal
+atom_style atomic
+atom_modify map yes
+boundary p p p
+read_data system.data
+neighbor 1.0 bin
+neigh_modify every 1 delay 0 check yes
+
+pair_style mff/torch 5.0 cuda dispersion 8.0
+pair_coeff * * model_mbd_aniso.pt2 H C N O
+
+fix 1 all nve
+run 1000
+```
+
+- **Pairwise-C6** 也要 `dispersion <cutoff>`（用来提供邻居表）；能量本身随 `.pt2` 图内一起。
+- **倒空间静电**不需要额外关键字——engine 从元数据和网格跑倒空间求解器。
+- `pair_coeff` 的元素顺序必须和导出 `--elements` 一致；`NULL` 跳过某个 type。
+
+匹配规则与约束：
+
+- **后端必须一致** 训练↔部署（`edge_sparse` vs `pme_fft`）；C++ 跑元数据里写的那个。
+- **单像 cutoff**（`edge_sparse`）：`2·dispersion_cutoff ≤` 最小盒面高度（最近像）；否则 pair
+  style 报错——加大盒子或减小 cutoff。`pme_fft` 没有这个限制。
+- 部署 MBD 能量用 C++ Chebyshev trace 估计器，训练用 Lanczos/Newton–Schulz：*算子*精确一致，但
+  随机 Tr[√C] 估计器不同（非逐位一致；各向同性/各向异性都如此）。
+- `pair_style mff/torch/kk` 是 Kokkos/GPU 变体，语法相同。
+
+### 12.5 开销与如何选择
+
+各向异性 vs 各向同性 MBD——512 原子，ch128，lmax2，`edge_sparse`，cutoff 8（RTX 4090）：
+
+| 模式 | 各向同性 | 各向异性 | Δ |
+|---|---|---|---|
+| 训练（fwd + 力反传 + loss 反传） | 304.9 ms | 304.9 ms | +0.0% |
+| 推理（fwd + 力） | 109.3 ms | 109.6 ms | +0.3% |
+| MD（部署） | 35.3 ms/步 | 37.3 ms/步 | +5.7% |
+
+各向异性多了一个 l=2 读出，加上每个 SLQ matvec 里每原子一次 3×3 W 矩阵乘：训练/推理基本免费
+（MBD 是启动/autograd overhead-bound），MD ~6%。（eager 训练/推理的绝对值含 O(N²) 色散搜索，真
+实训练用预算好的边表不会有；但 Δ 是干净的。）
+
+选择规则：
+
+- **色散**：不需要多体效应时，`pairwise-c6` 最便宜（图内，~免费）且是不错的默认；需要多体屏蔽/
+  极化响应时用 `mbd-slq`。
+- **MBD 后端**：中小体系用 `edge_sparse`（到 ~8k 原子都更快）；大周期盒子用 `pme_fft`。
+- **各向异性**：当希望 l=2 表示驱动方向性极化率时开启（ICTD 独有路径）；开销很小。
+- **Core**：要吞吐用 AOTI `.pt2`；要 N 灵活/便携用 TorchScript `.pt`。
+
+## 13. Benchmark
 
 主 benchmark：
 
@@ -865,7 +1056,7 @@ python -m mace_ictd.bench.bench_mace_ictd_vs_mace \
 - neighbor-list overhead，
 - LAMMPS 端吞吐。
 
-## 13. 测试和验证
+## 14. 测试和验证
 
 基础 smoke tests：
 
@@ -896,7 +1087,7 @@ cuEq 和 make_fx 测试需要 CUDA 环境。
 - float32 cuEq 路径按 float32 容差判断。
 - AOTI 和 make_fx 路径必须和 eager 输出做 compile/load 后数值比较。
 
-## 14. 常见坑
+## 15. 常见坑
 
 ### Bridge-U 和 `angular_basis=e3nn`
 
@@ -946,7 +1137,7 @@ Dynamic AOTI 和 make_fx 对 PyTorch/Inductor 版本敏感。如果 dynamic expo
 - PyTorch 2.7+，
 - 关闭 fusion/autotune 等可选优化。
 
-## 15. 开发说明
+## 16. 开发说明
 
 建议遵守：
 

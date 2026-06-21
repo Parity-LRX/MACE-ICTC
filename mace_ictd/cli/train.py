@@ -371,6 +371,7 @@ def build_baseline_model(
     dispersion_slq_lanczos_steps: int = 16,
     mbd_operator_backend: str = "edge_sparse",
     mbd_pme_mesh_size: int = 32,
+    mbd_anisotropic_polarizability: bool = False,
     mbd_pme_assignment: str = "cic",
     mbd_pme_k_norm_floor: float = 1.0e-6,
     mbd_pme_assignment_window_floor: float = 1.0e-6,
@@ -445,6 +446,7 @@ def build_baseline_model(
         dispersion_slq_lanczos_steps=dispersion_slq_lanczos_steps,
         mbd_operator_backend=mbd_operator_backend,
         mbd_pme_mesh_size=mbd_pme_mesh_size,
+        mbd_anisotropic_polarizability=mbd_anisotropic_polarizability,
         mbd_pme_assignment=mbd_pme_assignment,
         mbd_pme_k_norm_floor=mbd_pme_k_norm_floor,
         mbd_pme_assignment_window_floor=mbd_pme_assignment_window_floor,
@@ -566,6 +568,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
                          "use_fft). Match the backend across train and deploy for consistent forces.")
     ap.add_argument("--mbd-pme-mesh-size", type=int, default=32,
                     help="PME mesh size for --mbd-operator-backend pme_fft (finer = more accurate at larger boxes).")
+    ap.add_argument("--mbd-anisotropic", dest="mbd_anisotropic_polarizability", action="store_true",
+                    help="Anisotropic (l=2 tensor) MBD polarizability: the ICTD l=2 node block sets a per-atom 3x3 "
+                         "polarizability alpha^{1/2}=B (coupling W=omega*B) instead of a scalar. Emits an [N,8] "
+                         "(omega, alpha_iso, 6*B) deploy source the C++ MBD solver consumes. Default off (scalar [N,2]).")
     ap.add_argument("--mbd-pme-assignment", default="cic", choices=["ngp", "cic", "pcs"],
                     help="Mesh assignment for experimental --mbd-operator-backend pme_fft.")
     ap.add_argument("--mbd-pme-k-norm-floor", type=float, default=1.0e-6,
@@ -884,6 +890,7 @@ def main(argv=None):
         dispersion_slq_lanczos_steps=args.dispersion_slq_lanczos_steps,
         mbd_operator_backend=args.mbd_operator_backend,
         mbd_pme_mesh_size=args.mbd_pme_mesh_size,
+        mbd_anisotropic_polarizability=args.mbd_anisotropic_polarizability,
         mbd_pme_assignment=args.mbd_pme_assignment,
         mbd_pme_k_norm_floor=args.mbd_pme_k_norm_floor,
         mbd_pme_assignment_window_floor=args.mbd_pme_assignment_window_floor,
@@ -1018,6 +1025,7 @@ def main(argv=None):
         dispersion_slq_lanczos_steps=int(args.dispersion_slq_lanczos_steps),
         mbd_operator_backend=args.mbd_operator_backend,
         mbd_pme_mesh_size=int(args.mbd_pme_mesh_size),
+        mbd_anisotropic_polarizability=bool(args.mbd_anisotropic_polarizability),
         mbd_pme_assignment=args.mbd_pme_assignment,
         mbd_pme_k_norm_floor=float(args.mbd_pme_k_norm_floor),
         mbd_pme_assignment_window_floor=float(args.mbd_pme_assignment_window_floor),
