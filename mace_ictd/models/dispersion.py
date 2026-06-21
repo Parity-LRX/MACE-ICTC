@@ -1028,6 +1028,11 @@ class ManyBodyDispersionSLQ(nn.Module):
             )
         else:
             k_cart, k2, spectral = pme_kernel
+        # Ewald dipole SELF-energy coefficient (4 a^3 / 3 sqrt(pi)): the mesh spread->gather makes each atom
+        # feel its OWN smeared dipole; subtract it so the operator carries no spurious self-interaction
+        # (which otherwise flips the E_MBD sign). a = prefactor / (0.5 * min box length).
+        _rc = (0.5 * torch.linalg.vector_norm(cell.to(dtype=pos_local.dtype), dim=-1).min()).clamp_min(self.pme_k_norm_floor)
+        self_coef = 4.0 * (float(self.pme_ewald_alpha_prefactor) / _rc).pow(3) / (3.0 * 1.7724538509055159)
 
         def matvec(v: torch.Tensor) -> torch.Tensor:
             n_probe = int(v.size(0))
@@ -1044,6 +1049,7 @@ class ManyBodyDispersionSLQ(nn.Module):
                 spectral=spectral,
                 k_norm_floor=self.pme_k_norm_floor,
             )
+            field = field - self_coef * dipoles    # remove the spurious mesh self-interaction (Ewald self)
             field = field.permute(1, 0, 2)
             return y + coupling_scale * local_scale.view(1, -1, 1) * field
 

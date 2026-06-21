@@ -130,6 +130,10 @@ torch::Tensor MFFMBDSolver::dipole_field(
     auto e_mesh = torch::real(torch::fft::ifftn(e_k.reshape({M, M, M, P * 3}), {}, {0, 1, 2})) * std::pow((double)M, 3);
     auto gathered = gather_from_mesh(frac, e_mesh, config_.pbc);              // [N, P*3]
     field = batched ? gathered.reshape({N, P, 3}).permute({1, 0, 2}).contiguous() : gathered;
+    // subtract the Ewald dipole SELF-energy: the mesh spread->gather makes each atom feel its OWN smeared
+    // dipole. The analytic reciprocal self-field is (4 a^3 / 3 sqrt(pi)) mu (verified: matches the N=1 self
+    // to 0.5%). WITHOUT it the operator carries a huge spurious self-interaction that flips the E_MBD sign.
+    field = field - (4.0 * alpha * alpha * alpha / (3.0 * SQRT_PI)) * mu;
   } else if (src.numel() > 0) {
     // ---- edge_sparse (default): field += sum_edges damp*T_bare.mu  (matches the trained edge_sparse
     // operator; no FFT/reciprocal/self -> the diagonal omega^2 lives in coupled_matvec). O(E) -> fast. ----
