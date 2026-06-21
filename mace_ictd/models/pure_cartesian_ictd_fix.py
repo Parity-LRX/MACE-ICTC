@@ -2691,6 +2691,24 @@ class PureCartesianICTDFix(nn.Module):
             mbd_pme_ewald_alpha_prefactor=self.mbd_pme_ewald_alpha_prefactor,
         )
 
+        # MBD-source packing metadata (read by the exporter -> .json -> C++ engine/pair-style). When the
+        # mbd-slq head exports a source, the deploy forward emits [electrostatic | omega, alpha]; the MBD
+        # (omega,alpha) begins at offset = the electrostatic source width (0 if no electrostatic source).
+        self.long_range_mbd_source_enabled = bool(
+            self.dispersion is not None and self.dispersion.exports_mbd_source()
+        )
+        _l = self.long_range_max_multipole_l
+        self.long_range_mbd_source_offset = (
+            int(getattr(self, "long_range_runtime_source_channels", 0))
+            * (1 + (3 if _l >= 1 else 0) + (9 if _l >= 2 else 0))
+            if self.long_range_exports_reciprocal_source
+            else 0
+        )
+        if self.long_range_mbd_source_enabled:
+            # emit the reciprocal_source even for an MBD-only model (no electrostatics) so the C++ MBD
+            # solver gets (omega, alpha); the reciprocal solver stays gated on the electrostatic channels.
+            self.long_range_exports_reciprocal_source = True
+
         # Optional fixed scale/shift on the network (short-range) per-atom interaction energy.
         # This mirrors MACE ScaleShiftMACE: E_inter_atom = scale * readout + shift. OFF by
         # default -> None buffers are excluded from state_dict, so old checkpoints load unchanged
@@ -3074,10 +3092,15 @@ class PureCartesianICTDFix(nn.Module):
                     last_state.shape[0], self.channels
                 )
             if return_reciprocal_source and self.dispersion.exports_mbd_source():
-                # Deploy: emit the head's (omega, alpha) as the MBD reciprocal_source and DEFER the
-                # coupled-dipole energy to the C++ MBD solver -- do NOT add self.dispersion(...) here,
-                # else the traced Python dispersion energy would be double-counted with the C++ one.
-                reciprocal_source = self.dispersion.emit_source(disp_feat)
+                # Deploy: emit the head's (omega, alpha) as the MBD source and DEFER the coupled-dipole
+                # energy to the C++ MBD solver (no double count). PACK after any electrostatic source so
+                # a COMBINED model carries both: [elec | omega, alpha]. The C++ reciprocal solver ignores
+                # the trailing channels; the MBD solver reads source[:, mbd_offset:mbd_offset+2].
+                mbd_source = self.dispersion.emit_source(disp_feat)
+                reciprocal_source = (
+                    mbd_source if reciprocal_source is None
+                    else torch.cat([reciprocal_source, mbd_source], dim=1)
+                )
             else:
                 disp_edge_src = edge_src
                 disp_edge_dst = edge_dst

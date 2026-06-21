@@ -62,6 +62,10 @@ def _long_range_deploy_metadata(
     s_chan = int(getattr(getattr(model, "multipole_readout", None), "source_channels", 1) or 1)
     dispersion_mode = str(getattr(model, "long_range_dispersion_mode", "none"))
     mbd_operator_backend = str(getattr(model, "mbd_operator_backend", "edge_sparse"))
+    mbd_source_enabled = bool(getattr(model, "long_range_mbd_source_enabled", False))
+    _disp = getattr(model, "dispersion", None)
+    _mbd_beta = float(_disp.mbd_beta()) if (mbd_source_enabled and _disp is not None) else 1.0
+    _mbd_cs = float(_disp.mbd_coupling_scale()) if (mbd_source_enabled and _disp is not None) else 1.0
     return {
         "export_reciprocal_source": bool(export_reciprocal_source),
         "reciprocal_source_channels": s_chan,
@@ -119,6 +123,13 @@ def _long_range_deploy_metadata(
         "long_range_multipole_order": 0,
         "long_range_screening": 0.0,
         "long_range_softening": 1.0e-6,
+        # MBD source packing: the deploy source is [electrostatic | omega, alpha]; the C++ MBD solver
+        # reads source[:, offset:offset+channels] and uses these learned damping params.
+        "long_range_mbd_source_enabled": mbd_source_enabled,
+        "long_range_mbd_source_offset": int(getattr(model, "long_range_mbd_source_offset", 0)),
+        "long_range_mbd_source_channels": 2,
+        "long_range_mbd_beta": _mbd_beta,
+        "long_range_mbd_coupling_scale": _mbd_cs,
     }
 
 
