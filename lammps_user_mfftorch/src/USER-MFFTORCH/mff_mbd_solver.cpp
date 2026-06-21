@@ -94,13 +94,17 @@ torch::Tensor MFFMBDSolver::dipole_field(
     const torch::Tensor& pos, const torch::Tensor& mu, const torch::Tensor& cell, double alpha,
     const torch::Tensor& src, const torch::Tensor& dst, const torch::Tensor& shifts,
     const torch::Device& device, const torch::Tensor& alpha_pol, double beta, bool damping) const {
+  const int64_t N = pos.size(0);
   auto eff = cell.to(device);  // inherit input dtype (float32 on GPU; float64 in the tests)
   auto field = torch::zeros_like(mu);
+  // mu is [N,3] (one vector) or [P,N,3] (P Hutchinson probes batched) -> ONE matvec over all probes.
+  const bool batched = mu.dim() == 3;
+  const int64_t P = batched ? mu.size(0) : 1;
 
   if (config_.use_fft) {
     // ---- pme_fft: mirror the trained apply_periodic_dipole_pme_field EXACTLY -- a reciprocal-ONLY smooth
-    // screened mesh operator (NO erfc near field, NO self, NO edge list). spectral = (4pi/V) wdeconv
-    // e^{-k^2/4a^2}; field_fft = spectral k (k.mu)/k^2. alpha is box-tied = prefactor/(0.5 Lmin). ----
+    // screened mesh operator (NO erfc near field, NO self, NO edge list). The P probes ride as FFT channels:
+    // spectral = (4pi/V) wdeconv e^{-k^2/4a^2}; field_fft = spectral k (k.mu)/k^2. alpha = prefactor/(0.5 Lmin).
     const int M = config_.mesh_size;
     auto inv = torch::linalg_inv(eff);
     auto frac = torch::matmul(pos, inv);
@@ -108,10 +112,12 @@ torch::Tensor MFFMBDSolver::dipole_field(
     auto k_cart = k_grid_cart(eff, device);                                   // [K,3]
     auto k2 = (k_cart * k_cart).sum(-1).clamp_min(1e-12);                      // [K]
     auto volume = torch::det(eff).abs().clamp_min(1e-6);
-    auto mu_mesh = spread_to_mesh(frac, mu, config_.pbc);
-    auto mu_k = torch::fft::fftn(mu_mesh, {}, {0, 1, 2}).reshape({-1, 3});     // [K,3] complex
-    auto kc = k_cart.to(mu_k.dtype());
-    auto kdotmu = (kc * mu_k).sum(-1);                                        // [K] complex
+    // pack the probe batch into the spread channel: [P,N,3] -> [N, P*3]  (no-op for [N,3]).
+    auto mu_nc = batched ? mu.permute({1, 0, 2}).reshape({N, P * 3}).contiguous() : mu;
+    auto mu_mesh = spread_to_mesh(frac, mu_nc, config_.pbc);                  // [M,M,M, P*3]
+    auto mu_k = torch::fft::fftn(mu_mesh, {}, {0, 1, 2}).reshape({-1, P, 3}); // [K,P,3] complex
+    auto kc = k_cart.to(mu_k.dtype());                                        // [K,3]
+    auto kdotmu = (kc.unsqueeze(1) * mu_k).sum(-1);                           // [K,P] complex
     auto screen = torch::exp(-k2 / (4.0 * alpha * alpha));
     // assignment-window deconvolution 1/|W|^2, W = prod_axes sinc(m/M)^exp (exp=2 cic / 4 pcs).
     auto dopt = torch::TensorOptions().dtype(eff.scalar_type()).device(device);
@@ -120,20 +126,22 @@ torch::Tensor MFFMBDSolver::dipole_field(
     auto wdeconv = torch::reciprocal(win.clamp_min(1e-6).square());                // [K]
     auto scale = (4.0 * M_PI) / volume * screen * wdeconv / k2;               // [K]  +4pi/V e^{-k^2/4a^2}/|W|^2/k^2
     scale = torch::where(k2 > 1e-12, scale, torch::zeros_like(scale));        // zero k=0 (tinfoil)
-    auto e_k = (scale.to(mu_k.dtype()).unsqueeze(-1) * kc) * kdotmu.unsqueeze(-1);  // [K,3]
-    auto e_mesh = torch::real(torch::fft::ifftn(e_k.reshape({M, M, M, 3}), {}, {0, 1, 2})) * std::pow((double)M, 3);
-    field = gather_from_mesh(frac, e_mesh, config_.pbc);                      // [N,3]  (no self, no near field)
+    auto e_k = (scale.to(mu_k.dtype()).unsqueeze(-1).unsqueeze(-1) * kc.unsqueeze(1)) * kdotmu.unsqueeze(-1);  // [K,P,3]
+    auto e_mesh = torch::real(torch::fft::ifftn(e_k.reshape({M, M, M, P * 3}), {}, {0, 1, 2})) * std::pow((double)M, 3);
+    auto gathered = gather_from_mesh(frac, e_mesh, config_.pbc);              // [N, P*3]
+    field = batched ? gathered.reshape({N, P, 3}).permute({1, 0, 2}).contiguous() : gathered;
   } else if (src.numel() > 0) {
     // ---- edge_sparse (default): field += sum_edges damp*T_bare.mu  (matches the trained edge_sparse
     // operator; no FFT/reciprocal/self -> the diagonal omega^2 lives in coupled_matvec). O(E) -> fast. ----
+    const int64_t bd = mu.dim() - 2;  // the N axis: 0 for [N,3], 1 for [P,N,3]
     auto shift_cart = torch::matmul(shifts.to(eff.scalar_type()), eff);
     auto rvec = pos.index_select(0, dst) - pos.index_select(0, src) + shift_cart;  // [E,3]
     auto r = torch::linalg_vector_norm(rvec, 2, -1).clamp_min(1e-12);
-    auto r2 = r * r, r3 = r2 * r, r5 = r3 * r2;
-    auto mu_src = mu.index_select(0, src);
-    auto rdotmu = (rvec * mu_src).sum(-1);
+    auto r2 = r * r, r3 = r2 * r, r5 = r3 * r2;                               // [E]
+    auto mu_src = mu.index_select(bd, src);                                   // [...,E,3]
+    auto rdotmu = (rvec * mu_src).sum(-1);                                    // [...,E]  (rvec [E,3] broadcasts)
     // bare dipole tensor contraction: T_bare.mu = 3(r.mu)r/r^5 - mu/r^3,  T_bare = (3 rr - I)/r^3.
-    auto t_bare = 3.0 * rdotmu.unsqueeze(-1) * rvec / r5.unsqueeze(-1) - mu_src / r3.unsqueeze(-1);
+    auto t_bare = 3.0 * rdotmu.unsqueeze(-1) * rvec / r5.unsqueeze(-1) - mu_src / r3.unsqueeze(-1);  // [...,E,3]
     // rsSCS damping: damp = 1 - exp(-(r/(beta*R))^6), R = a_i^1/3 + a_j^1/3.
     torch::Tensor damp;
     if (damping && alpha_pol.defined()) {
@@ -143,7 +151,7 @@ torch::Tensor MFFMBDSolver::dipole_field(
     } else {
       damp = torch::ones_like(r);
     }
-    field = field.index_add(0, dst, damp.unsqueeze(-1) * t_bare);
+    field = field.index_add(bd, dst, damp.unsqueeze(-1) * t_bare);           // [...,E,3] -> [...,N,3]
   }
   return field;
 }
@@ -199,8 +207,9 @@ torch::Tensor MFFMBDSolver::mbd_energy(
   double alpha_ew = (alpha_ewald > 0.0) ? alpha_ewald : config_.ewald_alpha_prefactor / (0.5 * Lmin);
 
   auto mv = [&](const torch::Tensor& v) {
-    return coupled_matvec(v.view({N, 3}), omega, alpha, global_pos, cell, alpha_ew, src, dst, shifts, device)
-        .reshape({-1});
+    // v is [n] (one vector) or [P,n] (P probes) -> [.,N,3] -> coupled matvec -> back to v's shape.
+    auto y = coupled_matvec(v.reshape({-1, N, 3}), omega, alpha, global_pos, cell, alpha_ew, src, dst, shifts, device);
+    return y.reshape(v.sizes());
   };
 
   // --- spectral bounds: fixed (config) for conservative MD, else matvec-only power iteration ---
@@ -241,21 +250,18 @@ torch::Tensor MFFMBDSolver::mbd_energy(
 
   // --- Hutchinson + Chebyshev recurrence (fixed Rademacher probes) ---
   auto gen = at::detail::createCPUGenerator(0);
-  auto probes = (2.0 * torch::randint(0, 2, {config_.num_probes, n}, gen, torch::TensorOptions().dtype(torch::kFloat64)) - 1.0).to(opt);
-  auto tr = torch::zeros({}, opt);
-  for (int r = 0; r < config_.num_probes; ++r) {
-    auto z = probes[r];
-    auto t_prev = z;
-    auto t_cur = smv(z);
-    auto s = coef[0] * (z * z).sum() + coef[1] * (z * t_cur).sum();
-    for (int kx = 2; kx <= deg; ++kx) {
-      auto t_next = 2.0 * smv(t_cur) - t_prev;
-      s = s + coef[kx] * (z * t_next).sum();
-      t_prev = t_cur; t_cur = t_next;
-    }
-    tr = tr + s;
+  auto Z = (2.0 * torch::randint(0, 2, {config_.num_probes, n}, gen, torch::TensorOptions().dtype(torch::kFloat64)) - 1.0).to(opt);  // [P,n]
+  // BATCHED Hutchinson + Chebyshev: all P probes ride ONE recurrence -> degree (not P*degree) sequential
+  // matvecs. Numerically identical to the per-probe loop (same fixed probes), just one batched matvec/step.
+  auto t_prev = Z;
+  auto t_cur = smv(Z);                                                  // [P,n]
+  auto s = coef[0] * (Z * Z).sum(-1) + coef[1] * (Z * t_cur).sum(-1);   // [P]
+  for (int kx = 2; kx <= deg; ++kx) {
+    auto t_next = 2.0 * smv(t_cur) - t_prev;                            // [P,n]
+    s = s + coef[kx] * (Z * t_next).sum(-1);                            // [P]
+    t_prev = t_cur; t_cur = t_next;
   }
-  tr = tr / (double)config_.num_probes;
+  auto tr = s.mean();                                                   // (1/P) sum_p z_p^T sqrt(C) z_p
   return 0.5 * tr - 1.5 * omega.sum();
 }
 
