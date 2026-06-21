@@ -23,6 +23,8 @@
 namespace mfftorch {
 
 struct MBDConfig {
+  int assignment = 1;                   // mesh assignment: 0=CIC (2nd order), 1=PCS (4th-order cubic
+                                        // B-spline) -> C^1 forces everywhere (no mesh-cell kink)
   int mesh_size = 32;                   // box-tied fallback only; the cutoff path adapts the mesh to alpha
   double ewald_alpha_prefactor = 5.0;  // box-tied fallback: alpha = prefactor / (0.5 * min box length)
   double ewald_bound = 5.0;            // cutoff path: alpha = ewald_bound / r_cut  (erfc(ewald_bound)=SR err)

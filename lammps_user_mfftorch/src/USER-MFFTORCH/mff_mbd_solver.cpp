@@ -22,6 +22,22 @@ static torch::Tensor fft_freqs(int M, torch::TensorOptions opt) {
   return torch::where(f < split, f, f - M);
 }
 
+// stencil size + window exponent per assignment (matches Python _assignment_stencil_size).
+static int assignment_stencil(int a) { return a == 1 ? 4 : 2; }  // 1=pcs (4-pt cubic), 0=cic (2-pt)
+
+// per-axis assignment weights w[0..S-1] (each [N]) for the in-cell offset f in [0,1).
+// Mirrors Python _assignment_kernel_1d (cic: linear; pcs: cubic B-spline).
+static std::vector<torch::Tensor> axis_weights(const torch::Tensor& f, int a) {
+  if (a == 1) {  // pcs (cubic B-spline) -> C^2 weight, C^1 force, no mesh-cell discontinuity
+    auto f2 = f * f, f3 = f2 * f;
+    return {torch::pow(1.0 - f, 3) / 6.0,
+            (3.0 * f3 - 6.0 * f2 + 4.0) / 6.0,
+            (-3.0 * f3 + 3.0 * f2 + 3.0 * f + 1.0) / 6.0,
+            f3 / 6.0};
+  }
+  return {1.0 - f, f};  // cic (linear)
+}
+
 torch::Tensor MFFMBDSolver::k_grid_cart(const torch::Tensor& eff_cell, const torch::Device& device) const {
   const int M = config_.mesh_size;
   auto cpu = torch::TensorOptions().dtype(torch::kFloat64).device(torch::kCPU);
@@ -32,27 +48,25 @@ torch::Tensor MFFMBDSolver::k_grid_cart(const torch::Tensor& eff_cell, const tor
   return (2.0 * M_PI * torch::matmul(ik, inv.transpose(0, 1))).to(device);     // [K,3]
 }
 
-// CIC spread: atoms [N,C] -> mesh [M,M,M,C] (matches Python assignment="cic").
+// spread atoms [N,C] -> mesh [M,M,M,C]. S^3 stencil (S=2 cic / 4 pcs); matches Python _spread_source_to_mesh.
 torch::Tensor MFFMBDSolver::spread_to_mesh(const torch::Tensor& frac, const torch::Tensor& source,
                                            const std::array<int, 3>&) const {
-  const int M = config_.mesh_size;
-  const int C = source.size(1);
+  const int M = config_.mesh_size, C = source.size(1), a = config_.assignment, S = assignment_stencil(a);
   auto mesh = torch::zeros({M * M * M, C}, source.options());
   auto scaled = frac * (double)M;
-  auto base = torch::floor(scaled).to(torch::kLong);          // [N,3]
-  auto f = scaled - base.to(scaled.dtype());                  // [N,3] in [0,1)
-  // 8 CIC corners
-  for (int cx = 0; cx < 2; ++cx)
-    for (int cy = 0; cy < 2; ++cy)
-      for (int cz = 0; cz < 2; ++cz) {
-        auto wx = cx ? f.select(1, 0) : (1.0 - f.select(1, 0));
-        auto wy = cy ? f.select(1, 1) : (1.0 - f.select(1, 1));
-        auto wz = cz ? f.select(1, 2) : (1.0 - f.select(1, 2));
-        auto w = (wx * wy * wz).unsqueeze(-1);                // [N,1]
-        auto ix = torch::remainder(base.select(1, 0) + cx, M);
-        auto iy = torch::remainder(base.select(1, 1) + cy, M);
-        auto iz = torch::remainder(base.select(1, 2) + cz, M);
-        auto flat = (ix * M + iy) * M + iz;                   // [N]
+  auto floor_scaled = torch::floor(scaled);
+  auto f = scaled - floor_scaled;                                          // [N,3] in [0,1)
+  auto base = floor_scaled.to(torch::kLong) - (a == 1 ? 1 : 0);           // pcs base = floor-1
+  std::vector<torch::Tensor> WX = axis_weights(f.select(1, 0), a), WY = axis_weights(f.select(1, 1), a),
+                             WZ = axis_weights(f.select(1, 2), a);
+  for (int ox = 0; ox < S; ++ox)
+    for (int oy = 0; oy < S; ++oy)
+      for (int oz = 0; oz < S; ++oz) {
+        auto w = (WX[ox] * WY[oy] * WZ[oz]).unsqueeze(-1);                 // [N,1]
+        auto ix = torch::remainder(base.select(1, 0) + ox, M);
+        auto iy = torch::remainder(base.select(1, 1) + oy, M);
+        auto iz = torch::remainder(base.select(1, 2) + oz, M);
+        auto flat = (ix * M + iy) * M + iz;                               // [N]
         mesh.scatter_add_(0, flat.unsqueeze(-1).expand({-1, C}), source * w);
       }
   return mesh.view({M, M, M, C});
@@ -60,23 +74,22 @@ torch::Tensor MFFMBDSolver::spread_to_mesh(const torch::Tensor& frac, const torc
 
 torch::Tensor MFFMBDSolver::gather_from_mesh(const torch::Tensor& frac, const torch::Tensor& mesh,
                                              const std::array<int, 3>&) const {
-  const int M = config_.mesh_size;
-  const int C = mesh.size(-1);
+  const int M = config_.mesh_size, C = mesh.size(-1), a = config_.assignment, S = assignment_stencil(a);
   auto flat_mesh = mesh.view({-1, C});
   auto scaled = frac * (double)M;
-  auto base = torch::floor(scaled).to(torch::kLong);
-  auto f = scaled - base.to(scaled.dtype());
+  auto floor_scaled = torch::floor(scaled);
+  auto f = scaled - floor_scaled;
+  auto base = floor_scaled.to(torch::kLong) - (a == 1 ? 1 : 0);
+  std::vector<torch::Tensor> WX = axis_weights(f.select(1, 0), a), WY = axis_weights(f.select(1, 1), a),
+                             WZ = axis_weights(f.select(1, 2), a);
   auto out = torch::zeros({frac.size(0), C}, mesh.options());
-  for (int cx = 0; cx < 2; ++cx)
-    for (int cy = 0; cy < 2; ++cy)
-      for (int cz = 0; cz < 2; ++cz) {
-        auto wx = cx ? f.select(1, 0) : (1.0 - f.select(1, 0));
-        auto wy = cy ? f.select(1, 1) : (1.0 - f.select(1, 1));
-        auto wz = cz ? f.select(1, 2) : (1.0 - f.select(1, 2));
-        auto w = (wx * wy * wz).unsqueeze(-1);
-        auto ix = torch::remainder(base.select(1, 0) + cx, M);
-        auto iy = torch::remainder(base.select(1, 1) + cy, M);
-        auto iz = torch::remainder(base.select(1, 2) + cz, M);
+  for (int ox = 0; ox < S; ++ox)
+    for (int oy = 0; oy < S; ++oy)
+      for (int oz = 0; oz < S; ++oz) {
+        auto w = (WX[ox] * WY[oy] * WZ[oz]).unsqueeze(-1);
+        auto ix = torch::remainder(base.select(1, 0) + ox, M);
+        auto iy = torch::remainder(base.select(1, 1) + oy, M);
+        auto iz = torch::remainder(base.select(1, 2) + oz, M);
         auto flat = (ix * M + iy) * M + iz;
         out = out + flat_mesh.index_select(0, flat) * w;
       }
@@ -101,9 +114,9 @@ torch::Tensor MFFMBDSolver::dipole_field(
   auto kc = k_cart.to(mu_k.dtype());
   auto kdotmu = (kc * mu_k).sum(-1);                                        // [K] complex
   auto screen = torch::exp(-k2 / (4.0 * alpha * alpha));
-  // CIC assignment-window deconvolution 1/|W|^2, W = prod_axes sinc(m/M)^2 (matches Python backend).
+  // assignment-window deconvolution 1/|W|^2, W = prod_axes sinc(m/M)^exp (exp=2 cic / 4 pcs; Python backend).
   auto cpu2 = torch::TensorOptions().dtype(torch::kFloat64).device(torch::kCPU);
-  auto sinc1d = torch::sinc(fft_freqs(M, cpu2) / (double)M).pow(2).to(device);   // [M]
+  auto sinc1d = torch::sinc(fft_freqs(M, cpu2) / (double)M).pow(assignment_stencil(config_.assignment)).to(device);  // [M]
   auto win = (sinc1d.view({M, 1, 1}) * sinc1d.view({1, M, 1}) * sinc1d.view({1, 1, M})).reshape({-1});
   auto wdeconv = torch::reciprocal(win.clamp_min(1e-6).square());                // [K]
   auto scale = -(4.0 * M_PI) / volume * screen * wdeconv / k2;              // [K]  (-4pi/V k k/k^2 / |W|^2)
@@ -323,13 +336,18 @@ int main() {
   auto src = torch::tensor({0, 1}, torch::TensorOptions().dtype(torch::kLong));
   auto dst = torch::tensor({1, 0}, torch::TensorOptions().dtype(torch::kLong));
   auto sh = torch::zeros({2, 3}, o);
-  MBDConfig cfg; cfg.mesh_size = 32;
+  const char* names[2] = {"CIC", "PCS"};
+  for (int a = 0; a < 2; ++a) {  // verify BOTH assignments match the Python backend
+    MBDConfig cfg; cfg.mesh_size = 32; cfg.assignment = a;
+    MFFMBDSolver solver; solver.set_config(cfg);
+    auto f = solver.dipole_field(pos, mu, cell, /*alpha=*/1.0, src, dst, sh, torch::kCPU);
+    std::printf("CPP_%s_SUM %.10f\n", names[a], f.sum().item<double>());
+    std::printf("CPP_%s_SQ %.10f\n", names[a], (f * f).sum().item<double>());
+  }
+  // full solver end-to-end (pcs): source [N,2] = (omega, alpha); power-iter bounds + Chebyshev energy.
+  MBDConfig cfg; cfg.mesh_size = 32; cfg.cheb_degree = 20; cfg.num_probes = 64;  // assignment defaults to pcs
   MFFMBDSolver solver; solver.set_config(cfg);
-  auto f = solver.dipole_field(pos, mu, cell, /*alpha=*/1.0, src, dst, sh, torch::kCPU);
-  std::printf("CPP_FIELD_SUM %.10f\nCPP_FIELD_SQ %.10f\n", f.sum().item<double>(), (f * f).sum().item<double>());
-  // full solver end-to-end: source [N,2] = (omega, alpha); power-iter bounds + Chebyshev energy.
   auto source = torch::tensor({{1.0, 0.3}, {1.1, 0.3}}, o);  // (omega, alpha_pol)
-  cfg.cheb_degree = 20; cfg.num_probes = 64; solver.set_config(cfg);
   auto E = solver.mbd_energy(pos, source, cell, src, dst, sh, torch::kCPU);
   std::printf("CPP_E_MBD %.8f (finite=%d)\n", E.item<double>(), (int)std::isfinite(E.item<double>()));
   return 0;
@@ -339,57 +357,46 @@ int main() {
 #ifdef MBD_MD_TEST
 #include <cstdio>
 #include <vector>
-// End-to-end driver mimicking the pair-style contract: a real periodic crystal -> compute() ->
-// energy + autograd forces; verifies forces are CONSERVATIVE (-dE/dx == central finite difference)
-// and that a velocity-Verlet MD step advances and stays finite.
+// Demonstrates PCS (4th-order) gives CONSERVATIVE forces at mesh-cell boundaries where 2nd-order CIC
+// does NOT. The crystal sits ON the grid (z = k*3 -> scaled 8k = integer at mesh 24; atoms 0=(0,0,0)
+// and 26=(6,6,6) fully on boundaries), so the boundary-aligned components are exactly the CIC
+// force-discontinuity case. Per assignment: fix spectral bounds (-> deterministic surrogate) then
+// check autograd force == central finite difference.
 int main() {
   using namespace mfftorch;
   auto o = torch::TensorOptions().dtype(torch::kFloat64);
-  const int nx = 3; const double a = 3.0; const double L = nx * a;       // simple-cubic 3x3x3, box 9 A
+  const int nx = 3; const double a = 3.0; const double L = nx * a;
   std::vector<std::array<double, 3>> P;
-  // global non-commensurate offset (0.137,0.241,0.073) keeps every atom OFF the mesh-cell boundaries,
-  // where 2nd-order CIC has a known force discontinuity (one-sided autograd vs centred FD). Production
-  // MD needs a higher-order (PCS) assignment for everywhere-smooth forces.
   for (int i = 0; i < nx; ++i) for (int j = 0; j < nx; ++j) for (int k = 0; k < nx; ++k)
-    P.push_back({i * a + 0.15 * ((i + j + k) % 2) + 0.137, j * a + 0.1 * (k % 2) + 0.241, k * a + 0.073});
+    P.push_back({i * a + 0.15 * ((i + j + k) % 2), j * a + 0.1 * (k % 2), k * a});  // z = k*3, ON the grid
   const int N = (int)P.size();
   auto pos = torch::zeros({N, 3}, o);
   for (int n = 0; n < N; ++n) { pos[n][0] = P[n][0]; pos[n][1] = P[n][1]; pos[n][2] = P[n][2]; }
   auto cell = torch::eye(3, o) * L;
-  auto source = torch::zeros({N, 2}, o);                                 // (omega, alpha_pol), 2 sublattices
+  auto source = torch::zeros({N, 2}, o);
   for (int n = 0; n < N; ++n) { source[n][0] = (n % 2 ? 1.1 : 1.0); source[n][1] = 0.30; }
 
-  MBDConfig cfg; cfg.mesh_size = 24; cfg.cheb_degree = 20; cfg.num_probes = 48; cfg.ewald_alpha_prefactor = 5.0;
-  MFFMBDSolver solver; solver.set_config(cfg);
-  auto out = solver.compute(pos, source, cell, torch::kCPU);
-  // FIX the spectral bounds (derived once, padded) over the trajectory -> E smooth in p -> conservative.
-  cfg.cheb_lmin = out.lmin / 1.2; cfg.cheb_lmax = out.lmax * 1.2; solver.set_config(cfg);
-  out = solver.compute(pos, source, cell, torch::kCPU);
-  std::printf("N=%d  E_MBD=%.8f  bounds=[%.3f,%.3f]  |F|max=%.3e  Fsum=(%.1e,%.1e,%.1e)\n", N, out.energy,
-              cfg.cheb_lmin, cfg.cheb_lmax, out.forces.abs().max().item<double>(),
-              out.forces.select(1, 0).sum().item<double>(), out.forces.select(1, 1).sum().item<double>(),
-              out.forces.select(1, 2).sum().item<double>());
-
-  const double h = 1e-5; double worst = 0.0;
-  auto Eat = [&](int atom, int comp, double dh) { auto pp = pos.clone(); pp[atom][comp] += dh;
-                                                  return solver.compute(pp, source, cell, torch::kCPU).energy; };
-  for (int atom : {0, N / 2, N - 1})
-    for (int comp = 0; comp < 3; ++comp) {
-      double fd = -(Eat(atom, comp, h) - Eat(atom, comp, -h)) / (2 * h);
-      double fa = out.forces[atom][comp].item<double>();
-      double rel = std::abs(fa - fd) / (std::abs(fd) + 1e-6);
-      worst = std::max(worst, rel);
-      std::printf("  atom %2d comp %d: F_analytic=% .6e  F_fd=% .6e  rel=%.2e\n", atom, comp, fa, fd, rel);
-    }
-  std::printf("worst conservativity rel err = %.2e %s\n", worst, worst < 1e-3 ? "(CONSERVATIVE)" : "(CHECK)");
-
-  const double dt = 0.5;                                                 // velocity-Verlet, unit mass
-  auto vel = torch::zeros({N, 3}, o);
-  auto x = pos.clone() + dt * vel + 0.5 * dt * dt * out.forces;
-  auto out1 = solver.compute(x, source, cell, torch::kCPU);
-  vel = vel + 0.5 * dt * (out.forces + out1.forces);
-  std::printf("after 1 Verlet step: E=%.8f finite=%d  max disp=%.4f\n", out1.energy,
-              (int)std::isfinite(out1.energy), (x - pos).abs().max().item<double>());
+  const char* names[2] = {"CIC", "PCS"};
+  for (int asg = 0; asg < 2; ++asg) {
+    // mesh 12: z=k*3 -> scaled 4k = integer -> atoms 0,26 ON cell boundaries; small for the FD sweep.
+    MBDConfig cfg; cfg.assignment = asg; cfg.mesh_min = cfg.mesh_max = 12;
+    cfg.cheb_degree = 14; cfg.num_probes = 16; cfg.ewald_alpha_prefactor = 5.0;
+    MFFMBDSolver solver; solver.set_config(cfg);
+    auto out = solver.compute(pos, source, cell, torch::kCPU);
+    cfg.cheb_lmin = out.lmin / 1.2; cfg.cheb_lmax = out.lmax * 1.2; solver.set_config(cfg);
+    out = solver.compute(pos, source, cell, torch::kCPU);
+    const double h = 1e-5; double worst = 0.0;
+    auto Eat = [&](int atom, int comp, double dh) { auto pp = pos.clone(); pp[atom][comp] += dh;
+                                                    return solver.compute(pp, source, cell, torch::kCPU).energy; };
+    for (int atom : {0, N / 2, N - 1})
+      for (int comp = 0; comp < 3; ++comp) {
+        double fd = -(Eat(atom, comp, h) - Eat(atom, comp, -h)) / (2 * h);
+        double fa = out.forces[atom][comp].item<double>();
+        worst = std::max(worst, std::abs(fa - fd) / (std::abs(fd) + 1e-6));
+      }
+    std::printf("assignment=%s mesh=%d (atoms ON cell boundaries): E=%.8f worst conservativity rel err = %.2e  %s\n",
+                names[asg], cfg.mesh_min, out.energy, worst, worst < 1e-3 ? "CONSERVATIVE" : "DISCONTINUOUS-FORCE");
+  }
   return 0;
 }
 #endif
