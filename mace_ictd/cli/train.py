@@ -362,7 +362,7 @@ def build_baseline_model(
     long_range_mesh_fft_full_ewald: bool = False,
     long_range_max_multipole_l: int = 0,
     long_range_dispersion_mode: str = "none",
-    dispersion_cutoff: float = 10.0,
+    dispersion_cutoff: float = 8.0,
     dispersion_max_num_neighbors: int | None = None,
     dispersion_neighbor_method: str = "auto",
     dispersion_bruteforce_threshold: int = 1024,
@@ -370,7 +370,7 @@ def build_baseline_model(
     dispersion_slq_num_probes: int = 8,
     dispersion_slq_lanczos_steps: int = 16,
     mbd_operator_backend: str = "edge_sparse",
-    mbd_pme_mesh_size: int = 16,
+    mbd_pme_mesh_size: int = 32,
     mbd_pme_assignment: str = "cic",
     mbd_pme_k_norm_floor: float = 1.0e-6,
     mbd_pme_assignment_window_floor: float = 1.0e-6,
@@ -539,8 +539,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--long-range-dispersion", dest="long_range_dispersion_mode",
                     action="store_const", const="pairwise-c6",
                     help="Deprecated alias for --long-range-dispersion-mode pairwise-c6.")
-    ap.add_argument("--dispersion-cutoff", type=float, default=10.0,
-                    help="Cutoff for the long-range dispersion neighbor list. Use 0 to reuse the input edge list.")
+    ap.add_argument("--dispersion-cutoff", type=float, default=8.0,
+                    help="Cutoff (A) for the long-range dispersion neighbor list. ~8 gives ~5%% MBD-energy "
+                         "convergence (energy decays ~1/r^6). Use 0 to reuse the input edge list.")
     ap.add_argument("--dispersion-max-num-neighbors", type=int, default=0,
                     help="Optional max neighbors per atom for torch_cluster dispersion radius search. "
                          "0 estimates a conservative cap from density and cutoff.")
@@ -563,8 +564,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
                          "that bypasses the real-space graph. BOTH deploy: AOTI/LAMMPS export the (omega,alpha) "
                          "head and the C++ MBD solver runs the matching operator (edge_sparse=direct, pme_fft="
                          "use_fft). Match the backend across train and deploy for consistent forces.")
-    ap.add_argument("--mbd-pme-mesh-size", type=int, default=16,
-                    help="Mesh size for experimental --mbd-operator-backend pme_fft.")
+    ap.add_argument("--mbd-pme-mesh-size", type=int, default=32,
+                    help="PME mesh size for --mbd-operator-backend pme_fft (finer = more accurate at larger boxes).")
     ap.add_argument("--mbd-pme-assignment", default="cic", choices=["ngp", "cic", "pcs"],
                     help="Mesh assignment for experimental --mbd-operator-backend pme_fft.")
     ap.add_argument("--mbd-pme-k-norm-floor", type=float, default=1.0e-6,

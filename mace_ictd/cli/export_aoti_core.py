@@ -619,9 +619,10 @@ def main() -> int:
                    help="synthetic combined export: electrostatic multipole order l (0=monopole)")
     p.add_argument("--dispersion-mode", dest="dispersion_mode_arg", default=None,
                    help="synthetic combined export: long-range dispersion mode (e.g. mbd-slq)")
-    p.add_argument("--dispersion-cutoff", dest="dispersion_cutoff_arg", type=float, default=4.0,
-                   help="synthetic combined export: dispersion cutoff")
-    p.add_argument("--lr-mesh-size", dest="lr_mesh_size_arg", type=int, default=16,
+    p.add_argument("--dispersion-cutoff", dest="dispersion_cutoff_arg", type=float, default=8.0,
+                   help="synthetic combined export: dispersion cutoff (A). ~8 gives ~5%% MBD-energy "
+                        "convergence (the energy decays ~1/r^6); 4 was ~48%% under-converged.")
+    p.add_argument("--lr-mesh-size", dest="lr_mesh_size_arg", type=int, default=32,
                    help="synthetic combined export: long-range/MBD PME mesh size")
     p.add_argument("--mbd-operator-backend", dest="mbd_operator_backend_arg", default=None,
                    choices=["edge_sparse", "pme_fft"],
