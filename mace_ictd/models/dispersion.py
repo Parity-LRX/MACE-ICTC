@@ -951,6 +951,20 @@ class ManyBodyDispersionSLQ(nn.Module):
         self.coupling_scale = nn.Parameter(torch.tensor(0.03))
         self.beta_raw = nn.Parameter(torch.tensor(1.0))
 
+    def emit_source(self, node_feats: torch.Tensor) -> torch.Tensor:
+        """Deploy path: per-atom MBD source (omega, alpha) [N,2] for the C++ MBD solver. Only the heads
+        run here -- the coupled-dipole energy is DEFERRED to the C++ backend (no double count). The
+        (omega, alpha) mirror forward() so the deployed source matches training."""
+        alpha = F.softplus(self.alpha_head(node_feats)).squeeze(-1) + self.alpha_floor
+        omega = F.softplus(self.omega_head(node_feats)).squeeze(-1) + self.omega_floor
+        return torch.stack([omega, alpha], dim=-1)
+
+    def mbd_beta(self) -> float:
+        return float(F.softplus(self.beta_raw) + 1.0e-6)
+
+    def mbd_coupling_scale(self) -> float:
+        return float(self.coupling_scale.detach())
+
     def _build_edge_sparse_matvec(
         self,
         *,
