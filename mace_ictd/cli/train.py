@@ -558,9 +558,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--dispersion-slq-lanczos-steps", type=int, default=16,
                     help="Lanczos steps per probe for --long-range-dispersion-mode mbd-slq.")
     ap.add_argument("--mbd-operator-backend", default="edge_sparse", choices=["edge_sparse", "pme_fft"],
-                    help="SLQ-MBD matrix-vector backend. edge_sparse uses the explicit dispersion graph; "
-                         "pme_fft is an experimental reciprocal-only torch.fft prototype for training/research; "
-                         "AOTI/LAMMPS export still refuses it until the cuFFT MBD matvec and corrections exist.")
+                    help="SLQ-MBD matrix-vector backend. edge_sparse uses the explicit cutoff dispersion graph "
+                         "(direct, fast for small/medium systems); pme_fft is a reciprocal-only torch.fft matvec "
+                         "that bypasses the real-space graph. BOTH deploy: AOTI/LAMMPS export the (omega,alpha) "
+                         "head and the C++ MBD solver runs the matching operator (edge_sparse=direct, pme_fft="
+                         "use_fft). Match the backend across train and deploy for consistent forces.")
     ap.add_argument("--mbd-pme-mesh-size", type=int, default=16,
                     help="Mesh size for experimental --mbd-operator-backend pme_fft.")
     ap.add_argument("--mbd-pme-assignment", default="cic", choices=["ngp", "cic", "pcs"],

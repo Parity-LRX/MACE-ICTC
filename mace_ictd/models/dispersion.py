@@ -128,8 +128,8 @@ def dispersion_cutoff_is_single_image_exact(cell: torch.Tensor, cutoff: float | 
     periodic axis, ``2 * cutoff`` must not exceed the cell face height.  If this
     is false, exact MBD cutoff edges can include multiple periodic images or
     self-image couplings that the current LAMMPS nearest-image graph cannot
-    represent; the future PME/cuFFT MBD matvec backend is the intended scalable
-    path for those cases.
+    represent; the ``pme_fft`` reciprocal-only MBD backend (deployable via the C++
+    use_fft solver) is the scalable path for those cases.
     """
     cell_mat = cell.reshape(-1, 3, 3)
     cutoff_t = torch.as_tensor(cutoff, device=cell_mat.device, dtype=cell_mat.dtype)
@@ -875,13 +875,21 @@ class ManyBodyDispersionSLQ(nn.Module):
         0.5 Tr sqrt(C) - 1.5 sum_i omega_i
 
     without constructing ``C`` or diagonalizing the full ``3N x 3N`` matrix. The
-    expensive operation is a matrix-vector product.  The current ``edge_sparse``
-    backend assembles that product from the cutoff dispersion edge list, so the
-    cost is O(num_probes * lanczos_steps * E_disp) for fixed-size graphs/probe
-    settings.  The operator backend is kept explicit so a later PME/cuFFT
-    reciprocal-space matvec can share the electrostatic mesh path without
-    changing the Lanczos/QHO energy surface.  The deterministic Rademacher
-    probes keep training and force labels reproducible.
+    expensive operation is a matrix-vector product, available in two operator
+    backends (select via ``operator_backend``):
+
+      * ``edge_sparse`` (default): assembles the product from the cutoff dispersion
+        edge list -- cost O(num_probes * lanczos_steps * E_disp); cutoff-truncated,
+        O(E) and fast for small/medium systems.
+      * ``pme_fft``: a reciprocal-only PME matvec (spread -> FFT -> screened dipole
+        kernel -> iFFT -> gather) that bypasses the real-space dispersion graph.
+
+    Both backends deploy: the LAMMPS/AOTI C++ MBD solver mirrors each operator
+    exactly (edge_sparse = direct damp*T_bare edge sum; pme_fft = the use_fft
+    reciprocal PME matching apply_periodic_dipole_pme_field to ~1e-10), so a model
+    trained with either backend deploys consistently -- MATCH the backend across
+    train and deploy.  The deterministic Rademacher probes keep training and force
+    labels reproducible.
     """
 
     AVAILABLE_OPERATOR_BACKENDS = {"edge_sparse", "pme_fft"}
