@@ -868,6 +868,88 @@ class ManyBodyDispersion(nn.Module):
         return per_atom.unsqueeze(-1)
 
 
+class _SqrtFirstMomentQuad(torch.autograd.Function):
+    r"""SLQ Gauss-quadrature estimate ``e_1^T sqrt_smooth(T) e_1`` with a degeneracy-safe backward.
+
+    For each batch element the estimate is the (0,0) entry of a smoothly-floored matrix square
+    root of the symmetric tridiagonal ``T`` ([B,k,k])::
+
+        est = e_1^T f(T) e_1 = sum_m (U[0,m])^2 f(lambda_m),
+        f(lambda) = sqrt(clamp_min(0.5 (lambda + sqrt(lambda^2 + eps^2)), eps)),  eps = eig_floor.
+
+    The forward diagonalizes ``T`` and contracts exactly like the previous in-line code, so the
+    result is bit-identical to ``(evecs[:,0,:].square() * smooth.clamp_min(eps).sqrt()).sum(-1)``.
+
+    The motivation for the custom backward: ``torch.linalg.eigh``'s built-in gradient routes through
+    the eigenvector sensitivity ``F_ij = 1/(lambda_i - lambda_j)``, which is +-inf when two Ritz
+    values coincide -- a real occurrence in MBD training when a large learned coupling drives nearly
+    degenerate Lanczos spectra, producing a sudden NaN gradient on a single geometry. The correct
+    gradient of a symmetric matrix function (Daleckii-Krein) uses the *divided difference* of ``f``
+    rather than ``1/(lambda_i - lambda_j)`` and is therefore finite at degeneracy: as
+    ``lambda_i -> lambda_j`` the divided difference tends to ``f'(lambda_i)``.
+    """
+
+    @staticmethod
+    def forward(ctx, tri: torch.Tensor, eig_floor: float) -> torch.Tensor:
+        eps = float(eig_floor)
+        # Empty batch: keep the [B] shape and a valid grad path (eigh on a 0-batch is fine, but
+        # short-circuit to avoid relying on backend behaviour for B=0).
+        if tri.shape[0] == 0:
+            ctx.eps = eps
+            ctx.save_for_backward(
+                tri.new_zeros(0, tri.shape[-1]),               # evals
+                tri.new_zeros(0, tri.shape[-1], tri.shape[-1]),  # evecs
+                tri.new_zeros(0, tri.shape[-1]),               # f
+                tri.new_zeros(0, tri.shape[-1]),               # fprime
+                tri.new_zeros(0, tri.shape[-1]),               # a
+            )
+            return tri.new_zeros(0)
+        evals, evecs = torch.linalg.eigh(tri)                  # [B,k], [B,k,k]
+        smooth = 0.5 * (evals + torch.sqrt(evals.square() + eps * eps))
+        f = smooth.clamp_min(eps).sqrt()                       # [B,k] = f(lambda)
+        a = evecs[:, 0, :]                                     # [B,k] first row U[0,:]
+        # smooth'(lambda) = 0.5 (1 + lambda / sqrt(lambda^2 + eps^2)); g'(lambda) = smooth' where
+        # smooth > eps else 0 (the clamp_min has zero slope on the floored branch).  f'(lambda) =
+        # g'(lambda) / (2 f(lambda)); f >= sqrt(eps) > 0 so the division is safe.
+        smooth_grad = 0.5 * (1.0 + evals / torch.sqrt(evals.square() + eps * eps))
+        gprime = torch.where(smooth > eps, smooth_grad, torch.zeros_like(smooth_grad))
+        fprime = gprime / (2.0 * f)                            # [B,k] = f'(lambda)
+        ctx.eps = eps
+        ctx.save_for_backward(evals, evecs, f, fprime, a)
+        return (a.square() * f).sum(dim=-1)                    # [B]
+
+    @staticmethod
+    def backward(ctx, grad_out: torch.Tensor):  # grad_out: [B]
+        evals, evecs, f, fprime, a = ctx.saved_tensors
+        if evals.shape[0] == 0:
+            return torch.zeros_like(evecs).new_zeros(evecs.shape), None
+
+        k = evals.shape[-1]
+        # Divided differences  f1_ij = (f_i - f_j) / (lambda_i - lambda_j) for i != j, and
+        # f1_ii = f'(lambda_i).  Build it degeneracy-safe with the where/safe-denominator trick so
+        # no 0/0 enters the autograd graph (this Function is itself differentiable, e.g. for
+        # gradcheck and double-backward through the divided difference).
+        lam_i = evals.unsqueeze(-1)                            # [B,k,1]
+        lam_j = evals.unsqueeze(-2)                            # [B,1,k]
+        f_i = f.unsqueeze(-1)
+        f_j = f.unsqueeze(-2)
+        denom = lam_i - lam_j                                  # [B,k,k]
+        # tol in the eigenvalue scale: 1e-7 absolute is appropriate for the O(1)-O(omega^2) Ritz
+        # values seen here; scale-free enough for the fp64 tests and the fp32 training spectrum.
+        tol = 1.0e-7
+        near = denom.abs() <= tol
+        denom_safe = torch.where(near, torch.ones_like(denom), denom)
+        diff = (f_i - f_j) / denom_safe
+        fprime_diag = fprime.unsqueeze(-1).expand(-1, k, k)    # broadcast f'(lambda_i) along j
+        f1 = torch.where(near, fprime_diag, diff)              # [B,k,k]
+
+        # M_ij = a_i a_j f1_ij ; G = U M U^T ; dest/dT = 0.5 (G + G^T), scaled by grad_out.
+        M = a.unsqueeze(-1) * a.unsqueeze(-2) * f1             # [B,k,k]
+        G = torch.matmul(torch.matmul(evecs, M), evecs.transpose(-1, -2))  # [B,k,k]
+        grad_tri = 0.5 * (G + G.transpose(-1, -2)) * grad_out.view(-1, 1, 1)
+        return grad_tri, None
+
+
 class ManyBodyDispersionSLQ(nn.Module):
     """Matrix-free stochastic-Lanczos QHO many-body dispersion.
 
@@ -1185,11 +1267,10 @@ class ManyBodyDispersionSLQ(nn.Module):
         # this only intervenes in the unphysical near-/sub-zero region.
         tri = torch.nan_to_num(tri, nan=0.0, posinf=0.0, neginf=0.0)
         tri = 0.5 * (tri + tri.transpose(-1, -2))
-        evals, evecs = torch.linalg.eigh(tri)
-        smooth = 0.5 * (evals + torch.sqrt(evals.square() + self.eig_floor * self.eig_floor))
-        sqrt_evals = smooth.clamp_min(self.eig_floor).sqrt()
-        weights = evecs[:, 0, :].square()
-        return (weights * sqrt_evals).sum(dim=-1)
+        # The forward is identical to the previous in-line eigh-quadrature; the custom Function
+        # only swaps eigh's degeneracy-singular eigenvector backward for the finite Daleckii-Krein
+        # divided-difference gradient (see _SqrtFirstMomentQuad).
+        return _SqrtFirstMomentQuad.apply(tri, self.eig_floor)
 
     def _forward_looped(
         self,
