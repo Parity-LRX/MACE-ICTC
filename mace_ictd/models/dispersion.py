@@ -1191,7 +1191,7 @@ class ManyBodyDispersionSLQ(nn.Module):
         weights = evecs[:, 0, :].square()
         return (weights * sqrt_evals).sum(dim=-1)
 
-    def forward(
+    def _forward_looped(
         self,
         node_feats: torch.Tensor,
         batch: torch.Tensor,
@@ -1363,6 +1363,224 @@ class ManyBodyDispersionSLQ(nn.Module):
                 trace_sqrt = estimates.mean()
             e_graph = 0.5 * trace_sqrt - 1.5 * omega_local.sum()
             per_atom[idx] = e_graph / m
+        return per_atom.unsqueeze(-1)
+
+    def forward(
+        self,
+        node_feats: torch.Tensor,
+        batch: torch.Tensor,
+        edge_src: torch.Tensor,
+        edge_dst: torch.Tensor,
+        edge_vec: torch.Tensor,
+        num_graphs: int | None = None,
+        pos: torch.Tensor | None = None,
+        cell: torch.Tensor | None = None,
+        l2_feats: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        # The batched path is numerically equivalent to ``_forward_looped`` for the default
+        # ``edge_sparse`` operator with deterministic Rademacher probes -- it runs ONE Lanczos
+        # over the (G, P) batch (graphs padded to the max graph/edge size) instead of G sequential
+        # per-graph Lanczos runs, which keeps the GPU busy and removes the O(G.E) edge-mask redundancy.
+        # ``pme_fft`` (reciprocal matvec) and the non-Rademacher probe modes ("basis" has a
+        # variable, m-dependent probe count; "atom-rademacher" a different reduction) keep the proven
+        # per-graph loop -- equivalence/utilization there is out of scope for this batching change.
+        if self.operator_backend != "edge_sparse" or self.probe_mode != "rademacher":
+            return self._forward_looped(
+                node_feats, batch, edge_src, edge_dst, edge_vec,
+                num_graphs=num_graphs, pos=pos, cell=cell, l2_feats=l2_feats,
+            )
+        return self._forward_batched(
+            node_feats, batch, edge_src, edge_dst, edge_vec,
+            num_graphs=num_graphs, pos=pos, cell=cell, l2_feats=l2_feats,
+        )
+
+    def _forward_batched(
+        self,
+        node_feats: torch.Tensor,
+        batch: torch.Tensor,
+        edge_src: torch.Tensor,
+        edge_dst: torch.Tensor,
+        edge_vec: torch.Tensor,
+        num_graphs: int | None = None,
+        pos: torch.Tensor | None = None,
+        cell: torch.Tensor | None = None,
+        l2_feats: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        device = node_feats.device
+        dtype = node_feats.dtype
+        n_atoms = node_feats.shape[0]
+        per_atom = node_feats.new_zeros(n_atoms)
+        if n_atoms == 0:
+            return per_atom.unsqueeze(-1)
+
+        alpha = F.softplus(self.alpha_head(node_feats)).squeeze(-1) + self.alpha_floor
+        omega = F.softplus(self.omega_head(node_feats)).squeeze(-1) + self.omega_floor
+        W_factor = omega.view(-1, 1, 1) * self.polarizability_factor(node_feats, l2_feats)  # [N,3,3]
+        beta = F.softplus(self.beta_raw) + 1.0e-6
+        coupling_scale = self.coupling_scale
+        eye3 = torch.eye(3, dtype=dtype, device=device)
+
+        num_graphs = int(num_graphs) if num_graphs is not None else (
+            int(batch.max().item()) + 1 if batch.numel() else 0
+        )
+        if num_graphs <= 0:
+            return per_atom.unsqueeze(-1)
+
+        # --- precompute the per-edge off-diagonal block once for ALL edges (identical to the loop) ---
+        # blocks_full[e] = coupling_scale * damp_e * canonical_mask_e * W_{dst} T_e W_{src}; the canonical
+        # mask + damping reproduce ``scal`` from the per-graph loop, so a graph just gathers its own rows.
+        es_all = edge_src
+        ed_all = edge_dst
+        if edge_vec.numel():
+            r = edge_vec.norm(dim=-1).clamp_min(1.0e-6)
+            rhat = edge_vec / r.unsqueeze(-1)
+            tensor = (3.0 * rhat.unsqueeze(-1) * rhat.unsqueeze(-2) - eye3) / r.pow(3).view(-1, 1, 1)
+            radius = alpha[es_all].pow(1.0 / 3.0) + alpha[ed_all].pow(1.0 / 3.0) + 1.0e-6
+            damp = 1.0 - torch.exp(-((r / (beta * radius)).clamp_min(0.0)).pow(6))
+            edge_weight = _canonical_undirected_edge_mask(edge_src, edge_dst, edge_vec).to(dtype=dtype)
+            scal = coupling_scale * damp * edge_weight
+            blocks_full = scal.view(-1, 1, 1) * torch.matmul(
+                torch.matmul(W_factor[ed_all], tensor), W_factor[es_all]
+            )  # [E,3,3]
+        else:
+            blocks_full = node_feats.new_zeros(0, 3, 3)
+
+        # --- light per-graph setup loop: NO matvec, just shapes/indices (cheap on the host) ---
+        # Each graph maps its global edges to LOCAL atom ids (0..m_g-1) exactly as the loop's
+        # ``local[ed]``/``local[es]`` does; for num_graphs==1 this is the identity (== the loop's li=ed,
+        # lj=es path) since idx==arange and same_graph is all-True.
+        idx_list: list[torch.Tensor] = []
+        li_list: list[torch.Tensor] = []
+        lj_list: list[torch.Tensor] = []
+        eidx_list: list[torch.Tensor] = []  # which global edges belong to graph g
+        m_list: list[int] = []
+        if num_graphs == 1:
+            idx_g = torch.arange(n_atoms, dtype=torch.long, device=device)
+            idx_list.append(idx_g)
+            m_list.append(n_atoms)
+            li_list.append(ed_all)
+            lj_list.append(es_all)
+            eidx_list.append(torch.arange(ed_all.numel(), dtype=torch.long, device=device))
+        else:
+            local = torch.full((n_atoms,), -1, dtype=torch.long, device=device)
+            for g in range(num_graphs):
+                idx_g = (batch == g).nonzero(as_tuple=True)[0]
+                m_g = idx_g.size(0)
+                idx_list.append(idx_g)
+                m_list.append(int(m_g))
+                if _size_leq_zero(m_g):
+                    li_list.append(torch.zeros(0, dtype=torch.long, device=device))
+                    lj_list.append(torch.zeros(0, dtype=torch.long, device=device))
+                    eidx_list.append(torch.zeros(0, dtype=torch.long, device=device))
+                    continue
+                local.fill_(-1)
+                local[idx_g] = torch.arange(m_g, dtype=torch.long, device=device)
+                same_graph = (batch[edge_src] == g) & (batch[edge_dst] == g)
+                e_sel = same_graph.nonzero(as_tuple=True)[0]
+                eidx_list.append(e_sel)
+                li_list.append(local[ed_all.index_select(0, e_sel)])
+                lj_list.append(local[es_all.index_select(0, e_sel)])
+
+        # Skip empty graphs in the batch dim; their per_atom stays 0 (idx is empty anyway).
+        active = [g for g in range(num_graphs) if not _size_leq_zero(m_list[g])]
+        if len(active) == 0:
+            return per_atom.unsqueeze(-1)
+
+        m_max = max(m_list[g] for g in active)
+        e_counts = [int(eidx_list[g].numel()) for g in active]
+        e_max = max(e_counts) if e_counts else 0
+        G = len(active)
+        n_probe = max(int(self.num_probes), 1)  # rademacher: fixed P, identical per graph
+        steps = max(int(self.lanczos_steps), 1)
+
+        # --- pad to [G, ...] ---
+        omega_batch = node_feats.new_zeros(G, m_max)          # padded atoms -> omega=0
+        li_batch = torch.zeros(G, max(e_max, 1), dtype=torch.long, device=device)
+        lj_batch = torch.zeros(G, max(e_max, 1), dtype=torch.long, device=device)
+        blocks_batch = node_feats.new_zeros(G, max(e_max, 1), 3, 3)  # padded edges -> zero block
+        for bi, g in enumerate(active):
+            m_g = m_list[g]
+            omega_batch[bi, :m_g] = omega.index_select(0, idx_list[g])
+            eg = int(e_counts[bi])
+            if eg > 0:
+                li_batch[bi, :eg] = li_list[g]
+                lj_batch[bi, :eg] = lj_list[g]
+                blocks_batch[bi, :eg] = blocks_full.index_select(0, eidx_list[g])
+
+        # --- probes: rademacher probes are deterministic and identical across graphs of equal m.
+        # Build with _make_probes(m_max) ONCE and zero out the padding atoms per graph -> probes for
+        # graph g's first m_g atoms match _make_probes(m_g) exactly (the hash depends only on
+        # (probe, atom, component) indices, which are a prefix), and padding atoms are 0 so they
+        # contribute nothing (omega^2=0 + no edges keeps them 0 through the Lanczos). ---
+        probes_full = self._make_probes(m_max, device=device, dtype=dtype)  # [P, m_max, 3]
+        # atom_valid[bi, a] = 1 for a < m_g else 0
+        ar_m = torch.arange(m_max, device=device).view(1, m_max)
+        m_g_t = torch.tensor([m_list[g] for g in active], device=device, dtype=torch.long).view(G, 1)
+        atom_valid = (ar_m < m_g_t).to(dtype=dtype)  # [G, m_max]
+        probes_batch = probes_full.unsqueeze(0) * atom_valid.view(G, 1, m_max, 1)  # [G,P,m_max,3]
+
+        omega_sq = omega_batch.square().view(G, 1, m_max, 1)  # [G,1,m_max,1]
+        idx_i = li_batch.view(G, 1, -1, 1).expand(G, n_probe, -1, 3)  # scatter targets (atom dim=2)
+        idx_j = lj_batch.view(G, 1, -1, 1).expand(G, n_probe, -1, 3)
+        blocks_g = blocks_batch.unsqueeze(1)                  # [G,1,E,3,3]
+        blocks_gT = blocks_batch.transpose(-1, -2).unsqueeze(1)
+
+        def matvec(v: torch.Tensor) -> torch.Tensor:
+            # v: [G, P, m_max, 3]; C.v = omega^2 v + scatter(blocks @ v[lj]) + scatter(blocks^T @ v[li]).
+            # gather along the atom dim per (G) -- torch.gather broadcasts the index over P/components.
+            y = omega_sq * v
+            v_j = torch.gather(v, 2, idx_j)
+            v_i = torch.gather(v, 2, idx_i)
+            contrib_i = torch.matmul(blocks_g, v_j.unsqueeze(-1)).squeeze(-1)
+            contrib_j = torch.matmul(blocks_gT, v_i.unsqueeze(-1)).squeeze(-1)
+            y = y.scatter_add(2, idx_i, contrib_i)
+            y = y.scatter_add(2, idx_j, contrib_j)
+            return y
+
+        # --- ONE batched Lanczos over the (G, P) batch (flatten to B = G*P rows) ---
+        dim = 3 * m_max
+        q = probes_batch.reshape(G * n_probe, dim)
+        q_norm = q.norm(dim=-1).clamp_min(1.0e-14)
+        q = q / q_norm.view(-1, 1)
+        q_prev = torch.zeros_like(q)
+        beta_prev = q.new_zeros(G * n_probe)
+        alphas: list[torch.Tensor] = []
+        betas: list[torch.Tensor] = []
+        basis: list[torch.Tensor] = []
+        for step in range(steps):
+            z = matvec(q.reshape(G, n_probe, m_max, 3)).reshape(G * n_probe, dim)
+            z = torch.nan_to_num(z, nan=0.0, posinf=1.0e30, neginf=-1.0e30)
+            if step > 0:
+                z = z - beta_prev.view(-1, 1) * q_prev
+            a = (q * z).sum(dim=-1)
+            z = z - a.view(-1, 1) * q
+            for old_q in basis:
+                z = z - (z * old_q).sum(dim=-1, keepdim=True) * old_q
+            b = z.norm(dim=-1)
+            alphas.append(a)
+            if step + 1 < steps:
+                betas.append(b)
+            basis.append(q)
+            q_prev = q
+            q = z / b.clamp_min(1.0e-14).view(-1, 1)
+            beta_prev = b
+
+        tri = q.new_zeros(G * n_probe, steps, steps)
+        diag = torch.stack(alphas, dim=1)
+        ar = torch.arange(steps, device=device)
+        tri[:, ar, ar] = diag
+        if steps > 1:
+            off = torch.stack(betas, dim=1)
+            ar0 = torch.arange(steps - 1, device=device)
+            tri[:, ar0, ar0 + 1] = off
+            tri[:, ar0 + 1, ar0] = off
+        estimates = q_norm.square() * self._sqrt_first_moment(tri)        # [G*P]
+        # mean over P per graph -> Tr sqrt(C_g); e_graph = 0.5 Tr sqrt(C_g) - 1.5 sum_i omega_i.
+        trace_sqrt = estimates.reshape(G, n_probe).mean(dim=1)            # [G]
+        omega_sum = omega_batch.sum(dim=1)                               # [G] (padding omega=0)
+        e_graph = 0.5 * trace_sqrt - 1.5 * omega_sum                     # [G]
+        for bi, g in enumerate(active):
+            per_atom[idx_list[g]] = e_graph[bi] / m_list[g]
         return per_atom.unsqueeze(-1)
 
 
