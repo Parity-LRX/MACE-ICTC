@@ -1,6 +1,6 @@
 # MACE-ICTD
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20690950.svg)](https://doi.org/10.5281/zenodo.20690950)
+**DOI:** [10.5281/zenodo.20690950](https://doi.org/10.5281/zenodo.20690950)
 
 MACE-ICTD is a standalone implementation of MACE in an Irreducible Cartesian
 Tensor Decomposition (ICTD) basis. It keeps the MACE interaction/readout
