@@ -28,8 +28,10 @@ Full manuals:
 - Native `mace-torch` checkpoint conversion for supported `ScaleShiftMACE`
   models.
 - ASE, AOTInductor `.pt2`, and LAMMPS `USER-MFFTORCH` deployment.
-- Optional cuEquivariance product backend and learned scalar reciprocal
-  long-range correction.
+- Optional cuEquivariance product backend.
+- Long-range interactions: learned reciprocal-space electrostatics
+  (periodic/slab, multipole sources) and anisotropic many-body dispersion (MBD),
+  trained end-to-end and deployable to LAMMPS.
 - Curated benchmark records under [benchmarks/paper](benchmarks/paper).
 
 ## Installation
@@ -229,29 +231,75 @@ absolute force component `11.76760674 eV/A`. Some old OFF23 pickle files require
 a matching historical `mace-torch`/`e3nn` environment for the loading step before
 conversion.
 
-## Long-Range Correction
+## Long-Range Interactions (Electrostatics and Dispersion)
 
-The supported long-range path is a learned scalar reciprocal correction:
+Beyond the message-passing cutoff, MACE-ICTD provides two complementary
+long-range channels. Both are differentiable and trained end-to-end from the
+same energy/force/stress losses — each module is initialized near zero, so
+enabling it starts close to the short-range model and learns the correction.
+Neither is a fixed-parameter analytic post-correction, and both deploy through
+ASE, AOTInductor, and LAMMPS. See [docs/USER_MANUAL.md](docs/USER_MANUAL.md)
+(section "Long-Range and Dispersion") for the full reference.
+
+### Electrostatics (learned reciprocal-space correction)
+
+A reciprocal-space correction driven by learned multipole sources predicted from
+the final invariant descriptor, with periodic or slab boundaries and either a
+direct k-space sum or an FFT mesh backend:
 
 ```bash
 python -m mace_ictd.cli.train \
   --data-dir DATA \
-  --channels 64 \
-  --lmax 2 \
-  --num-interaction 2 \
+  --channels 64 --lmax 2 --num-interaction 2 \
   --long-range-mode reciprocal-spectral-v1 \
   --long-range-boundary periodic \
   --long-range-reciprocal-backend direct_kspace \
   --long-range-kmax 4 \
   --long-range-source-channels 1 \
-  --checkpoint model_lr.pth
+  --long-range-max-multipole-l 0 \
+  --checkpoint model_elec.pth
 ```
 
-`--long-range-source-channels` is the number of learned scalar source channels
-predicted from the final invariant descriptor. The module is initialized near
-zero, so enabling it starts close to the short-range model and learns the
-correction from the same energy/force/stress losses. This is not a fixed-charge
-analytic Ewald term.
+Use `--long-range-boundary slab` for 2D-periodic interfaces, and
+`--long-range-reciprocal-backend mesh_fft --long-range-mesh-size 32` for the FFT
+mesh on larger cells. `--long-range-max-multipole-l` raises the source order
+(e.g. `1` adds dipoles); `--long-range-source-channels` sets the number of
+learned scalar source channels.
+
+### Dispersion (anisotropic many-body dispersion)
+
+A many-body dispersion term evaluated by matrix-free stochastic Lanczos
+quadrature (no explicit eigendecomposition). The atomic polarizability is either
+an isotropic scalar or an **anisotropic 3x3 tensor** built from the ICTD `l=2`
+features, which keeps the dispersion energy rotationally equivariant and uses the
+ICTD representation directly:
+
+```bash
+python -m mace_ictd.cli.train \
+  --data-dir DATA \
+  --channels 64 --lmax 2 --num-interaction 2 \
+  --long-range-dispersion-mode mbd-slq \
+  --dispersion-cutoff 9.0 \
+  --mbd-operator-backend edge_sparse \
+  --dispersion-slq-num-probes 4 \
+  --mbd-anisotropic \
+  --checkpoint model_mbd.pth
+```
+
+Drop `--mbd-anisotropic` for the isotropic scalar polarizability;
+`--mbd-operator-backend` selects the direct cutoff sum (`edge_sparse`, default)
+or a reciprocal FFT dipole-field backend (`pme_fft`). The electrostatic and
+dispersion channels can be enabled together.
+
+### Deployment
+
+For deployment the model emits a compact per-atom source tensor (for anisotropic
+MBD a `[N, 8]` tensor: an effective frequency, the isotropic polarizability, and
+the six unique components of the tensor polarizability), and the C++
+`USER-MFFTORCH` solver reconstructs the coupling and evaluates the long-range
+energy and forces at runtime. The reciprocal electrostatic correction and the
+`edge_sparse` MBD path are `make_fx`/Inductor-compilable for training; the SLQ
+dispersion runs eager.
 
 Native MACE conversion preserves the source model; it does not add long-range
 terms to an already trained MACE checkpoint.
