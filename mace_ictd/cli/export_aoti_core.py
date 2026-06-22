@@ -634,6 +634,10 @@ def main() -> int:
     p.add_argument("--fallback", default=None,
                    help="path to an N-flexible TorchScript core (.pt) the LAMMPS engine should fall back to "
                         "when ntotal exceeds this .pt2's baked N (a ghost-count spike). Written into <out>.meta.")
+    p.add_argument("--no-reciprocal-source", dest="no_reciprocal_source", action="store_true",
+                   help="DISPERSION-ONLY AOTI: suppress the packed reciprocal_source 3rd output so the model "
+                        "computes the MBD/SLQ dispersion energy in-graph (deployable AOTI; avoids the engine's "
+                        "dispersion-edges + reciprocal-output fallback guard).")
     p.add_argument("--iters", type=int, default=20)
     p.add_argument("--warmup", type=int, default=5)
     p.add_argument("--dynamic", action="store_true",
@@ -843,6 +847,9 @@ def main() -> int:
     # model (the E0 wrapper forwards the flag).
     _bare = model.model if isinstance(model, _E0Wrap) else model
     emit_rs = bool(getattr(_bare, "long_range_exports_reciprocal_source", False))
+    if getattr(args, "no_reciprocal_source", False) and emit_rs:
+        emit_rs = False
+        print("[aoti] --no-reciprocal-source: dispersion-only export (in-graph MBD energy, no reciprocal_source)")
     if emit_rs:
         print("[aoti] multipole long-range: exporting (E, force, reciprocal_source) 3-tuple")
     use_explicit_dispersion_edges = False
