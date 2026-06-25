@@ -217,6 +217,14 @@ class ForceTrainer:
         # make_fx state (cache held outside the module tree so its duplicated flat
         # param views stay out of parameter discovery / DDP).
         self.train_makefx_compile = bool(train_makefx_compile)
+        if self.train_makefx_compile:
+            # The MBD-SLQ block-Gershgorin skip gate uses a data-dependent Python bool that make_fx
+            # cannot trace; switch the dispersion modules to the branchless always-power-iteration
+            # path (clamp(max=1) gives the identical zero-bias result, and the power iteration is
+            # compiled here anyway, so the eager skip-gate is unnecessary under make_fx).
+            for _m in self.model.modules():
+                if hasattr(_m, "pd_amortize"):
+                    _m.pd_amortize = False
         self.require_train_makefx_compile = bool(require_train_makefx_compile)
         self._makefx_max_slots = int(makefx_max_slots)
         self._makefx_disabled = False
