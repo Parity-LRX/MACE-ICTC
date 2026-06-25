@@ -54,6 +54,20 @@ import torch._dynamo.config as _dynamo_cfg
 
 _dynamo_cfg.optimize_ddp = False
 
+# Disable AOTAutograd donated-buffer reuse.  CompiledForceCache holds MULTIPLE compiled graphs (one per
+# atom-count slot) that SHARE the model parameters; one graph's backward donating (freeing) a param
+# buffer collides with another live graph's backward across training steps -> stochastic NaN param-grads
+# once >=2 slots are live (seen at varying steps: ep0/step21, ep16, ep22 -- timing-dependent, always in
+# the backbone 2nd-order). A single-compiled-graph loop repro is clean (no cross-graph collision), which
+# is exactly the multi-slot signature. Orthogonal to dynamic shapes: the deployment AOTI export is a
+# single graph and unaffected. Joins cudagraphs/epilogue_fusion as a higher-order-grad-incompatible opt.
+try:
+    import torch._functorch.config as _functorch_cfg
+
+    _functorch_cfg.donated_buffer = False
+except Exception:
+    pass
+
 
 # Conservative Inductor/Triton options.  Each flag is pinned to a dynamic-shape
 # bug seen in the DeepMD/SeZM make_fx work (HANDOFF section 3.3 / NOTE 6):
