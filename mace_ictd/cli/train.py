@@ -684,6 +684,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
                     help="Load model weights from a previous MACE-ICTD checkpoint before training.")
     ap.add_argument("--resume-training-state", action="store_true",
                     help="With --resume-checkpoint, also restore optimizer/global_step and continue epoch numbering.")
+    ap.add_argument("--finetune", action="store_true",
+                    help="Warm-start: non-strict load of --resume-checkpoint (load matching backbone weights, "
+                         "leave new heads e.g. the MBD dispersion head freshly initialized). Fresh optimizer "
+                         "(do not combine with --resume-training-state). Use to train the backbone first, then add MBD.")
     ap.add_argument("--num-workers", type=int, default=2)
     ap.add_argument("--log-interval", type=int, default=10)
     return ap
@@ -1070,7 +1074,7 @@ def main(argv=None):
         start_epoch = trainer.load_checkpoint(
             args.resume_checkpoint,
             training_state=bool(args.resume_training_state),
-            strict=True,
+            strict=not args.finetune,
         )
     try:
         best = trainer.fit(start_epoch=start_epoch)
