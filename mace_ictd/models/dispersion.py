@@ -992,7 +992,7 @@ class ManyBodyDispersionSLQ(nn.Module):
         hidden_dim: int = 32,
         alpha_floor: float = 1.0e-4,
         omega_floor: float = 1.0e-3,
-        eig_floor: float = 1.0e-3,
+        eig_floor: float = 1.0e-6,
         eig_ceil: float = 1.0e4,
         pd_rescale: bool = True,
         pd_margin: float = 0.1,
