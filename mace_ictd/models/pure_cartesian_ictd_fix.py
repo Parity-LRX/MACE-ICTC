@@ -2219,8 +2219,8 @@ class PureCartesianICTDFix(nn.Module):
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         else:
             self.device = device
-        if int(num_interaction) < 2:
-            raise ValueError(f"num_interaction must be >= 2, got {num_interaction}")
+        if int(num_interaction) < 1:
+            raise ValueError(f"num_interaction must be >= 1, got {num_interaction}")
         if ictd_fix_route != "baseline":
             raise ValueError(
                 f"this baseline-only MACE-ICTD build supports ictd_fix_route='baseline' only, "
@@ -3014,6 +3014,8 @@ class PureCartesianICTDFix(nn.Module):
                 add = self.mace_first_layer_sc0.to(dtype=h.dtype, device=h.device)[compact_idx]
                 h = torch.cat((h[..., : self.channels] + add, h[..., self.channels :]), dim=-1)
             layer_states.append(h)
+            if layer_idx == self.num_interaction - 1:
+                last_preproduct_state = message  # last-layer interaction output (pre-product, full SO3, 2-hop)
             if layer_idx < self.num_interaction - 1:
                 e_layer = self.layer_energy_readouts[layer_idx](h)
                 e_layer = self._readout_head_scale(0, e_layer) * e_layer
@@ -3043,6 +3045,10 @@ class PureCartesianICTDFix(nn.Module):
                 if state.shape[-1] != self.channels:
                     mp_feat = state
                     break
+            # Prefer the LAST layer's interaction output (pre-product message, 2-hop, more processed)
+            # over the penultimate product state (1-hop) when it carries the same full-SO(3) layout.
+            if last_preproduct_state is not None and mp_feat is not None and last_preproduct_state.shape[-1] == mp_feat.shape[-1]:
+                mp_feat = last_preproduct_state
             if mp_feat is None:
                 raise RuntimeError(
                     "multipole long-range needs a full-SO(3) node-feature layer; none found "
@@ -3101,10 +3107,17 @@ class PureCartesianICTDFix(nn.Module):
             # anisotropic polarizability). The baseline route's FINAL state is invariant, so search back for
             # the last layer state that still carries the full irreps (l>=1).
             if self.mbd_anisotropic_polarizability and self.lmax >= 2:
+                _l2_src = None
                 for _st in reversed(layer_states):
                     if _st.shape[-1] != self.channels:
-                        disp_l2 = _split_irreps(_st, self.channels, self.lmax)[2]  # [N, channels, 5]
+                        _l2_src = _st
                         break
+                # Prefer the LAST layer's interaction output (pre-product message, 2-hop) over the
+                # penultimate product state (1-hop) when it carries the same full-SO(3) layout.
+                if last_preproduct_state is not None and _l2_src is not None and last_preproduct_state.shape[-1] == _l2_src.shape[-1]:
+                    _l2_src = last_preproduct_state
+                if _l2_src is not None:
+                    disp_l2 = _split_irreps(_l2_src, self.channels, self.lmax)[2]  # [N, channels, 5]
             if return_reciprocal_source and self.dispersion.exports_mbd_source():
                 # Deploy: emit the head's (omega, alpha) as the MBD source and DEFER the coupled-dipole
                 # energy to the C++ MBD solver (no double count). PACK after any electrostatic source so
