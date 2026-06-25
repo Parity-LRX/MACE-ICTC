@@ -992,8 +992,11 @@ class ManyBodyDispersionSLQ(nn.Module):
         hidden_dim: int = 32,
         alpha_floor: float = 1.0e-4,
         omega_floor: float = 1.0e-3,
-        eig_floor: float = 1.0e-8,
+        eig_floor: float = 1.0e-3,
         eig_ceil: float = 1.0e4,
+        pd_rescale: bool = True,
+        pd_margin: float = 0.1,
+        pd_power_iters: int = 10,
         num_probes: int = 8,
         lanczos_steps: int = 16,
         probe_mode: str = "rademacher",
@@ -1028,6 +1031,9 @@ class ManyBodyDispersionSLQ(nn.Module):
         self.omega_floor = float(omega_floor)
         self.eig_floor = float(eig_floor)
         self.eig_ceil = float(eig_ceil)
+        self.pd_rescale = bool(pd_rescale)
+        self.pd_margin = float(pd_margin)
+        self.pd_power_iters = int(pd_power_iters)
         self.num_probes = int(num_probes)
         self.lanczos_steps = int(lanczos_steps)
         self.probe_mode = str(probe_mode)
@@ -1255,6 +1261,37 @@ class ManyBodyDispersionSLQ(nn.Module):
         signs = torch.where(torch.sin(h) >= 0.0, 1.0, -1.0)
         return signs.to(dtype=dtype)
 
+    def _pd_rho(self, matvec, omega_diag: torch.Tensor, v0: torch.Tensor) -> torch.Tensor:
+        """Estimate rho(M) = max|eigenvalue| of the NORMALIZED coupling
+        ``M = Omega^-1 (C - Omega^2) Omega^-1`` by power iteration on the matvec (no_grad).
+
+        C = Omega^2 + coupling is strictly positive-definite iff
+        ``lambda_min(Omega^-1 C Omega^-1) = 1 + lambda_min(M) > 0`` i.e. ``rho(M) < 1``.
+        The caller uses the returned rho to scale the coupling so rho stays < 1 - pd_margin
+        => C stays PD => sqrt(C) gradient stays bounded => no polarization catastrophe.
+        This is the physical MBD self-consistent screening, applied only when the learned
+        coupling would otherwise drive C indefinite; in the healthy regime rho < 1 and the
+        caller leaves the operator untouched (zero bias).
+
+        ``omega_diag`` is Omega broadcast over ``v0`` (entries <= 0 are padding atoms and get a
+        zero inverse, so they contribute nothing). The per-row norm reduces the last two dims
+        (atoms, components); leading dims (probe / graph) are independent batch rows.
+        """
+        inv_omega = torch.where(omega_diag > 0, omega_diag.reciprocal(), torch.zeros_like(omega_diag))
+
+        def Mv(v: torch.Tensor) -> torch.Tensor:
+            cu = torch.nan_to_num(matvec(v * inv_omega), nan=0.0, posinf=1.0e30, neginf=-1.0e30)
+            return cu * inv_omega - v
+
+        with torch.no_grad():
+            wn = v0.norm(dim=(-2, -1), keepdim=True).clamp_min(1.0e-14)
+            v = v0 / wn
+            for _ in range(max(int(self.pd_power_iters), 1)):
+                w = Mv(v)
+                wn = w.norm(dim=(-2, -1), keepdim=True).clamp_min(1.0e-14)
+                v = w / wn
+        return wn.squeeze(-1).squeeze(-1)  # ||M v|| for unit v -> rho(M), per probe row
+
     def _sqrt_first_moment(self, tri: torch.Tensor) -> torch.Tensor:
         if self.quadrature == "newton-schulz":
             eye = torch.eye(tri.size(-1), dtype=tri.dtype, device=tri.device).unsqueeze(0).expand_as(tri)
@@ -1403,6 +1440,16 @@ class ManyBodyDispersionSLQ(nn.Module):
 
             probes = self._make_probes(m, device=node_feats.device, dtype=node_feats.dtype)
             n_probe = probes.size(0)
+            # --- PD spectral guard: scale the coupling so C = Omega^2 + coupling stays strictly
+            # positive-definite (rho of the normalized coupling < 1 - pd_margin). s == 1 in the
+            # healthy regime -> operator (and physics) unchanged; only the catastrophe is screened.
+            if self.pd_rescale and n_probe > 0:
+                rho = self._pd_rho(matvec, omega_local.view(1, -1, 1), probes)
+                s_pd = ((1.0 - self.pd_margin) / rho.max().clamp_min(1.0e-6)).clamp(max=1.0).detach()
+                _base_mv = matvec
+                _omega_sq_d = omega_local.square().view(1, -1, 1)
+                def matvec(v, _b=_base_mv, _s=s_pd, _o=_omega_sq_d):
+                    return _s * _b(v) + (1.0 - _s) * (_o * v)
             q = probes.reshape(n_probe, -1)
             dim = q.size(1)
             q_norm = q.norm(dim=-1).clamp_min(1.0e-14)
@@ -1627,6 +1674,17 @@ class ManyBodyDispersionSLQ(nn.Module):
             y = y.scatter_add(2, idx_i, contrib_i)
             y = y.scatter_add(2, idx_j, contrib_j)
             return y
+
+        # --- PD spectral guard (per graph): scale each graph's coupling so C_g stays strictly
+        # positive-definite. rho(M_g) < 1 - pd_margin => lambda_min(Omega^-1 C_g Omega^-1) >=
+        # pd_margin > 0. s_g == 1 where healthy (zero bias); only an indefinite C_g is screened.
+        if self.pd_rescale:
+            rho = self._pd_rho(matvec, omega_batch.view(G, 1, m_max, 1), probes_batch)  # [G, n_probe]
+            s_pd = ((1.0 - self.pd_margin) / rho.amax(dim=1).clamp_min(1.0e-6)).clamp(max=1.0).detach()  # [G]
+            _base_mv = matvec
+            _s_b = s_pd.view(G, 1, 1, 1)
+            def matvec(v, _b=_base_mv, _s=_s_b, _o=omega_sq):
+                return _s * _b(v) + (1.0 - _s) * (_o * v)
 
         # --- ONE batched Lanczos over the (G, P) batch (flatten to B = G*P rows) ---
         dim = 3 * m_max
