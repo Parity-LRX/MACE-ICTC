@@ -225,6 +225,8 @@ class ForceTrainer:
             for _m in self.model.modules():
                 if hasattr(_m, "pd_amortize"):
                     _m.pd_amortize = False
+                if hasattr(_m, "mbd_static_batch"):
+                    _m.mbd_static_batch = True   # equal-size (bucketing-padded) graphs -> reshape, no .nonzero
         self.require_train_makefx_compile = bool(require_train_makefx_compile)
         self._makefx_max_slots = int(makefx_max_slots)
         self._makefx_disabled = False

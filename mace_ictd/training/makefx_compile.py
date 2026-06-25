@@ -345,7 +345,15 @@ class CompiledForceCache:
         compute_fn_factory: Callable | None = None,
         **compile_kwargs: Any,
     ) -> Callable:
-        shape_key = tuple(int(t.shape[0]) for t in example_inputs if torch.is_tensor(t))
+        # Key the compile cache on the ATOM count only (example_inputs[0] == pos). The regular and
+        # (especially the cutoff-12 dispersion) edge counts vary per config and are NOT size-bucketed,
+        # so keying on every tensor's leading dim explodes the cache once dispersion edges are present
+        # (a new slot per config). dynamic=True is built to let ONE compile per atom-bucket absorb the
+        # varying edge counts at runtime; the regular edges are bucketed and track the atom count.
+        if example_inputs and torch.is_tensor(example_inputs[0]):
+            shape_key = (int(example_inputs[0].shape[0]),)
+        else:
+            shape_key = tuple(int(t.shape[0]) for t in example_inputs if torch.is_tensor(t))
         key = (bool(training),) + shape_key
         if key not in self._cache:
             if len(self._cache) >= self._max_slots:
