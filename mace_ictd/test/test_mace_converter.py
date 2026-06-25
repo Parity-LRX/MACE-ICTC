@@ -1,8 +1,9 @@
 """Validate ``convert_mace_to_ictd``: a real e3nn MACE and a MACE-ICTD model, after weight
 conversion, must produce the SAME energy and forces (float64).
 
-Run:
-    PYTHONPATH=/Users/sara/Desktop/code/MACE-ICTD python3 mace_ictd/test/test_mace_converter.py
+Run (from the repo root):
+    python -m mace_ictd.test.test_mace_converter
+    # or:  PYTHONPATH=. python3 mace_ictd/test/test_mace_converter.py
 or under pytest.
 """
 
