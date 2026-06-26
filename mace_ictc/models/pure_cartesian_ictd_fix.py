@@ -3037,22 +3037,16 @@ class PureCartesianICTDFix(nn.Module):
         # --- long-range additive term (skipped entirely when module is None) ---
         reciprocal_source = None
         if self.long_range_module is not None and self.multipole_readout is not None:
-            # Multipole route: equivariant Cartesian monopole/dipole/quadrupole sources from
-            # the deepest full-SO(3) layer (the penultimate layer is full-SO3; only the last
-            # collapses to scalar), fed to the mesh-FFT reciprocal kernel via multipole_energy.
-            mp_feat = None
-            for state in reversed(layer_states):
-                if state.shape[-1] != self.channels:
-                    mp_feat = state
-                    break
-            # Prefer the LAST layer's interaction output (pre-product message, 2-hop, more processed)
-            # over the penultimate product state (1-hop) when it carries the same full-SO(3) layout.
-            if last_preproduct_state is not None and mp_feat is not None and last_preproduct_state.shape[-1] == mp_feat.shape[-1]:
-                mp_feat = last_preproduct_state
+            # Multipole route: equivariant Cartesian monopole/dipole/quadrupole sources fed to the
+            # mesh-FFT reciprocal kernel. Source = the last layer's INTERACTION output (pre-product
+            # message): the interaction always emits full-SO(3) (edge_lmax); only the PRODUCT truncates
+            # the last layer to l=0. So it carries l=1/2 at every depth, single-layer included, and is
+            # the deepest such feature. multipole_readout front-slices via _split_irreps, so a wider
+            # edge_lmax message is safe.
+            mp_feat = last_preproduct_state
             if mp_feat is None:
                 raise RuntimeError(
-                    "multipole long-range needs a full-SO(3) node-feature layer; none found "
-                    "(requires num_interaction >= 2)"
+                    "multipole long-range needs a full-SO(3) node-feature layer; none found"
                 )
             monopole, dipole, quadrupole = self.multipole_readout(mp_feat)
             if return_reciprocal_source and self.long_range_exports_reciprocal_source:
@@ -3103,21 +3097,15 @@ class PureCartesianICTDFix(nn.Module):
                 disp_feat = _split_irreps(last_state, self.channels, self.lmax)[0].reshape(
                     last_state.shape[0], self.channels
                 )
-            # ANISOTROPIC MBD: feed the equivariant l=2 node block to the dispersion head (ICTC l=2 -> 3x3
-            # anisotropic polarizability). The baseline route's FINAL state is invariant, so search back for
-            # the last layer state that still carries the full irreps (l>=1).
-            if self.mbd_anisotropic_polarizability and self.lmax >= 2:
-                _l2_src = None
-                for _st in reversed(layer_states):
-                    if _st.shape[-1] != self.channels:
-                        _l2_src = _st
-                        break
-                # Prefer the LAST layer's interaction output (pre-product message, 2-hop) over the
-                # penultimate product state (1-hop) when it carries the same full-SO(3) layout.
-                if last_preproduct_state is not None and _l2_src is not None and last_preproduct_state.shape[-1] == _l2_src.shape[-1]:
-                    _l2_src = last_preproduct_state
-                if _l2_src is not None:
-                    disp_l2 = _split_irreps(_l2_src, self.channels, self.lmax)[2]  # [N, channels, 5]
+            # ANISOTROPIC MBD: feed the equivariant l=2 node block to the dispersion head (ICTC l=2 ->
+            # 3x3 anisotropic polarizability). Source = the last layer's INTERACTION output (pre-product
+            # message): the interaction always emits full-SO(3) (edge_lmax); only the PRODUCT truncates
+            # the last layer to l=0. So the l=2 block is present at every depth, single-layer included.
+            # _split_irreps front-slices l=2, so a wider edge_lmax message stays correct. (Without an
+            # l=2 source disp_l2 stays None and polarizability_factor falls back to the ISOTROPIC b0*I,
+            # silently leaving the anisotropic l2_mix/l2_gate untrained.)
+            if self.mbd_anisotropic_polarizability and self.lmax >= 2 and last_preproduct_state is not None:
+                disp_l2 = _split_irreps(last_preproduct_state, self.channels, self.lmax)[2]  # [N, channels, 5]
             if return_reciprocal_source and self.dispersion.exports_mbd_source():
                 # Deploy: emit the head's (omega, alpha) as the MBD source and DEFER the coupled-dipole
                 # energy to the C++ MBD solver (no double count). PACK after any electrostatic source so
