@@ -1,0 +1,1081 @@
+{
+  "backend": "ictd-bridge-u",
+  "channels": 64,
+  "lmax": 2,
+  "num_interaction": 2,
+  "degree": 50,
+  "dtype": "float32",
+  "results": [
+    {
+      "mode": "train",
+      "cond": "none",
+      "N": 128,
+      "ms": 34.873,
+      "atoms_s": 3670.461388466723,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "infer",
+      "cond": "none",
+      "N": 128,
+      "ms": 14.522,
+      "atoms_s": 8814.212918330808,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-infer",
+      "cond": "none",
+      "N": 128,
+      "ms": 3.151,
+      "atoms_s": 40622.02475404634,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "md",
+      "cond": "none",
+      "N": 128,
+      "ms": 14.419,
+      "atoms_s": 8877.175948401415,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "makefx-train",
+      "cond": "none",
+      "N": 128,
+      "ms": 18.75,
+      "atoms_s": 6826.666666666667,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "train",
+      "cond": "elec",
+      "N": 128,
+      "ms": 41.875,
+      "atoms_s": 3056.7164179104475,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "infer",
+      "cond": "elec",
+      "N": 128,
+      "ms": 18.128,
+      "atoms_s": 7060.90026478376,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-infer",
+      "cond": "elec",
+      "N": 128,
+      "ms": 3.167,
+      "atoms_s": 40416.79823176508,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "md",
+      "cond": "elec",
+      "N": 128,
+      "ms": 18.138,
+      "atoms_s": 7057.007387804609,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "makefx-train",
+      "cond": "elec",
+      "N": 128,
+      "ms": 18.75,
+      "atoms_s": 6826.666666666667,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "train",
+      "cond": "disp",
+      "N": 128,
+      "ms": 133.345,
+      "atoms_s": 959.916007349357,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "infer",
+      "cond": "disp",
+      "N": 128,
+      "ms": 50.156,
+      "atoms_s": 2552.0376425552276,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-infer",
+      "cond": "disp",
+      "N": 128,
+      "ms": 6.451,
+      "atoms_s": 19841.884979073013,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "md",
+      "cond": "disp",
+      "N": 128,
+      "ms": 50.064,
+      "atoms_s": 2556.727388942154,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "makefx-train",
+      "cond": "disp",
+      "N": 128,
+      "ms": 50.0,
+      "atoms_s": 2560.0,
+      "sane": null,
+      "note": "compiled"
+    },
+    {
+      "mode": "train",
+      "cond": "both",
+      "N": 128,
+      "ms": 140.789,
+      "atoms_s": 909.161937367266,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "infer",
+      "cond": "both",
+      "N": 128,
+      "ms": 53.839,
+      "atoms_s": 2377.4587195155927,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-infer",
+      "cond": "both",
+      "N": 128,
+      "ms": 3.169,
+      "atoms_s": 40391.29062795835,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "md",
+      "cond": "both",
+      "N": 128,
+      "ms": 54.017,
+      "atoms_s": 2369.6243775107837,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "makefx-train",
+      "cond": "both",
+      "N": 128,
+      "ms": 50.0,
+      "atoms_s": 2560.0,
+      "sane": null,
+      "note": "compiled"
+    },
+    {
+      "mode": "aoti-md",
+      "cond": "none",
+      "N": 128,
+      "ms": 2.8992926179026792,
+      "atoms_s": 44148.7,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-md",
+      "cond": "disp",
+      "N": 128,
+      "ms": 18.27501035108008,
+      "atoms_s": 7004.1,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-md",
+      "cond": "disp-respa",
+      "N": 128,
+      "ms": 3.892813804890956,
+      "atoms_s": 32881.1,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-md",
+      "cond": "disp-c6",
+      "N": 128,
+      "ms": 2.9053205953183485,
+      "atoms_s": 44057.1,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "train",
+      "cond": "none",
+      "N": 256,
+      "ms": 40.077,
+      "atoms_s": 6387.703670434414,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "infer",
+      "cond": "none",
+      "N": 256,
+      "ms": 15.265,
+      "atoms_s": 16770.389780543726,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-infer",
+      "cond": "none",
+      "N": 256,
+      "ms": 5.52,
+      "atoms_s": 46376.8115942029,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "md",
+      "cond": "none",
+      "N": 256,
+      "ms": 15.356,
+      "atoms_s": 16671.008075019538,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "makefx-train",
+      "cond": "none",
+      "N": 256,
+      "ms": 18.75,
+      "atoms_s": 13653.333333333334,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "train",
+      "cond": "elec",
+      "N": 256,
+      "ms": 47.429,
+      "atoms_s": 5397.541588479622,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "infer",
+      "cond": "elec",
+      "N": 256,
+      "ms": 20.086,
+      "atoms_s": 12745.19565866773,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-infer",
+      "cond": "elec",
+      "N": 256,
+      "ms": 5.544,
+      "atoms_s": 46176.046176046184,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "md",
+      "cond": "elec",
+      "N": 256,
+      "ms": 19.923,
+      "atoms_s": 12849.470461275912,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "makefx-train",
+      "cond": "elec",
+      "N": 256,
+      "ms": 18.75,
+      "atoms_s": 13653.333333333334,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "train",
+      "cond": "disp",
+      "N": 256,
+      "ms": 134.841,
+      "atoms_s": 1898.5323455032221,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "infer",
+      "cond": "disp",
+      "N": 256,
+      "ms": 51.52,
+      "atoms_s": 4968.944099378881,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-infer",
+      "cond": "disp",
+      "N": 256,
+      "ms": 7.896,
+      "atoms_s": 32421.47922998987,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "md",
+      "cond": "disp",
+      "N": 256,
+      "ms": 51.434,
+      "atoms_s": 4977.252401135435,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "makefx-train",
+      "cond": "disp",
+      "N": 256,
+      "ms": 50.0,
+      "atoms_s": 5120.0,
+      "sane": null,
+      "note": "compiled"
+    },
+    {
+      "mode": "train",
+      "cond": "both",
+      "N": 256,
+      "ms": 141.529,
+      "atoms_s": 1808.8165676292492,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "infer",
+      "cond": "both",
+      "N": 256,
+      "ms": 55.006,
+      "atoms_s": 4654.037741337309,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-infer",
+      "cond": "both",
+      "N": 256,
+      "ms": 5.646,
+      "atoms_s": 45341.83492738222,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "md",
+      "cond": "both",
+      "N": 256,
+      "ms": 55.436,
+      "atoms_s": 4617.937802150227,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "makefx-train",
+      "cond": "both",
+      "N": 256,
+      "ms": 50.0,
+      "atoms_s": 5120.0,
+      "sane": null,
+      "note": "compiled"
+    },
+    {
+      "mode": "aoti-md",
+      "cond": "none",
+      "N": 256,
+      "ms": 4.019216880710899,
+      "atoms_s": 63694.0,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-md",
+      "cond": "disp",
+      "N": 256,
+      "ms": 21.841885227718716,
+      "atoms_s": 11720.6,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-md",
+      "cond": "disp-respa",
+      "N": 256,
+      "ms": 7.398159707772693,
+      "atoms_s": 34603.2,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-md",
+      "cond": "disp-c6",
+      "N": 256,
+      "ms": 6.05085078271064,
+      "atoms_s": 42308.1,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "train",
+      "cond": "none",
+      "N": 512,
+      "ms": 67.286,
+      "atoms_s": 7609.30951460928,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "infer",
+      "cond": "none",
+      "N": 512,
+      "ms": 26.445,
+      "atoms_s": 19360.937795424466,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-infer",
+      "cond": "none",
+      "N": 512,
+      "ms": 10.428,
+      "atoms_s": 49098.58074415036,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "md",
+      "cond": "none",
+      "N": 512,
+      "ms": 26.608,
+      "atoms_s": 19242.333132892363,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "makefx-train",
+      "cond": "none",
+      "N": 512,
+      "ms": 18.75,
+      "atoms_s": 27306.666666666668,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "train",
+      "cond": "elec",
+      "N": 512,
+      "ms": 72.907,
+      "atoms_s": 7022.645287832444,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "infer",
+      "cond": "elec",
+      "N": 512,
+      "ms": 31.401,
+      "atoms_s": 16305.21320977039,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-infer",
+      "cond": "elec",
+      "N": 512,
+      "ms": 10.545,
+      "atoms_s": 48553.8169748696,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "md",
+      "cond": "elec",
+      "N": 512,
+      "ms": 31.294,
+      "atoms_s": 16360.963763021664,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "makefx-train",
+      "cond": "elec",
+      "N": 512,
+      "ms": 18.75,
+      "atoms_s": 27306.666666666668,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "train",
+      "cond": "disp",
+      "N": 512,
+      "ms": 151.58,
+      "atoms_s": 3377.754321150547,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "infer",
+      "cond": "disp",
+      "N": 512,
+      "ms": 62.796,
+      "atoms_s": 8153.385565959615,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-infer",
+      "cond": "disp",
+      "N": 512,
+      "ms": 12.083,
+      "atoms_s": 42373.5827195233,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "md",
+      "cond": "disp",
+      "N": 512,
+      "ms": 62.854,
+      "atoms_s": 8145.861838546473,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "makefx-train",
+      "cond": "disp",
+      "N": 512,
+      "ms": 56.25,
+      "atoms_s": 9102.222222222223,
+      "sane": null,
+      "note": "compiled"
+    },
+    {
+      "mode": "train",
+      "cond": "both",
+      "N": 512,
+      "ms": 158.043,
+      "atoms_s": 3239.6246591117606,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "infer",
+      "cond": "both",
+      "N": 512,
+      "ms": 66.498,
+      "atoms_s": 7699.479683599507,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-infer",
+      "cond": "both",
+      "N": 512,
+      "ms": 10.703,
+      "atoms_s": 47837.05503129964,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "md",
+      "cond": "both",
+      "N": 512,
+      "ms": 66.696,
+      "atoms_s": 7676.622286194076,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "makefx-train",
+      "cond": "both",
+      "N": 512,
+      "ms": 62.5,
+      "atoms_s": 8192.0,
+      "sane": null,
+      "note": "compiled"
+    },
+    {
+      "mode": "aoti-md",
+      "cond": "none",
+      "N": 512,
+      "ms": 7.454722027684391,
+      "atoms_s": 68681.3,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-md",
+      "cond": "disp",
+      "N": 512,
+      "ms": 27.706227407519645,
+      "atoms_s": 18479.6,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-md",
+      "cond": "disp-respa",
+      "N": 512,
+      "ms": 13.630397917104819,
+      "atoms_s": 37563.1,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-md",
+      "cond": "disp-c6",
+      "N": 512,
+      "ms": 11.597406892302674,
+      "atoms_s": 44147.8,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "train",
+      "cond": "none",
+      "N": 1024,
+      "ms": 137.723,
+      "atoms_s": 7435.214161759473,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "infer",
+      "cond": "none",
+      "N": 1024,
+      "ms": 51.851,
+      "atoms_s": 19748.895874717942,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-infer",
+      "cond": "none",
+      "N": 1024,
+      "ms": 20.928,
+      "atoms_s": 48929.66360856269,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "md",
+      "cond": "none",
+      "N": 1024,
+      "ms": 51.798,
+      "atoms_s": 19769.103054171974,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "makefx-train",
+      "cond": "none",
+      "N": 1024,
+      "ms": 31.25,
+      "atoms_s": 32768.0,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "train",
+      "cond": "elec",
+      "N": 1024,
+      "ms": 144.021,
+      "atoms_s": 7110.074225286591,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "infer",
+      "cond": "elec",
+      "N": 1024,
+      "ms": 56.419,
+      "atoms_s": 18149.914036051687,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-infer",
+      "cond": "elec",
+      "N": 1024,
+      "ms": 20.892,
+      "atoms_s": 49013.97664177675,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "md",
+      "cond": "elec",
+      "N": 1024,
+      "ms": 56.57,
+      "atoms_s": 18101.4672087679,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "makefx-train",
+      "cond": "elec",
+      "N": 1024,
+      "ms": 31.25,
+      "atoms_s": 32768.0,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "train",
+      "cond": "disp",
+      "N": 1024,
+      "ms": 228.061,
+      "atoms_s": 4490.026791077826,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "infer",
+      "cond": "disp",
+      "N": 1024,
+      "ms": 90.9,
+      "atoms_s": 11265.126512651264,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-infer",
+      "cond": "disp",
+      "N": 1024,
+      "ms": 22.315,
+      "atoms_s": 45888.415863768765,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "md",
+      "cond": "disp",
+      "N": 1024,
+      "ms": 90.314,
+      "atoms_s": 11338.219988041723,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "makefx-train",
+      "cond": "disp",
+      "N": 1024,
+      "ms": 93.75,
+      "atoms_s": 10922.666666666666,
+      "sane": null,
+      "note": "compiled"
+    },
+    {
+      "mode": "train",
+      "cond": "both",
+      "N": 1024,
+      "ms": 232.309,
+      "atoms_s": 4407.922207060424,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "infer",
+      "cond": "both",
+      "N": 1024,
+      "ms": 92.94,
+      "atoms_s": 11017.860985582096,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-infer",
+      "cond": "both",
+      "N": 1024,
+      "ms": 21.004,
+      "atoms_s": 48752.61854884784,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "md",
+      "cond": "both",
+      "N": 1024,
+      "ms": 92.983,
+      "atoms_s": 11012.765774388865,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "makefx-train",
+      "cond": "both",
+      "N": 1024,
+      "ms": 93.75,
+      "atoms_s": 10922.666666666666,
+      "sane": null,
+      "note": "compiled"
+    },
+    {
+      "mode": "aoti-md",
+      "cond": "none",
+      "N": 1024,
+      "ms": 14.455293757261174,
+      "atoms_s": 70839.1,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-md",
+      "cond": "disp",
+      "N": 1024,
+      "ms": 44.81125882878073,
+      "atoms_s": 22851.4,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-md",
+      "cond": "disp-respa",
+      "N": 1024,
+      "ms": 25.8394020600867,
+      "atoms_s": 39629.4,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-md",
+      "cond": "disp-c6",
+      "N": 1024,
+      "ms": 22.787711548518462,
+      "atoms_s": 44936.5,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "train",
+      "cond": "none",
+      "N": 2048,
+      "ms": 282.525,
+      "atoms_s": 7248.91602513052,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "infer",
+      "cond": "none",
+      "N": 2048,
+      "ms": 103.603,
+      "atoms_s": 19767.767342644518,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-infer",
+      "cond": "none",
+      "N": 2048,
+      "ms": 40.838,
+      "atoms_s": 50149.37068416671,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "md",
+      "cond": "none",
+      "N": 2048,
+      "ms": 103.67,
+      "atoms_s": 19754.991800906722,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "makefx-train",
+      "cond": "none",
+      "N": 2048,
+      "ms": 56.25,
+      "atoms_s": 36408.88888888889,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "train",
+      "cond": "elec",
+      "N": 2048,
+      "ms": 288.383,
+      "atoms_s": 7101.666880502665,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "infer",
+      "cond": "elec",
+      "N": 2048,
+      "ms": 108.256,
+      "atoms_s": 18918.120011823823,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-infer",
+      "cond": "elec",
+      "N": 2048,
+      "ms": 40.87,
+      "atoms_s": 50110.10521164669,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "md",
+      "cond": "elec",
+      "N": 2048,
+      "ms": 108.182,
+      "atoms_s": 18931.060620066186,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "makefx-train",
+      "cond": "elec",
+      "N": 2048,
+      "ms": 62.5,
+      "atoms_s": 32768.0,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "train",
+      "cond": "disp",
+      "N": 2048,
+      "ms": 402.87,
+      "atoms_s": 5083.525703080398,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "infer",
+      "cond": "disp",
+      "N": 2048,
+      "ms": 162.312,
+      "atoms_s": 12617.674602001083,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "md",
+      "cond": "disp",
+      "N": 2048,
+      "ms": 162.303,
+      "atoms_s": 12618.374275275257,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "makefx-train",
+      "cond": "disp",
+      "N": 2048,
+      "ms": 181.25,
+      "atoms_s": 11299.310344827587,
+      "sane": null,
+      "note": "compiled"
+    },
+    {
+      "mode": "train",
+      "cond": "both",
+      "N": 2048,
+      "ms": 405.57,
+      "atoms_s": 5049.683161969574,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "infer",
+      "cond": "both",
+      "N": 2048,
+      "ms": 164.72,
+      "atoms_s": 12433.220009713452,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-infer",
+      "cond": "both",
+      "N": 2048,
+      "ms": 40.808,
+      "atoms_s": 50186.23799255049,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "md",
+      "cond": "both",
+      "N": 2048,
+      "ms": 164.169,
+      "atoms_s": 12474.94959462505,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "makefx-train",
+      "cond": "both",
+      "N": 2048,
+      "ms": 181.25,
+      "atoms_s": 11299.310344827587,
+      "sane": null,
+      "note": "compiled"
+    },
+    {
+      "mode": "aoti-md",
+      "cond": "none",
+      "N": 2048,
+      "ms": 29.11978069165167,
+      "atoms_s": 70330.2,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-md",
+      "cond": "disp",
+      "N": 2048,
+      "ms": 93.33102436267852,
+      "atoms_s": 21943.4,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-md",
+      "cond": "disp-respa",
+      "N": 2048,
+      "ms": 51.981938306982784,
+      "atoms_s": 39398.3,
+      "sane": null,
+      "note": ""
+    },
+    {
+      "mode": "aoti-md",
+      "cond": "disp-c6",
+      "N": 2048,
+      "ms": 45.75156098160331,
+      "atoms_s": 44763.5,
+      "sane": null,
+      "note": ""
+    }
+  ]
+}
