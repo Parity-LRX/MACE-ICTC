@@ -95,7 +95,7 @@ def main() -> None:
 
     ncol = 3 if len(modes) > 4 else 2
     nrow = (len(modes) + ncol - 1) // ncol
-    fig, axes = plt.subplots(nrow, ncol, figsize=(4.7 * ncol, 3.5 * nrow), sharex=True, squeeze=False)
+    fig, axes = plt.subplots(nrow, ncol, figsize=(4.7 * ncol, 3.5 * nrow), sharex=True, sharey=True, squeeze=False)
     axes = axes.flatten()
 
     metric = args.metric
@@ -130,6 +130,7 @@ def main() -> None:
         ax.set_xticks(sorted({c["N"] for c in res}))
         ax.get_xaxis().set_major_formatter(mticker.ScalarFormatter())
         ax.get_xaxis().set_minor_formatter(mticker.NullFormatter())
+        ax.get_yaxis().set_minor_formatter(mticker.NullFormatter())  # only decade (10^n) labels on the shared y
 
     for j in range(len(modes), len(axes)):
         axes[j].axis("off")
