@@ -1043,6 +1043,11 @@ run 1000
   rides in-graph inside the `.pt2`.
 - **Reciprocal electrostatics** needs no extra keyword — the engine runs its reciprocal solver from
   metadata and the mesh.
+- **Mesh assignment is honored at deploy.** The C++ reciprocal solver reads `long_range_assignment`
+  (`cic` / `pcs`) from the deploy metadata and runs the matching spread + sinc-window deconvolution
+  stencil, so a multipole model trained with `--long-range-assignment pcs` reproduces its in-model
+  energy/forces in LAMMPS (verified to ~2e-6 relative on OFF23-large l=2). Train and deploy stay
+  matched automatically through the metadata — no extra flag.
 - The `pair_coeff` element order must match the export `--elements` order; `NULL` skips a type.
 
 Matching rules and constraints:
@@ -1081,33 +1086,75 @@ Decision rules:
   ICTC-distinctive path); the cost is small.
 - **Core**: AOTI `.pt2` for throughput; TorchScript `.pt` for N-flexible / portable deployment.
 
-### 12.6 Training stability and warm-start (MBD)
+### 12.6 Training stability and warm-start (long-range heads)
 
-MBD is a coupled-dipole solve on a *learned* polarizability, so early in training the coupling
-matrix `C` can drift toward the polarization-catastrophe edge. Two numerical guards are built in and
-always on: a **detached spectral rescaling** keeps `C` strictly positive-definite at every step (the
-`Tr[√C]` estimator never sees a non-PD operator, so there is no hard NaN from the spectrum), and the
-anisotropic l=2 readout uses a **smooth norm** so the second-order (force-loss) gradient stays finite
-at initialization. With those in place, the practical guidance is:
+**Warm-start is the recommended way to add ANY native long-range head** — MBD dispersion,
+reciprocal electrostatics, or multipole electrostatics. Train (or convert) a short-range backbone
+first, then add the long-range physics on top with a non-strict load (`--finetune`): the backbone is
+warm-started and only the new head starts fresh. This converges fastest and is the most stable path
+for all three heads. The same flag works for every head — the only thing that changes is which
+`--long-range-*` flags you pass.
 
-**Warm-start is the recommended path — and the most stable.** Train (or convert) a backbone first,
-then add MBD on top with a non-strict load: the backbone is warm-started and only the MBD head starts
-fresh. This converges fastest and rarely sees instability.
+`--finetune` loads weights **non-strictly** (the missing long-range-head keys stay fresh, unexpected
+keys are ignored) with a fresh optimizer from epoch 0. The architecture flags must still describe the
+*full* model (backbone + the long-range head). To continue the full model afterwards, resume normally
+with `--resume-checkpoint model.pth --resume-training-state` (strict load, optimizer restored).
+
+**Why warm-start is safe: every head starts gentle.** A freshly-added head must contribute ~zero
+energy at init so it does not destabilize the warm-started backbone, while staying trainable. Each
+head has a built-in gentle start:
+
+- **Electrostatics** (`--long-range-mode reciprocal-spectral-v1`, the default `direct_kspace`
+  backend): the energy is gated by a learnable `energy_scale` initialized to **0**, so the
+  contribution is exactly zero at init and ramps up as training proceeds (it bootstraps because the
+  latent sources are non-zero, so `dE/d energy_scale ≠ 0`).
+- **Multipole electrostatics** (`mesh_fft` + `--long-range-max-multipole-l {1,2}`): the reciprocal
+  energy is *quadratic* in the q/μ/Q sources, so a learnable **gate** (`--long-range-multipole-gate-init`,
+  default `0.1`) scales the emitted sources — the head starts at ~`gate²` of full strength (gentle)
+  yet remains trainable. The gate is folded into the exported source, so train and deploy stay
+  consistent. Lower it (e.g. `0.02`) for an especially stiff backbone; set `1.0` for the ungated
+  from-scratch behavior.
+- **MBD** is a coupled-dipole solve on a *learned* polarizability, so early in training the coupling
+  matrix `C` can drift toward the polarization-catastrophe edge. Two numerical guards are built in and
+  always on: a **detached spectral rescaling** keeps `C` strictly positive-definite at every step (the
+  `Tr[√C]` estimator never sees a non-PD operator, so there is no hard NaN from the spectrum), and the
+  anisotropic l=2 readout uses a **smooth norm** so the second-order (force-loss) gradient stays finite
+  at initialization.
+
+**Recipes** (all start from `backbone.pth` = a trained MACE-ICTC checkpoint with NO long-range, or a
+converted MACE checkpoint):
 
 ```bash
-# backbone.pth = a trained MACE-ICTC checkpoint with NO long-range (or a converted MACE checkpoint)
+# (a) MBD dispersion
 python -m mace_ictc.cli.train --data-dir DATA \
   --channels 128 --lmax 2 --num-interaction 2 \
   --long-range-dispersion-mode mbd-slq --mbd-anisotropic --dispersion-cutoff 8.0 \
   --resume-checkpoint backbone.pth --finetune \
   --max-grad-norm 10 --lr 1e-3 \
   --checkpoint model_mbd_aniso.pth
+
+# (b) electrostatics (learned latent scalar charges, reciprocal space)
+python -m mace_ictc.cli.train --data-dir DATA \
+  --channels 128 --lmax 2 --num-interaction 2 \
+  --long-range-mode reciprocal-spectral-v1 \
+  --resume-checkpoint backbone.pth --finetune \
+  --max-grad-norm 10 --lr 1e-3 \
+  --checkpoint model_es.pth
+
+# (c) multipole electrostatics (learned monopole/dipole/quadrupole, mesh-FFT)
+python -m mace_ictc.cli.train --data-dir DATA \
+  --channels 128 --lmax 2 --num-interaction 2 \
+  --long-range-mode reciprocal-spectral-v1 \
+  --long-range-reciprocal-backend mesh_fft --long-range-mesh-fft-full-ewald \
+  --long-range-max-multipole-l 2 --long-range-assignment pcs \
+  --long-range-multipole-gate-init 0.1 \
+  --resume-checkpoint backbone.pth --finetune \
+  --max-grad-norm 10 --lr 1e-3 \
+  --checkpoint model_multipole.pth
 ```
 
-`--finetune` loads weights **non-strictly** (the missing MBD-head keys stay fresh, unexpected keys are
-ignored) with a fresh optimizer from epoch 0. The architecture flags must still describe the *full*
-model (backbone + MBD). To continue the full model afterwards, resume normally with
-`--resume-checkpoint model_mbd_aniso.pth --resume-training-state` (strict load, optimizer restored).
+Electrostatics and dispersion are independent and can be combined in one model (e.g. multipole l=2 +
+MBD) by passing both sets of flags. `--long-range-max-multipole-l` must not exceed the model `lmax`.
 
 **From-scratch MBD** works too, but is more delicate:
 

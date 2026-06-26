@@ -602,6 +602,7 @@ void MFFTorchEngine::load_single_core_file(const std::string& core_pt_path) {
         (void)parse_string_from_metadata(content, "\"reciprocal_source_boundary\"", reciprocal_source_boundary_);
         (void)parse_int64_from_metadata(content, "\"reciprocal_source_slab_padding_factor\"", reciprocal_source_slab_padding_factor_);
         (void)parse_string_from_metadata(content, "\"long_range_green_mode\"", long_range_green_mode_);
+        (void)parse_string_from_metadata(content, "\"long_range_assignment\"", long_range_assignment_);
         (void)parse_string_from_metadata(content, "\"long_range_runtime_backend\"", long_range_runtime_backend_);
         (void)parse_int64_from_metadata(content, "\"long_range_mesh_size\"", long_range_mesh_size_);
         (void)parse_int64_from_metadata(content, "\"long_range_max_multipole_l\"", long_range_max_multipole_l_);
@@ -735,6 +736,7 @@ void MFFTorchEngine::load_single_core_file(const std::string& core_pt_path) {
       (void)parse_int64_from_metadata(
           content, "\"reciprocal_source_slab_padding_factor\"", reciprocal_source_slab_padding_factor_);
       (void)parse_string_from_metadata(content, "\"long_range_green_mode\"", long_range_green_mode_);
+      (void)parse_string_from_metadata(content, "\"long_range_assignment\"", long_range_assignment_);
       (void)parse_string_from_metadata(content, "\"long_range_runtime_backend\"", long_range_runtime_backend_);
       (void)parse_int64_from_metadata(content, "\"long_range_mesh_size\"", long_range_mesh_size_);
       (void)parse_int64_from_metadata(content, "\"long_range_max_multipole_l\"", long_range_max_multipole_l_);

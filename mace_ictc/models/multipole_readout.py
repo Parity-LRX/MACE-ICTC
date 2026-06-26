@@ -53,6 +53,7 @@ class MultipoleReadout(nn.Module):
         lmax: int,
         max_multipole_l: int,
         source_channels: int = 1,
+        source_scale_init: float = 0.1,
     ) -> None:
         super().__init__()
         self.channels = int(channels)
@@ -94,6 +95,20 @@ class MultipoleReadout(nn.Module):
             if self.max_multipole_l >= 2
             else None
         )
+        # Gentle-start gate. A learnable scalar that multiplies every emitted multipole
+        # source (q, mu, Q). The reciprocal long-range energy is QUADRATIC in the sources
+        # (E ~ |S(k)|^2), so a freshly-added multipole head started at the default mix
+        # init injects a non-trivial energy from step 1 -- fine for from-scratch training
+        # but destabilizing when WARM-STARTING a trained backbone (--finetune). Initializing
+        # the scale small makes the contribution start ~`source_scale_init`^2 of the ungated
+        # value (gentle), while it stays trainable because the sources themselves are
+        # non-zero (d E / d source_scale != 0, so it bootstraps -- a zero-source start would
+        # be a zero-gradient fixed point of the quadratic energy). Crucially the gate is
+        # applied INSIDE forward, before BOTH the in-model `forward_multipole` energy AND the
+        # exported `pack_multipole_source`, so train and deploy stay byte-consistent with no
+        # change to the C++ reciprocal solver (it just receives the gated sources). This is
+        # the multipole analog of the scalar route's `energy_scale=0` warm-start gate.
+        self.source_scale = nn.Parameter(torch.tensor(float(source_scale_init)))
 
     def _chan_mix(self, block_l: torch.Tensor, l: int) -> torch.Tensor:
         # block_l: [N, C, 2l+1] -> [N, source_channels, 2l+1]
@@ -106,13 +121,14 @@ class MultipoleReadout(nn.Module):
         ``[N, channels, 2l+1]``). Returns ``(monopole [N, S], dipole [N, S, 3] or
         None, quadrupole [N, S, 3, 3] or None)`` with ``S = source_channels``."""
         blocks = _split_irreps(node_feats_so3, self.channels, self.lmax)
-        monopole = self._chan_mix(blocks[0], 0).squeeze(-1)  # [N, S]
+        scale = self.source_scale.to(dtype=blocks[0].dtype)
+        monopole = self._chan_mix(blocks[0], 0).squeeze(-1) * scale  # [N, S]
         dipole = None
         quadrupole = None
         if self.max_multipole_l >= 1:
             d_block = self._chan_mix(blocks[1], 1)  # [N, S, 3]
-            dipole = self.dipole_recovery({1: d_block}, squeeze_channel=False)  # [N, S, 3]
+            dipole = self.dipole_recovery({1: d_block}, squeeze_channel=False) * scale  # [N, S, 3]
         if self.max_multipole_l >= 2:
             q_block = self._chan_mix(blocks[2], 2)  # [N, S, 5]
-            quadrupole = self.quad_recovery({2: q_block}, squeeze_channel=False)  # [N, S, 3, 3]
+            quadrupole = self.quad_recovery({2: q_block}, squeeze_channel=False) * scale  # [N, S, 3, 3]
         return monopole, dipole, quadrupole

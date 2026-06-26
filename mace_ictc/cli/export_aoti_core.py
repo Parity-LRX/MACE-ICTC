@@ -83,6 +83,9 @@ def _long_range_deploy_metadata(
         "long_range_energy_partition": str(getattr(model, "long_range_energy_partition", "uniform")),
         "long_range_neutralize": bool(getattr(model, "long_range_neutralize", True)),
         "long_range_green_mode": str(getattr(model, "long_range_green_mode", "poisson")),
+        # Mesh assignment (cic/pcs) the multipole reciprocal solver must match the in-model PME; the
+        # C++ cuFFT solver reads this and dispatches the matching spread/deconvolution stencil.
+        "long_range_assignment": str(getattr(model, "long_range_assignment", "cic")),
         "long_range_mesh_fft_full_ewald": bool(getattr(model, "long_range_mesh_fft_full_ewald", False)),
         "long_range_dispersion_mode": str(getattr(model, "long_range_dispersion_mode", "none")),
         "long_range_dispersion": bool(getattr(model, "long_range_dispersion", False)),

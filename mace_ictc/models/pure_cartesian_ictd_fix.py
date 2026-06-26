@@ -2127,6 +2127,7 @@ class PureCartesianICTDFix(nn.Module):
         long_range_mesh_fft_full_ewald: bool = False,
         long_range_mesh_fft_reciprocal_only: bool = False,
         long_range_max_multipole_l: int = 0,
+        long_range_multipole_gate_init: float = 0.1,
         long_range_dispersion: bool = False,
         long_range_dispersion_mode: str | None = None,
         dispersion_cutoff: float = 8.0,
@@ -2595,6 +2596,7 @@ class PureCartesianICTDFix(nn.Module):
         # multipole) and feed the mesh-FFT reciprocal kernel. OFF (max_multipole_l==0) ->
         # readout is None and the scalar latent-source path is used unchanged (byte-identical).
         self.long_range_max_multipole_l = int(long_range_max_multipole_l)
+        self.long_range_multipole_gate_init = float(long_range_multipole_gate_init)
         self.multipole_readout = None
         if self.long_range_module is not None and self.long_range_max_multipole_l > 0:
             if str(long_range_reciprocal_backend) != "mesh_fft":
@@ -2619,6 +2621,7 @@ class PureCartesianICTDFix(nn.Module):
                 lmax=self.lmax,
                 max_multipole_l=self.long_range_max_multipole_l,
                 source_channels=int(long_range_source_channels),
+                source_scale_init=self.long_range_multipole_gate_init,
             )
             # at export the multipole route emits a packed [q|mu|Q] reciprocal_source for the
             # C++ solver (instead of computing the reciprocal energy in-model).

@@ -275,6 +275,44 @@ def test_model_multipole_forward_smoke():
     )
 
 
+def test_model_multipole_gentle_start_warm_safe():
+    """End-to-end warm-start safety: a freshly-built multipole model starts gentle. Toggling the
+    multipole gate isolates its contribution -- gate=0 -> zero multipole energy (pure backbone),
+    so the long-range part at the default gate (0.1) is ~gate**2 (quadratic energy) of the ungated
+    value. That small initial contribution is what lets `--finetune` add multipole electrostatics on
+    a trained backbone without destabilizing it."""
+    torch.set_default_dtype(torch.float64)
+    model = _build_model(max_multipole_l=2).double().eval()
+    # the model wires the gate through to the readout with the small gentle-start default
+    assert abs(float(model.multipole_readout.source_scale) - 0.1) < 1e-6
+
+    torch.manual_seed(0)
+    L = 8.0
+    cell = (torch.eye(3, dtype=torch.float64) * L).reshape(1, 3, 3)
+    A = torch.tensor([1, 6, 7, 8, 1, 6, 7, 8], dtype=torch.long)
+    n = A.numel()
+    pos = torch.rand(n, 3, dtype=torch.float64) * L
+    batch = torch.zeros(n, dtype=torch.long)
+    edge_src, edge_dst, shifts = _neighbor_list(pos, cell[0], r_max=4.5)
+
+    def total_energy_with_gate(g: float) -> torch.Tensor:
+        with torch.no_grad():
+            model.multipole_readout.source_scale.fill_(g)
+        return model(pos, A, batch, edge_src, edge_dst, shifts, cell).sum()
+
+    e_backbone = total_energy_with_gate(0.0)  # multipole sources = 0 -> zero long-range energy
+    e_gentle = total_energy_with_gate(0.1)
+    e_full = total_energy_with_gate(1.0)
+    lr_gentle = (e_gentle - e_backbone).abs()
+    lr_full = (e_full - e_backbone).abs()
+
+    assert lr_full > 0, "ungated multipole head must contribute a non-trivial long-range energy"
+    # energy is quadratic in the sources, so gate 0.1 -> ~0.01 of the ungated contribution
+    assert lr_gentle < 0.05 * lr_full, (
+        f"gentle-start gate not gentle: lr_gentle/lr_full = {(lr_gentle / lr_full).item():.3e}"
+    )
+
+
 def test_long_range_multi_graph_matches_separate_graphs():
     """Batched mesh long-range must be separable across structures."""
     torch.set_default_dtype(torch.float64)
@@ -715,6 +753,8 @@ if __name__ == "__main__":
     print("OK: model multipole gating (off -> None / on -> readout)")
     test_model_multipole_forward_smoke()
     print("OK: full-model forward smoke (energy + forces + rotation-invariance, multipole ON)")
+    test_model_multipole_gentle_start_warm_safe()
+    print("OK: multipole gentle-start warm-safe (long-range contribution ~gate**2 at init)")
     l0, l1 = test_model_multipole_training_smoke()
     print(f"OK: training smoke (loss {l0:.3e} -> {l1:.3e}, multipole readout gets gradient)")
     test_export_reciprocal_source_equivariant_layout()

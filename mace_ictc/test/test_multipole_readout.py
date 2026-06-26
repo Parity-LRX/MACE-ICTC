@@ -46,6 +46,7 @@ def _pin_identity(head: MultipoleReadout) -> None:
     with torch.no_grad():
         for lin in head.mix:
             lin.weight.copy_(torch.ones_like(lin.weight))
+        head.source_scale.fill_(1.0)  # disable the gentle-start gate for the exact round-trip
 
 
 def test_multipole_readout_roundtrip_and_equivariance():
@@ -84,6 +85,43 @@ def test_multipole_readout_roundtrip_and_equivariance():
     assert torch.allclose(q2, quad_r, atol=1e-9), (q2 - quad_r).abs().max()
 
 
+def test_multipole_readout_gentle_start_gate():
+    """The learnable source_scale gate makes a freshly-built multipole head start gentle (every
+    q/mu/Q source scaled by the small init -> reciprocal energy, quadratic in the sources, starts at
+    ~gate**2 of full strength) yet trainable (gate + channel mixers receive gradient, unlike a
+    zero-source start which is a zero-gradient fixed point). The gate multiplies the SAME sources
+    that feed both the in-model energy and the exported pack -> train/deploy stay consistent."""
+    dtype = torch.float64
+    torch.manual_seed(0)
+    n, c = 5, 8
+    head = MultipoleReadout(
+        channels=c, lmax=2, max_multipole_l=2, source_channels=1, source_scale_init=0.1
+    ).to(dtype)
+    # default gate is the small gentle-start value, not 1 (warm-start safety)
+    assert abs(float(head.source_scale) - 0.1) < 1e-6
+
+    feat = torch.randn(n, c * 9, dtype=dtype)
+    gate_val = float(head.source_scale)
+    m_gentle, d_gentle, q_gentle = head(feat)
+    with torch.no_grad():
+        head.source_scale.fill_(1.0)
+    m_full, d_full, q_full = head(feat)
+    # the gate scales every source linearly by exactly its value
+    assert torch.allclose(m_gentle, gate_val * m_full, atol=1e-12)
+    assert torch.allclose(d_gentle, gate_val * d_full, atol=1e-12)
+    assert torch.allclose(q_gentle, gate_val * q_full, atol=1e-12)
+
+    # trainable: both the gate and the channel mixers get a non-zero gradient
+    head.source_scale.data.fill_(0.1)
+    head.zero_grad(set_to_none=True)
+    m, d, q = head(feat)
+    ((m ** 2).sum() + (d ** 2).sum() + (q ** 2).sum()).backward()
+    assert head.source_scale.grad is not None and head.source_scale.grad.abs() > 0
+    assert any(lin.weight.grad is not None and lin.weight.grad.abs().sum() > 0 for lin in head.mix)
+
+
 if __name__ == "__main__":
     test_multipole_readout_roundtrip_and_equivariance()
     print("OK: multipole readout round-trip + equivariance")
+    test_multipole_readout_gentle_start_gate()
+    print("OK: multipole readout gentle-start gate (gentle + trainable + consistent)")

@@ -15,6 +15,7 @@ struct CufftMultipoleParams {
   float ewald_alpha_prefactor = 5.0f;
   float energy_scale = 1.0f;
   bool full_ewald = false;
+  int assignment_order = 2;  // mesh assignment stencil: 2=CIC, 4=PCS (cubic B-spline)
 };
 
 struct CufftMultipoleWorkspace {

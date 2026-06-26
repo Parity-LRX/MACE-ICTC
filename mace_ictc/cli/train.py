@@ -361,6 +361,7 @@ def build_baseline_model(
     long_range_slab_padding_factor: int = 2,
     long_range_mesh_fft_full_ewald: bool = False,
     long_range_max_multipole_l: int = 0,
+    long_range_multipole_gate_init: float = 0.1,
     long_range_dispersion_mode: str = "none",
     dispersion_cutoff: float = 8.0,
     dispersion_max_num_neighbors: int | None = None,
@@ -436,6 +437,7 @@ def build_baseline_model(
         long_range_slab_padding_factor=long_range_slab_padding_factor,
         long_range_mesh_fft_full_ewald=long_range_mesh_fft_full_ewald,
         long_range_max_multipole_l=long_range_max_multipole_l,
+        long_range_multipole_gate_init=long_range_multipole_gate_init,
         long_range_dispersion_mode=long_range_dispersion_mode,
         dispersion_cutoff=dispersion_cutoff,
         dispersion_max_num_neighbors=dispersion_max_num_neighbors,
@@ -534,6 +536,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
                     help="Use full-Ewald-style mesh FFT correction terms for mesh_fft.")
     ap.add_argument("--long-range-max-multipole-l", type=int, default=0,
                     help="Maximum learned multipole rank emitted for mesh_fft reciprocal long-range export.")
+    ap.add_argument("--long-range-multipole-gate-init", type=float, default=0.1,
+                    help="Initial value of the multipole long-range gentle-start gate (a learnable scalar that "
+                         "multiplies the emitted q/mu/Q sources). The reciprocal energy is quadratic in the sources, "
+                         "so a fresh multipole head starts at ~gate^2 of full strength: small (e.g. 0.1) keeps the "
+                         "head gentle when WARM-STARTING a trained backbone (--finetune) while staying trainable; "
+                         "set 1.0 for the ungated from-scratch behavior. The gate is folded into the exported source, "
+                         "so train and deploy stay consistent.")
     ap.add_argument("--long-range-dispersion-mode", default="none", choices=["none", "pairwise-c6", "mbd", "mbd-slq"],
                     help="Optional long-range dispersion term. pairwise-c6 is the existing learned C6/R0 model; "
                          "mbd is a dense QHO many-body baseline; mbd-slq is the matrix-free stochastic-Lanczos "
@@ -686,8 +695,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
                     help="With --resume-checkpoint, also restore optimizer/global_step and continue epoch numbering.")
     ap.add_argument("--finetune", action="store_true",
                     help="Warm-start: non-strict load of --resume-checkpoint (load matching backbone weights, "
-                         "leave new heads e.g. the MBD dispersion head freshly initialized). Fresh optimizer "
-                         "(do not combine with --resume-training-state). Use to train the backbone first, then add MBD.")
+                         "leave any NEWLY-ADDED long-range head freshly initialized). Fresh optimizer (do not "
+                         "combine with --resume-training-state). Train the backbone first, then add native "
+                         "long-range physics on top: MBD dispersion (--long-range-dispersion-mode), reciprocal "
+                         "electrostatics (--long-range-mode reciprocal-spectral-v1), or multipole electrostatics "
+                         "(add --long-range-reciprocal-backend mesh_fft --long-range-max-multipole-l {1,2} "
+                         "--long-range-mesh-fft-full-ewald). Each head starts gentle (the electrostatics "
+                         "energy_scale and the multipole gate init near zero; MBD has built-in spectral guards), "
+                         "so the warm-started backbone is not destabilized. See USER_MANUAL section 12.6.")
     ap.add_argument("--num-workers", type=int, default=2)
     ap.add_argument("--log-interval", type=int, default=10)
     return ap
@@ -882,6 +897,7 @@ def main(argv=None):
         long_range_slab_padding_factor=args.long_range_slab_padding_factor,
         long_range_mesh_fft_full_ewald=args.long_range_mesh_fft_full_ewald,
         long_range_max_multipole_l=args.long_range_max_multipole_l,
+        long_range_multipole_gate_init=args.long_range_multipole_gate_init,
         long_range_dispersion_mode=args.long_range_dispersion_mode,
         dispersion_cutoff=args.dispersion_cutoff,
         dispersion_max_num_neighbors=(
@@ -1016,6 +1032,7 @@ def main(argv=None):
         long_range_assignment=args.long_range_assignment,
         long_range_mesh_fft_full_ewald=bool(args.long_range_mesh_fft_full_ewald),
         long_range_max_multipole_l=int(args.long_range_max_multipole_l),
+        long_range_multipole_gate_init=float(args.long_range_multipole_gate_init),
         long_range_dispersion_mode=args.long_range_dispersion_mode,
         long_range_dispersion=bool(args.long_range_dispersion_mode != "none"),
         dispersion_cutoff=float(args.dispersion_cutoff),

@@ -1145,6 +1145,7 @@ bool MFFReciprocalSolver::try_compute_replicated_multipole_cufft(
   params.ewald_alpha_prefactor = static_cast<float>(ewald_alpha_prefactor_);
   params.energy_scale = static_cast<float>(energy_scale_);
   params.full_ewald = full_ewald_;
+  params.assignment_order = (assignment_ == 1) ? 4 : 2;  // 1=pcs (4-pt cubic), else cic (2-pt)
 
   CufftMultipoleWorkspace workspace;
   workspace.mesh_complex = mesh_complex.data_ptr<float>();

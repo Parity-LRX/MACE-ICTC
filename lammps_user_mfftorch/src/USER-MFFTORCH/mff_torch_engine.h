@@ -68,6 +68,7 @@ class MFFTorchEngine {
   const std::string& reciprocal_source_boundary() const { return reciprocal_source_boundary_; }
   int64_t reciprocal_source_slab_padding_factor() const { return reciprocal_source_slab_padding_factor_; }
   const std::string& long_range_green_mode() const { return long_range_green_mode_; }
+  const std::string& long_range_assignment() const { return long_range_assignment_; }
   const std::string& long_range_runtime_backend() const { return long_range_runtime_backend_; }
   int64_t long_range_mesh_size() const { return long_range_mesh_size_; }
   int64_t long_range_max_multipole_l() const { return long_range_max_multipole_l_; }
@@ -189,6 +190,7 @@ class MFFTorchEngine {
   std::string reciprocal_source_boundary_ = "periodic";
   int64_t reciprocal_source_slab_padding_factor_ = 2;
   std::string long_range_green_mode_ = "poisson";
+  std::string long_range_assignment_ = "cic";  // mesh assignment for the multipole reciprocal solver
   std::string long_range_runtime_backend_ = "none";
   int64_t long_range_mesh_size_ = 16;
   int64_t long_range_max_multipole_l_ = 0;

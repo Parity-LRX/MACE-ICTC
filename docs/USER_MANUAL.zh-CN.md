@@ -1013,6 +1013,10 @@ run 1000
 
 - **Pairwise-C6** 也要 `dispersion <cutoff>`（用来提供邻居表）；能量本身随 `.pt2` 图内一起。
 - **倒空间静电**不需要额外关键字——engine 从元数据和网格跑倒空间求解器。
+- **网格分配（assignment）训练与部署自动对齐。** C++ 倒空间求解器从部署元数据读 `long_range_assignment`
+  （`cic` / `pcs`）并跑对应的 spread + sinc 窗反卷积 stencil，所以用 `--long-range-assignment pcs` 训的
+  多极模型在 LAMMPS 里能复现其 in-model 能量/力（OFF23-large l=2 实测相对 ~2e-6）。训练与部署通过元数据
+  自动匹配，无需额外 flag。
 - `pair_coeff` 的元素顺序必须和导出 `--elements` 一致；`NULL` 跳过某个 type。
 
 匹配规则与约束：
@@ -1046,29 +1050,64 @@ run 1000
 - **各向异性**：当希望 l=2 表示驱动方向性极化率时开启（ICTC 独有路径）；开销很小。
 - **Core**：要吞吐用 AOTI `.pt2`；要 N 灵活/便携用 TorchScript `.pt`。
 
-### 12.6 训练稳定性与 warm-start（MBD）
+### 12.6 训练稳定性与 warm-start（长程 head）
 
-MBD 是在*学习到的*极化率上做耦合偶极求解，所以训练早期耦合矩阵 `C` 可能漂向极化灾变边缘。两个数值
-护栏内置且常开：**detached 谱再缩放**让 `C` 每一步都严格正定（`Tr[√C]` 估计器永远不会看到非 PD 算子，
-谱本身不会产生硬 NaN），各向异性 l=2 readout 用**光滑范数**让二阶（force-loss）梯度在初始化时保持有限。
-在此基础上的实用建议：
+**Warm-start 是给模型加任意原生长程 head 的推荐方式**——MBD 色散、倒空间静电、多极静电都一样。先训
+（或转换）一个短程 backbone，再用非严格加载（`--finetune`）在其上加长程物理：backbone 被 warm-start，
+只有新 head 从头初始化。这对三种 head 都是收敛最快、最稳的路径。同一个 flag 适用于每种 head——唯一变的
+是你传哪些 `--long-range-*` flag。
 
-**Warm-start 是推荐路径——也最稳。** 先训（或转换）一个 backbone，再用非严格加载在其上加 MBD：backbone
-被 warm-start，只有 MBD head 从头初始化。这样收敛最快、几乎不出不稳定。
+`--finetune` 以**非严格**方式加载权重（缺失的长程-head 键保持新初始化、多余的键忽略），用全新 optimizer
+从 epoch 0 开始。架构 flag 仍要描述*完整*模型（backbone + 长程 head）。之后要继续训完整模型，正常 resume：
+`--resume-checkpoint model.pth --resume-training-state`（严格加载、恢复 optimizer）。
+
+**warm-start 为什么稳：每种 head 都温和起步。** 新加的 head 在初始化时必须贡献 ~0 能量，才不会破坏被
+warm-start 的 backbone，同时还要可训练。每种 head 都内置温和起步：
+
+- **静电**（`--long-range-mode reciprocal-spectral-v1`，默认 `direct_kspace` 后端）：能量被一个可学习的
+  `energy_scale` 门控、初始化为 **0**，所以初始贡献恰好为零、随训练逐步上升（能 bootstrap 是因为隐变量源
+  非零，故 `dE/d energy_scale ≠ 0`）。
+- **多极静电**（`mesh_fft` + `--long-range-max-multipole-l {1,2}`）：倒空间能量关于 q/μ/Q 源是*二次*的，
+  所以用一个可学习的**门控**（`--long-range-multipole-gate-init`，默认 `0.1`）缩放发射的源——head 以
+  ~`gate²` 的强度起步（温和）但仍可训练。门控被折进导出的源里，所以训练与部署保持一致。backbone 特别"硬"
+  时可调小（如 `0.02`）；设 `1.0` 则恢复未门控的从头训练行为。
+- **MBD** 是在*学习到的*极化率上做耦合偶极求解，所以训练早期耦合矩阵 `C` 可能漂向极化灾变边缘。两个数值
+  护栏内置且常开：**detached 谱再缩放**让 `C` 每一步都严格正定（`Tr[√C]` 估计器永远不会看到非 PD 算子，
+  谱本身不会产生硬 NaN），各向异性 l=2 readout 用**光滑范数**让二阶（force-loss）梯度在初始化时保持有限。
+
+**配方**（都从 `backbone.pth` = 一个不带长程、已训好的 MACE-ICTC checkpoint，或转换自 MACE 的 checkpoint 出发）：
 
 ```bash
-# backbone.pth = 一个不带长程、已训好的 MACE-ICTC checkpoint（或转换自 MACE 的 checkpoint）
+# (a) MBD 色散
 python -m mace_ictc.cli.train --data-dir DATA \
   --channels 128 --lmax 2 --num-interaction 2 \
   --long-range-dispersion-mode mbd-slq --mbd-anisotropic --dispersion-cutoff 8.0 \
   --resume-checkpoint backbone.pth --finetune \
   --max-grad-norm 10 --lr 1e-3 \
   --checkpoint model_mbd_aniso.pth
+
+# (b) 静电（学习的隐变量标量电荷，倒空间）
+python -m mace_ictc.cli.train --data-dir DATA \
+  --channels 128 --lmax 2 --num-interaction 2 \
+  --long-range-mode reciprocal-spectral-v1 \
+  --resume-checkpoint backbone.pth --finetune \
+  --max-grad-norm 10 --lr 1e-3 \
+  --checkpoint model_es.pth
+
+# (c) 多极静电（学习的单极/偶极/四极，mesh-FFT）
+python -m mace_ictc.cli.train --data-dir DATA \
+  --channels 128 --lmax 2 --num-interaction 2 \
+  --long-range-mode reciprocal-spectral-v1 \
+  --long-range-reciprocal-backend mesh_fft --long-range-mesh-fft-full-ewald \
+  --long-range-max-multipole-l 2 --long-range-assignment pcs \
+  --long-range-multipole-gate-init 0.1 \
+  --resume-checkpoint backbone.pth --finetune \
+  --max-grad-norm 10 --lr 1e-3 \
+  --checkpoint model_multipole.pth
 ```
 
-`--finetune` 以**非严格**方式加载权重（缺失的 MBD-head 键保持新初始化、多余的键忽略），用全新 optimizer
-从 epoch 0 开始。架构 flag 仍要描述*完整*模型（backbone + MBD）。之后要继续训完整模型，正常 resume：
-`--resume-checkpoint model_mbd_aniso.pth --resume-training-state`（严格加载、恢复 optimizer）。
+静电与色散相互独立，可在一个模型里组合（如 multipole l=2 + MBD），同时传两组 flag 即可。
+`--long-range-max-multipole-l` 不能超过模型 `lmax`。
 
 **从头训 MBD** 也行，但更娇气：
 

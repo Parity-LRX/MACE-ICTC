@@ -441,6 +441,9 @@ void PairMFFTorch::init_style() {
       cfg.full_ewald = engine_->long_range_mesh_fft_full_ewald();
       cfg.ewald_alpha_prefactor = engine_->long_range_ewald_alpha_prefactor();
       cfg.energy_scale = engine_->long_range_energy_scale();
+      // Mesh assignment (pcs vs cic) must match the in-model PME or the multipole reciprocal
+      // energy/forces drift by a few % at coarse meshes; the C++ cuFFT solver supports both.
+      cfg.assignment = (engine_->long_range_assignment() == "pcs") ? 1 : 0;
       reciprocal_solver_->set_config(cfg);
     }
     if (mbd_solver_) {

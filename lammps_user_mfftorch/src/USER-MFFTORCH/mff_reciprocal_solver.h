@@ -44,6 +44,7 @@ struct ReciprocalConfig {
   bool full_ewald = false;            // multiply spectral weight by exp(-k^2/4 alpha^2)
   double ewald_alpha_prefactor = 5.0; // alpha = prefactor / (0.5 * min periodic box length)
   double energy_scale = 1.0;          // learned scalar applied to the reciprocal energy
+  int assignment = 0;                 // mesh assignment: 0=cic (2-pt), 1=pcs (4-pt cubic B-spline)
 };
 
 struct ReciprocalInputs {
@@ -91,6 +92,7 @@ class MFFReciprocalSolver {
     full_ewald_ = config_.full_ewald;
     ewald_alpha_prefactor_ = config_.ewald_alpha_prefactor;
     energy_scale_ = config_.energy_scale;
+    assignment_ = config_.assignment;
   }
   const ReciprocalConfig& config() const { return config_; }
   int mesh_size() const { return mesh_size_; }
@@ -147,6 +149,7 @@ class MFFReciprocalSolver {
   bool full_ewald_ = false;
   double ewald_alpha_prefactor_ = 5.0;
   double energy_scale_ = 1.0;
+  int assignment_ = 0;  // 0=cic, 1=pcs; forwarded to CufftMultipoleParams.assignment_order
   mutable torch::Tensor cached_integer_freq_cpu_;
   mutable SpectralCacheKey spectral_cache_key_;
   mutable SparsePartitionCacheKey sparse_partition_cache_key_;

@@ -257,6 +257,7 @@ void PairMFFTorchKokkos<DeviceType>::init_style() {
         cfg.full_ewald = engine_->long_range_mesh_fft_full_ewald();
         cfg.ewald_alpha_prefactor = engine_->long_range_ewald_alpha_prefactor();
         cfg.energy_scale = engine_->long_range_energy_scale();
+        cfg.assignment = (engine_->long_range_assignment() == "pcs") ? 1 : 0;  // match in-model PME
         reciprocal_solver_->set_config(cfg);
       }
       if (tree_fmm_solver_) {

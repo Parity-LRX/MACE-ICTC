@@ -40,6 +40,32 @@ __device__ __forceinline__ int freq_index(int i, int m) {
   return i < split ? i : i - m;
 }
 
+// Per-axis mesh assignment: fills the integer base grid index and the stencil weights w[0..S-1]
+// for the in-cell scaled coordinate `s` (atom position scaled into [0, mesh)). Mirrors the Python
+// reference _assignment_kernel_1d in mace_ictc/models/long_range.py: stencil 2 = CIC (linear,
+// base = floor(s)); stencil 4 = PCS (cubic B-spline, base = floor(s) - 1). S <= 4.
+__device__ __forceinline__ void assign_weights_1d(float s, int stencil, int& base, float w[4]) {
+  if (stencil >= 4) {  // PCS cubic B-spline (C^2 weight, C^1 force, no mesh-cell discontinuity)
+    const float fl = floorf(s);
+    base = static_cast<int>(fl) - 1;
+    const float t = s - fl;  // frac in [0,1)
+    const float t2 = t * t, t3 = t2 * t;
+    const float omt = 1.0f - t;
+    w[0] = (omt * omt * omt) / 6.0f;
+    w[1] = (3.0f * t3 - 6.0f * t2 + 4.0f) / 6.0f;
+    w[2] = (-3.0f * t3 + 3.0f * t2 + 3.0f * t + 1.0f) / 6.0f;
+    w[3] = t3 / 6.0f;
+  } else {  // CIC linear 2-point stencil
+    base = static_cast<int>(floorf(s));
+    const float t = s - static_cast<float>(base);
+    w[0] = 1.0f - t;
+    w[1] = t;
+  }
+}
+
+// Stencil size (number of grid points per axis) for a given assignment order. 2=CIC, 4=PCS.
+__host__ __device__ __forceinline__ int assignment_stencil(int order) { return order >= 4 ? 4 : 2; }
+
 __global__ void zero_complex_kernel(cufftComplex* data, int n) {
   const int i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i >= n) return;
@@ -55,7 +81,8 @@ __global__ void build_kspec_kernel(
     float volume,
     float k_norm_floor,
     float ewald_alpha_prefactor,
-    int full_ewald) {
+    int full_ewald,
+    int stencil) {
   const int k = blockIdx.x * blockDim.x + threadIdx.x;
   const int K = mesh * mesh * mesh;
   if (k >= K) return;
@@ -77,7 +104,13 @@ __global__ void build_kspec_kernel(
     const float sx = sinc_pi(mx / static_cast<float>(mesh));
     const float sy = sinc_pi(my / static_cast<float>(mesh));
     const float sz = sinc_pi(mz / static_cast<float>(mesh));
-    const float window = fmaxf((sx * sx) * (sy * sy) * (sz * sz), 1.0e-6f);
+    // Assignment deconvolution window = (sinc_x sinc_y sinc_z)^stencil (Python _assignment_window_1d
+    // with exponent = stencil size), deconvolved by 1/window^2. CIC (stencil 2) -> 1/sinc^4;
+    // PCS (stencil 4) -> 1/sinc^8.
+    const float s3 = sx * sy * sz;
+    float window = s3 * s3;             // stencil 2 (CIC)
+    if (stencil >= 4) window *= window; // stencil 4 (PCS): (s3^2)^2 = s3^4
+    window = fmaxf(window, 1.0e-6f);
     spectral = (4.0f * kPi) / fmaxf(k2, k_norm_floor * k_norm_floor) / volume / (window * window);
     if (full_ewald) {
       const float r0 = sqrtf(cell[0] * cell[0] + cell[1] * cell[1] + cell[2] * cell[2]);
@@ -95,14 +128,15 @@ __global__ void build_kspec_kernel(
   kspec[4 * k + 3] = spectral;
 }
 
-__global__ void spread_cic_kernel(
+__global__ void spread_source_kernel(
     const float* pos,
     const float* source,
     const float* inv_cell,
     cufftComplex* mesh_data,
     int n_atoms,
     int mesh,
-    int packed_width) {
+    int packed_width,
+    int stencil) {
   const int idx = blockIdx.x * blockDim.x + threadIdx.x;
   const int total = n_atoms * packed_width;
   if (idx >= total) return;
@@ -121,21 +155,17 @@ __global__ void spread_cic_kernel(
   const float sx = fx * mesh;
   const float sy = fy * mesh;
   const float sz = fz * mesh;
-  const int bx = static_cast<int>(floorf(sx));
-  const int by = static_cast<int>(floorf(sy));
-  const int bz = static_cast<int>(floorf(sz));
-  const float dx = sx - bx;
-  const float dy = sy - by;
-  const float dz = sz - bz;
-  const float wx[2] = {1.0f - dx, dx};
-  const float wy[2] = {1.0f - dy, dy};
-  const float wz[2] = {1.0f - dz, dz};
+  int bx, by, bz;
+  float wx[4], wy[4], wz[4];
+  assign_weights_1d(sx, stencil, bx, wx);
+  assign_weights_1d(sy, stencil, by, wy);
+  assign_weights_1d(sz, stencil, bz, wz);
   const int K = mesh * mesh * mesh;
-  for (int ix = 0; ix < 2; ++ix) {
+  for (int ix = 0; ix < stencil; ++ix) {
     const int x = wrap_index(bx + ix, mesh);
-    for (int iy = 0; iy < 2; ++iy) {
+    for (int iy = 0; iy < stencil; ++iy) {
       const int y = wrap_index(by + iy, mesh);
-      for (int iz = 0; iz < 2; ++iz) {
+      for (int iz = 0; iz < stencil; ++iz) {
         const int z = wrap_index(bz + iz, mesh);
         const float w = wx[ix] * wy[iy] * wz[iz];
         const int flat = (x * mesh + y) * mesh + z;
@@ -226,7 +256,8 @@ __global__ void gather_force_kernel(
     float* forces,
     int n_atoms,
     int mesh,
-    int packed_width) {
+    int packed_width,
+    int stencil) {
   const int atom = blockIdx.x * blockDim.x + threadIdx.x;
   if (atom >= n_atoms) return;
   float fx = pos[3 * atom + 0] * inv_cell[0] + pos[3 * atom + 1] * inv_cell[3] + pos[3 * atom + 2] * inv_cell[6];
@@ -238,22 +269,18 @@ __global__ void gather_force_kernel(
   const float sx = fx * mesh;
   const float sy = fy * mesh;
   const float sz = fz * mesh;
-  const int bx = static_cast<int>(floorf(sx));
-  const int by = static_cast<int>(floorf(sy));
-  const int bz = static_cast<int>(floorf(sz));
-  const float dx = sx - bx;
-  const float dy = sy - by;
-  const float dz = sz - bz;
-  const float wx[2] = {1.0f - dx, dx};
-  const float wy[2] = {1.0f - dy, dy};
-  const float wz[2] = {1.0f - dz, dz};
+  int bx, by, bz;
+  float wx[4], wy[4], wz[4];
+  assign_weights_1d(sx, stencil, bx, wx);
+  assign_weights_1d(sy, stencil, by, wy);
+  assign_weights_1d(sz, stencil, bz, wz);
   const int K = mesh * mesh * mesh;
   float out[3] = {0.0f, 0.0f, 0.0f};
-  for (int ix = 0; ix < 2; ++ix) {
+  for (int ix = 0; ix < stencil; ++ix) {
     const int x = wrap_index(bx + ix, mesh);
-    for (int iy = 0; iy < 2; ++iy) {
+    for (int iy = 0; iy < stencil; ++iy) {
       const int y = wrap_index(by + iy, mesh);
-      for (int iz = 0; iz < 2; ++iz) {
+      for (int iz = 0; iz < stencil; ++iz) {
         const int z = wrap_index(bz + iz, mesh);
         const float w = wx[ix] * wy[iy] * wz[iz];
         const int flat = (x * mesh + y) * mesh + z;
@@ -321,6 +348,9 @@ bool cufft_multipole_compute(
   const int C = params.source_channels;
   const int packed_width = C * (1 + (params.max_multipole_l >= 1 ? 3 : 0) + (params.max_multipole_l >= 2 ? 9 : 0));
   const int K = mesh * mesh * mesh;
+  // Mesh assignment stencil (2=CIC, 4=PCS), matching the in-model long_range_assignment so the
+  // deployed spreading/deconvolution reproduces the training-time PME exactly.
+  const int stencil = assignment_stencil(params.assignment_order);
   cufftComplex* mesh_complex = static_cast<cufftComplex*>(workspace.mesh_complex);
   cufftComplex* grad_complex = static_cast<cufftComplex*>(workspace.grad_complex);
   if (!mesh_complex || !grad_complex || !workspace.kspec || !workspace.energy) {
@@ -342,9 +372,10 @@ bool cufft_multipole_compute(
       params.volume,
       params.k_norm_floor,
       params.ewald_alpha_prefactor,
-      params.full_ewald ? 1 : 0);
-  spread_cic_kernel<<<(n_atoms * packed_width + block - 1) / block, block, 0, stream>>>(
-      pos, packed_source, inv_cell, mesh_complex, n_atoms, mesh, packed_width);
+      params.full_ewald ? 1 : 0,
+      stencil);
+  spread_source_kernel<<<(n_atoms * packed_width + block - 1) / block, block, 0, stream>>>(
+      pos, packed_source, inv_cell, mesh_complex, n_atoms, mesh, packed_width, stencil);
   if (!check_cuda(cudaGetLastError(), error_msg, error_msg_len, "cuFFT multipole spread launch")) return false;
 
   cufftHandle plan_forward = 0;
@@ -390,7 +421,7 @@ bool cufft_multipole_compute(
   cufftDestroy(plan_inverse);
 
   gather_force_kernel<<<(n_atoms + block - 1) / block, block, 0, stream>>>(
-      pos, packed_source, inv_cell, grad_complex, forces, n_atoms, mesh, packed_width);
+      pos, packed_source, inv_cell, grad_complex, forces, n_atoms, mesh, packed_width, stencil);
   return check_cuda(cudaGetLastError(), error_msg, error_msg_len, "cuFFT multipole gather launch");
 }
 
