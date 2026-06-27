@@ -146,7 +146,12 @@ def run(device="cpu"):
     with torch.no_grad():
         e1 = m1(*args); e1 = e1[0] if isinstance(e1, tuple) else e1
         e2 = m2(*args); e2 = e2[0] if isinstance(e2, tuple) else e2
-    assert (e1 - e2).abs().max().item() < 1e-10
+    # m1 and m2 are bit-identical after the strict load (verified by state); a 1e-10 forward check
+    # only holds in fp64/CPU. On GPU/fp32 the forward is non-deterministic at ~1e-7 (atomic scatter
+    # reductions) -- the same model run twice already differs by ~6e-8 -- so the round-trip tolerance
+    # must track the precision the test actually runs in.
+    rt_tol = 1e-10 if dtype is torch.float64 else 1e-5
+    assert (e1 - e2).abs().max().item() < rt_tol
 
     # 4. deploy round-trip via LAMMPS_MLIAP_MFF.from_checkpoint (strict load) --
     from mace_ictc.interfaces.lammps_mliap import LAMMPS_MLIAP_MFF
@@ -155,7 +160,7 @@ def run(device="cpu"):
     md.eval()
     with torch.no_grad():
         ed = md(*args); ed = ed[0] if isinstance(ed, tuple) else ed
-    assert (e1 - ed).abs().max().item() < 1e-10, "deploy model diverges"
+    assert (e1 - ed).abs().max().item() < rt_tol, "deploy model diverges"
 
     # 4b. exposed training controls are real checkpoint state, not CLI-only ---
     avg_ckpt = os.path.join(tmp, "avg.pth")
