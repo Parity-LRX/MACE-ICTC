@@ -21,22 +21,23 @@ import matplotlib.pyplot as plt  # noqa: E402
 import matplotlib.ticker as mticker  # noqa: E402
 
 # condition palette drawn from the paper's WHOLE_MODEL_COLORS family
-COND_COLORS = {"none": "#4a4a4a", "elec": "#08519c", "disp": "#d95f02", "both": "#41ab5d",
+COND_COLORS = {"none": "#4a4a4a", "elec": "#08519c", "elec-mp": "#6a51a3", "disp": "#d95f02", "both": "#41ab5d",
                "disp-respa": "#d95f02", "disp-mf": "#fd8d3c", "disp-c6": "#c51b8a"}
-COND_MARKERS = {"none": "o", "elec": "s", "disp": "^", "both": "D",
+COND_MARKERS = {"none": "o", "elec": "s", "elec-mp": "*", "disp": "^", "both": "D",
                 "disp-respa": "v", "disp-mf": ">", "disp-c6": "P"}
 # rRESPA-accelerated dispersion (deployed MBD every K steps): dashed, same orange as disp.
 COND_LINESTYLE = {"disp-respa": "--"}
 COND_LABELS = {
     "none": "no long-range",
-    "elec": "electrostatics",
+    "elec": "electrostatics (scalar)",
+    "elec-mp": "electrostatics (multipole)",
     "disp": "dispersion (MBD, in-graph)",
     "both": "elec + dispersion",
     "disp-mf": "dispersion (MBD, matrix-free)",
     "disp-respa": "dispersion (MBD) + rRESPA, K=20",
     "disp-c6": "dispersion (pairwise C6)",
 }
-COND_ORDER = ["none", "elec", "disp", "disp-respa", "disp-c6", "both"]
+COND_ORDER = ["none", "elec", "elec-mp", "disp", "disp-respa", "disp-c6", "both"]
 
 MODE_TITLES = {
     "train": "Training (E+F+backward)",
