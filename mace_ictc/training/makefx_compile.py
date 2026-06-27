@@ -368,7 +368,11 @@ class CompiledForceCache:
             shape_key = (int(example_inputs[0].shape[0]),)
         else:
             shape_key = tuple(int(t.shape[0]) for t in example_inputs if torch.is_tensor(t))
-        key = (bool(training),) + shape_key
+        # The compute_fn variant (force-only / +stress / +dispersion) changes the traced graph's
+        # input ARITY (7 / 8 / 10 / 11). Key on it too: otherwise a stress call (8 inputs) reuses an
+        # earlier force-only graph (7 inputs) at the same atom count and the GraphModule is invoked
+        # with the wrong number of inputs ("forward() takes 8 positional arguments but 9 were given").
+        key = (bool(training), len(example_inputs)) + shape_key
         if key not in self._cache:
             if len(self._cache) >= self._max_slots:
                 raise RuntimeError(
