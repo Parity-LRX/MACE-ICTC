@@ -261,6 +261,7 @@ def _atomic_inter_scale_shift_from_h5(
     atomic_energy_keys,
     atomic_energy_values,
     scaling: str,
+    max_samples: int | None = None,
 ) -> tuple[float, float]:
     """MACE-style interaction-energy statistics from a processed H5.
 
@@ -280,7 +281,9 @@ def _atomic_inter_scale_shift_from_h5(
     force_count = 0
 
     with h5py.File(path, "r") as f:
-        for key in _sample_keys(f):
+        for i, key in enumerate(_sample_keys(f)):
+            if max_samples is not None and i >= max_samples:
+                break
             g = f[key]
             A = np.asarray(g["A"][:], dtype=np.int64).reshape(-1)
             missing = sorted({int(z) for z in A if int(z) not in e0_by_z})
@@ -599,6 +602,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--scaling", default="rms_forces_scaling",
                     choices=["std_scaling", "rms_forces_scaling", "no_scaling"],
                     help="MACE-style ScaleShiftMACE statistics for per-atom interaction energy.")
+    ap.add_argument("--scaling-max-samples", type=int, default=None,
+                    help="Cap the ScaleShift statistics scan at the first N training samples (force RMS / "
+                         "mean atomic-inter energy converge far below the full set). None=scan all (default). "
+                         "Set this for huge datasets where a full single-threaded scan over external-link H5 "
+                         "is slow; samples are read in shard order so the prefix is representative.")
     ap.add_argument("--atomic-inter-scale", type=float, default=None,
                     help="Override the ScaleShiftMACE interaction-energy scale.")
     ap.add_argument("--atomic-inter-shift", type=float, default=None,
@@ -712,6 +720,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--evals-per-epoch", type=int, default=1,
                     help="Validation passes per epoch (1=epoch-end only; 2=mid-epoch + end). "
                          "Mid-epoch passes run on all ranks and barrier, so DDP stays in sync.")
+    ap.add_argument("--keep-checkpoints", type=int, default=0,
+                    help="Retain the N most-recent VALIDATION checkpoints (saved at every val: "
+                         "mid-epoch + epoch-end), rolling -- oldest deleted. 0=disabled (only the "
+                         "best-on-improvement checkpoint is kept). Files: <ckpt-stem>.e<E>s<STEP>.pth.")
     ap.add_argument("--eval-only", action="store_true",
                     help="Load --resume-checkpoint, run ONE validation pass, print Frmse/Ermse, and exit (no training).")
     return ap
@@ -851,6 +863,7 @@ def main(argv=None):
         atomic_energy_keys=atomic_energy_keys,
         atomic_energy_values=atomic_energy_values,
         scaling=args.scaling,
+        max_samples=args.scaling_max_samples,
     )
     if args.no_atomic_inter_shift:
         shift = 0.0
@@ -1154,6 +1167,7 @@ def main(argv=None):
         makefx_max_slots=args.makefx_max_slots,
         train_sampler=sampler, checkpoint_path=args.checkpoint, log_interval=args.log_interval,
         evals_per_epoch=args.evals_per_epoch,
+        keep_checkpoints=args.keep_checkpoints,
         extra_hparams=extra_hparams,
         distributed=ddp_info["enabled"],
         rank=ddp_info["rank"],

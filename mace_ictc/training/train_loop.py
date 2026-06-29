@@ -129,6 +129,7 @@ class ForceTrainer:
         log_interval: int = 10,
         evals_per_epoch: int = 1,
         checkpoint_path: str | None = None,
+        keep_checkpoints: int = 0,
         extra_hparams: dict | None = None,
         distributed: bool = False,
         rank: int = 0,
@@ -205,6 +206,8 @@ class ForceTrainer:
         self.log_interval = int(log_interval)
         self.evals_per_epoch = max(1, int(evals_per_epoch))
         self.checkpoint_path = checkpoint_path
+        self.keep_checkpoints = max(0, int(keep_checkpoints))
+        self._rolling_ckpts: list[str] = []
         self.metrics_csv_path = (
             os.path.join(os.path.dirname(os.path.abspath(checkpoint_path)), "loss.csv")
             if checkpoint_path else None
@@ -1277,6 +1280,7 @@ class ForceTrainer:
                           f"Frmse={_va['force_rmse']:.4f} Ermse={_va['energy_rmse_avg']:.4f} "
                           f"Fmae={_va['force_mae']:.4f} Emae={_va['energy_mae_avg']:.4f}", flush=True)
                     self._append_loss_csv(epoch, self.global_step, "mid", _va)
+                    self._save_rolling_checkpoint(epoch)
                 if self._dist_ready():
                     dist.barrier()
                 self.model.train()
@@ -1415,6 +1419,7 @@ class ForceTrainer:
                 self._sync_dispersion_graph_observation()
                 if self.main_process:
                     self.save_checkpoint(self.checkpoint_path, epoch=epoch)
+            self._save_rolling_checkpoint(epoch)
             if self._dist_ready():
                 dist.barrier()
             if self._reached_max_steps():
@@ -1625,5 +1630,24 @@ class ForceTrainer:
             ckpt["swa_n_averaged"] = int(self._swa_n)
         ckpt.update(self._collect_arch_metadata())
         torch.save(ckpt, path)
-        log.info("saved checkpoint -> %s (epoch %d step %d state=%s)",
-                 path, epoch, self.global_step, default_state_source)
+
+    def _save_rolling_checkpoint(self, epoch: int) -> None:
+        """Keep the N most-recent VALIDATION checkpoints (``--keep-checkpoints N``), saved at
+        EVERY validation (mid-epoch + epoch-end), rolling: delete the oldest beyond N. This is
+        independent of the best-on-improvement save to ``checkpoint_path`` (which remains the
+        canonical resume/deploy target). Each rolling file is ``<stem>.e<E>s<STEP><ext>``.
+        No-op when ``keep_checkpoints <= 0`` (default), so existing runs are unaffected."""
+        if self.keep_checkpoints <= 0 or self.checkpoint_path is None or not self.main_process:
+            return
+        self._sync_dispersion_graph_observation()
+        stem, ext = os.path.splitext(self.checkpoint_path)
+        path = f"{stem}.e{epoch}s{self.global_step}{ext or '.pth'}"
+        self.save_checkpoint(path, epoch=epoch)
+        self._rolling_ckpts.append(path)
+        while len(self._rolling_ckpts) > self.keep_checkpoints:
+            old = self._rolling_ckpts.pop(0)
+            if old != self.checkpoint_path and os.path.exists(old):
+                try:
+                    os.remove(old)
+                except OSError:
+                    pass
