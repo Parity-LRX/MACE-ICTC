@@ -325,7 +325,7 @@ def build_baseline_model(
     product_backend: str,
     correlation: int,
     use_reduced_cg: bool = False,
-    first_layer_self_connection: bool = False,
+    first_layer_self_connection: bool = True,
     interaction_scale: str = "none",
     conv_tp_scale_init: str = "none",
     freeze_conv_tp_weight: bool = False,
@@ -480,8 +480,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
                          "product backends such as cueq; bridge-U has no e3nn-fold path.")
     ap.add_argument("--use-reduced-cg", action="store_true",
                     help="Use reduced-CG MACE/cuEq symmetric-contraction paths where supported.")
-    ap.add_argument("--first-layer-self-connection", action="store_true",
-                    help="Use a MACE residual-style additive first-layer l=0 self-connection during ICTC training.")
+    ap.add_argument("--first-layer-self-connection", action=argparse.BooleanOptionalAction, default=True,
+                    help="Trainable first-layer l=0 self-connection during ICTC training (default ON; use "
+                         "--no-first-layer-self-connection to disable, e.g. when finetuning a converted MACE "
+                         "checkpoint that already carries the frozen mace_first_layer_sc0 buffer).")
     ap.add_argument("--interaction-scale", default="none", choices=["none", "mace-rms"],
                     help="Optional learnable per-l interaction/self-connection scale initialization.")
     ap.add_argument("--conv-tp-scale-init", default="none", choices=["none", "e3nn"],
@@ -708,6 +710,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--evals-per-epoch", type=int, default=1,
                     help="Validation passes per epoch (1=epoch-end only; 2=mid-epoch + end). "
                          "Mid-epoch passes run on all ranks and barrier, so DDP stays in sync.")
+    ap.add_argument("--eval-only", action="store_true",
+                    help="Load --resume-checkpoint, run ONE validation pass, print Frmse/Ermse, and exit (no training).")
     return ap
 
 
@@ -1097,6 +1101,13 @@ def main(argv=None):
             training_state=bool(args.resume_training_state),
             strict=not args.finetune,
         )
+    if args.eval_only:
+        va = trainer._val_pass()
+        print(f"[EVAL-ONLY] ckpt={args.resume_checkpoint}\n"
+              f"  val total_loss={va['total_loss']:.4f}  "
+              f"Frmse={va['force_rmse']:.4f} eV/A  Ermse={va['energy_rmse_avg']:.4f} eV/atom",
+              flush=True)
+        return
     try:
         best = trainer.fit(start_epoch=start_epoch)
         logging.info("done. best loss = %.6f. checkpoint -> %s", best, args.checkpoint)

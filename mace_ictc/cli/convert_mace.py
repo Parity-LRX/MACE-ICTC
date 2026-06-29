@@ -184,6 +184,10 @@ def build_ictd_from_mace_config(
         ictd_save_tp_mode="fully-connected",
         ictd_fix_route="baseline",
         ictd_fix_product_backend=product_backend,
+        # Converted models reproduce MACE's first-layer self-connection via the frozen
+        # mace_first_layer_sc0 buffer installed below, NOT a trainable first-layer sc.
+        # Pin False so this stays correct even though training now defaults it ON.
+        ictd_fix_first_layer_self_connection=False,
         ictd_fix_use_reduced_cg=_use_reduced_cg_from_config(cfg),
         ictd_fix_readout_hidden_channels=readout_hidden_channels,
         save_contraction_order=correlation,
