@@ -717,9 +717,73 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return ap
 
 
+def _override_args_from_checkpoint(args):
+    """Finetuning a converted checkpoint: align the model build to the checkpoint's stored
+    ``model_hyperparameters`` so EVERY architecture knob (polynomial_cutoff_p, avg_num_neighbors,
+    channels, lmax, readout, ...) matches the source model exactly. Prevents silent config
+    mismatches that load cleanly (no missing/unexpected keys) yet corrupt the forward -- e.g. a
+    wrong cutoff p applies the source radial weights through the wrong envelope (~1.8x force error).
+    Only architecture knobs are aligned; optimizer/LR/data/long-range args are left as set."""
+    if not getattr(args, "resume_checkpoint", None):
+        return
+    try:
+        ck = torch.load(args.resume_checkpoint, map_location="cpu", weights_only=False)
+    except Exception as exc:  # best-effort peek; fall back to CLI args
+        logging.warning("could not read checkpoint hyperparameters (%s); using CLI args as-is", exc)
+        return
+    hp = ck.get("model_hyperparameters") if isinstance(ck, dict) else None
+    if not isinstance(hp, dict):
+        return
+    mapping = {
+        "polynomial_cutoff_p": "polynomial_cutoff_p",
+        "avg_num_neighbors": "avg_num_neighbors",
+        "number_of_basis": "num_basis",
+        "ictd_fix_edge_lmax": "max_ell",
+        "lmax": "lmax",
+        "num_interaction": "num_interaction",
+        "save_contraction_order": "correlation",
+        "embedding_dim": "channels",
+        "max_radius": "max_radius",
+        "ictd_fix_readout_hidden_channels": "readout_hidden_channels",
+        "ictd_fix_product_backend": "product_backend",
+    }
+    changed = []
+    for hk, ak in mapping.items():
+        if hk not in hp or not hasattr(args, ak):
+            continue
+        old, new = getattr(args, ak), hp[hk]
+        if isinstance(old, bool):
+            new = bool(new)
+        elif isinstance(old, int):
+            try:
+                new = int(round(float(new)))
+            except (TypeError, ValueError):
+                continue
+        elif isinstance(old, float):
+            try:
+                new = float(new)
+            except (TypeError, ValueError):
+                continue
+        if old != new:
+            setattr(args, ak, new)
+            changed.append(f"{ak}: {old} -> {new}")
+    # Converted models reproduce MACE's first-layer self-connection via the frozen
+    # mace_first_layer_sc0 buffer, not a trainable sc -> disable the trainable one if present.
+    state = ck.get("e3trans_state_dict", ck) if isinstance(ck, dict) else {}
+    if (isinstance(state, dict) and "mace_first_layer_sc0" in state
+            and getattr(args, "first_layer_self_connection", False)):
+        args.first_layer_self_connection = False
+        changed.append("first_layer_self_connection: True -> False (checkpoint carries mace_first_layer_sc0)")
+    if changed:
+        logging.info("resume-checkpoint: aligned model hyperparameters to the source checkpoint:")
+        for c in changed:
+            logging.info("    %s", c)
+
+
 def main(argv=None):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args = build_arg_parser().parse_args(argv)
+    _override_args_from_checkpoint(args)
     disable_tf32()
 
     ddp_info = _setup_distributed(args)
