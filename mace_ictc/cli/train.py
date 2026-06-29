@@ -331,7 +331,7 @@ def build_baseline_model(
     freeze_conv_tp_weight: bool = False,
     interaction_init: str = "identity",
     readout_hidden_channels: int = 16,
-    polynomial_cutoff_p: int | None = 6,
+    polynomial_cutoff_p: int | None = 5,
     angular_basis: str = "ictd",
     radial_sqrt_num_basis: bool,
     edge_lmax: int | None,
@@ -499,8 +499,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--function-type", default="bessel", choices=["gaussian", "bessel"])
     ap.add_argument("--num-basis", type=int, default=8,
                     help="Number of radial basis functions (MACE num_bessel for bessel radial basis).")
-    ap.add_argument("--polynomial-cutoff-p", type=int, default=6,
-                    help="MACE PolynomialCutoff order p. Use <=0 to disable the envelope.")
+    ap.add_argument("--polynomial-cutoff-p", type=int, default=5,
+                    help="MACE PolynomialCutoff order p (default 5, matching MACE-MP-0 / MACE-OFF). MUST match "
+                         "the source model when finetuning a converted checkpoint, else the radial envelope is "
+                         "wrong and forces are systematically off (~1.8x). Use <=0 to disable the envelope.")
     ap.add_argument("--readout-hidden-channels", type=int, default=16,
                     help="Scalar hidden width of the final MACE-style readout (MACE MLP_irreps width).")
     ap.add_argument("--max-radius", type=float, default=5.0)
