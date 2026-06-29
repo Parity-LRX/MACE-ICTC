@@ -1104,8 +1104,9 @@ def main(argv=None):
     if args.eval_only:
         va = trainer._val_pass()
         print(f"[EVAL-ONLY] ckpt={args.resume_checkpoint}\n"
-              f"  val total_loss={va['total_loss']:.4f}  "
-              f"Frmse={va['force_rmse']:.4f} eV/A  Ermse={va['energy_rmse_avg']:.4f} eV/atom",
+              f"  val total_loss={va['total_loss']:.4f}\n"
+              f"  RMSE: Frmse={va['force_rmse']:.4f} eV/A   Ermse={va['energy_rmse_avg']:.4f} eV/atom\n"
+              f"  MAE:  Fmae={va['force_mae']:.4f} eV/A   Emae={va['energy_mae_avg']:.4f} eV/atom",
               flush=True)
         return
     try:

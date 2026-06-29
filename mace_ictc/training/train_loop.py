@@ -205,6 +205,10 @@ class ForceTrainer:
         self.log_interval = int(log_interval)
         self.evals_per_epoch = max(1, int(evals_per_epoch))
         self.checkpoint_path = checkpoint_path
+        self.metrics_csv_path = (
+            os.path.join(os.path.dirname(os.path.abspath(checkpoint_path)), "loss.csv")
+            if checkpoint_path else None
+        )
         self.train_sampler = train_sampler
         self.distributed = bool(distributed)
         self.rank = int(rank)
@@ -339,7 +343,7 @@ class ForceTrainer:
         )
 
     def _reduce_epoch_metrics(self, run: dict, seen: int) -> dict:
-        keys = ["total_loss", "energy_loss", "force_loss", "stress_loss", "force_rmse", "energy_rmse_avg"]
+        keys = ["total_loss", "energy_loss", "force_loss", "stress_loss", "force_rmse", "energy_rmse_avg", "force_mae", "energy_mae_avg"]
         if not self._dist_ready():
             denom = max(int(seen), 1)
             return {k: run[k] / denom for k in keys}
@@ -1153,6 +1157,8 @@ class ForceTrainer:
         with torch.no_grad():
             force_rmse = self.criterion_2(f_pred_l.reshape(-1), force_ref_l.reshape(-1))
             energy_rmse_avg = self.criterion_2(E_avg_pred, target_energy_avg)
+            force_mae = (f_pred_l.reshape(-1) - force_ref_l.reshape(-1)).abs().mean()
+            energy_mae_avg = (E_avg_pred - target_energy_avg).abs().mean()
         return {
             "total_loss": total_loss,
             "energy_loss": energy_loss.detach(),
@@ -1160,6 +1166,8 @@ class ForceTrainer:
             "stress_loss": stress_loss.detach(),
             "force_rmse": force_rmse,
             "energy_rmse_avg": energy_rmse_avg,
+            "force_mae": force_mae,
+            "energy_mae_avg": energy_mae_avg,
             "stress_rmse": stress_rmse,
         }
 
@@ -1226,7 +1234,8 @@ class ForceTrainer:
         self._maybe_activate_stage_two(epoch)
         n_batches = len(self.train_loader)
         run = {"total_loss": 0.0, "energy_loss": 0.0, "force_loss": 0.0,
-               "stress_loss": 0.0, "force_rmse": 0.0, "energy_rmse_avg": 0.0}
+               "stress_loss": 0.0, "force_rmse": 0.0, "energy_rmse_avg": 0.0,
+               "force_mae": 0.0, "energy_mae_avg": 0.0}
         t0 = time.time()
         seen = 0
         _val_pts = set()
@@ -1261,10 +1270,13 @@ class ForceTrainer:
             if i in _val_pts:
                 _va = self._val_pass()
                 if self.main_process:
-                    log.info("epoch %d step %d MID-VAL loss=%.4f Frmse=%.4f Ermse=%.4f",
-                             epoch, self.global_step, _va["total_loss"], _va["force_rmse"], _va["energy_rmse_avg"])
+                    log.info("epoch %d step %d MID-VAL loss=%.4f Frmse=%.4f Ermse=%.4f Fmae=%.4f Emae=%.4f",
+                             epoch, self.global_step, _va["total_loss"], _va["force_rmse"], _va["energy_rmse_avg"],
+                             _va["force_mae"], _va["energy_mae_avg"])
                     print(f"[epoch {epoch} step {self.global_step}] MID val loss={_va['total_loss']:.4f} "
-                          f"Frmse={_va['force_rmse']:.4f} Ermse={_va['energy_rmse_avg']:.4f}", flush=True)
+                          f"Frmse={_va['force_rmse']:.4f} Ermse={_va['energy_rmse_avg']:.4f} "
+                          f"Fmae={_va['force_mae']:.4f} Emae={_va['energy_mae_avg']:.4f}", flush=True)
+                    self._append_loss_csv(epoch, self.global_step, "mid", _va)
                 if self._dist_ready():
                     dist.barrier()
                 self.model.train()
@@ -1278,7 +1290,8 @@ class ForceTrainer:
         # force needs grad of energy wrt pos even at eval -> enable grad locally.
         self.model.eval()
         run = {"total_loss": 0.0, "energy_loss": 0.0, "force_loss": 0.0,
-               "stress_loss": 0.0, "force_rmse": 0.0, "energy_rmse_avg": 0.0}
+               "stress_loss": 0.0, "force_rmse": 0.0, "energy_rmse_avg": 0.0,
+               "force_mae": 0.0, "energy_mae_avg": 0.0}
         seen = 0
         for batch in self.val_loader:
             with torch.enable_grad():
@@ -1288,6 +1301,26 @@ class ForceTrainer:
             seen += 1
         seen = max(seen, 1)
         return {k: v / seen for k, v in run.items()}
+
+    def _append_loss_csv(self, epoch, step, kind, val, tr=None):
+        """Append one validation's losses/errors to loss.csv (next to the checkpoint)."""
+        if not self.metrics_csv_path or not self.main_process:
+            return
+        cols = ["epoch", "step", "kind", "train_loss", "train_force_rmse",
+                "val_loss", "val_energy_loss", "val_force_loss",
+                "val_force_rmse", "val_energy_rmse", "val_force_mae", "val_energy_mae"]
+        def g(d, k):
+            return f"{float(d[k]):.6f}" if (d is not None and k in d) else ""
+        row = [str(epoch), str(step), str(kind),
+               g(tr, "total_loss"), g(tr, "force_rmse"),
+               g(val, "total_loss"), g(val, "energy_loss"), g(val, "force_loss"),
+               g(val, "force_rmse"), g(val, "energy_rmse_avg"),
+               g(val, "force_mae"), g(val, "energy_mae_avg")]
+        new_file = not os.path.exists(self.metrics_csv_path)
+        with open(self.metrics_csv_path, "a") as f:
+            if new_file:
+                f.write(",".join(cols) + "\n")
+            f.write(",".join(row) + "\n")
 
     def load_checkpoint(self, path, *, training_state: bool = False, strict: bool = True) -> int:
         ckpt = torch.load(path, map_location=self.device)
@@ -1363,7 +1396,9 @@ class ForceTrainer:
             if self.val_loader is not None and self.main_process:
                 va = self._val_pass()
                 msg += (f" | val loss={va['total_loss']:.4f} "
-                        f"Frmse={va['force_rmse']:.4f} Ermse={va['energy_rmse_avg']:.4f}")
+                        f"Frmse={va['force_rmse']:.4f} Ermse={va['energy_rmse_avg']:.4f} "
+                        f"Fmae={va['force_mae']:.4f} Emae={va['energy_mae_avg']:.4f}")
+                self._append_loss_csv(epoch, self.global_step, "epoch", va, tr)
                 cur = va["total_loss"]
             else:
                 cur = tr["total_loss"]
