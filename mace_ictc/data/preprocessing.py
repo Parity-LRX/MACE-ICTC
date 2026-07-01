@@ -1022,8 +1022,14 @@ def save_to_h5_parallel(prefix, max_radius, num_workers, data_dir='.'):
                     g.create_dataset('stress', data=np.zeros((3, 3), dtype=np.float64))
             f.attrs['max_edges'] = int(max_edges)
             f.attrs['max_atoms'] = int(max_atoms)
+            # The neighbor-list cutoff the precomputed edges were built at. Training reads this back
+            # (H5Dataset.expected_max_radius) and refuses to run if it != --max-radius, because the
+            # baked edge list is only valid at THIS cutoff (train>h5 -> missing edges; train<h5 ->
+            # edge_mask/avg_num_neighbors mismatch). Both fail silently without the guard.
+            f.attrs['max_radius'] = float(max_radius)
             print(f"Stored max_edges={max_edges} attr (longest neighbor list; for fixed-shape edge padding / CUDA-graph).")
             print(f"Stored max_atoms={max_atoms} attr (longest atom count; for fixed-shape node padding / make_fx-compile).")
+            print(f"Stored max_radius={max_radius} attr (neighbor-list cutoff; training rejects an rcut mismatch against it).")
             # Per-sample sizes -> a SIDECAR .counts.npz (NOT a top-level h5 dataset, which would
             # pollute f.keys() and break every "count/iterate samples" reader). make_fx bucketing
             # reads it at load instead of re-scanning every sample's pos/edge_src shape (O(N) -> O(1));

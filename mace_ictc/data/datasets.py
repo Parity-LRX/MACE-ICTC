@@ -335,6 +335,11 @@ class H5Dataset(Dataset):
         # make_fx compile each) with far less padding waste than padding everything to the
         # global max. Implies pad_nodes_to_max + pad_edges_to_max. None -> disabled.
         makefx_buckets: int | list | None = None,
+        # rcut guard: the training --max-radius. The precomputed edges in the H5 are only valid at
+        # the cutoff they were built at (stored as the 'max_radius' attr by mff-preprocess). If this
+        # is provided and disagrees with the stored value, __init__ raises instead of silently
+        # training on a wrong graph. None -> skip the check (legacy / on-the-fly callers).
+        expected_max_radius: float | None = None,
     ):
         """
         Initialize H5 dataset.
@@ -370,6 +375,31 @@ class H5Dataset(Dataset):
             self.max_atoms = int(f.attrs.get('max_atoms', 0))
             if self.pad_nodes_to_max and self.max_atoms <= 0:
                 self.max_atoms = max((int(f[k]['pos'].shape[0]) for k in f.keys()), default=0)
+
+            # rcut guard: the baked neighbor graph is valid ONLY at the cutoff it was built at
+            # (stored by mff-preprocess). Reject a training --max-radius that disagrees, which would
+            # otherwise train silently on a wrong graph.
+            self.h5_max_radius = float(f.attrs['max_radius']) if 'max_radius' in f.attrs else None
+            if expected_max_radius is not None:
+                if self.h5_max_radius is None:
+                    import warnings
+                    warnings.warn(
+                        f"[H5Dataset] {self.file_path} has no stored 'max_radius' attr (preprocessed "
+                        f"before this guard); cannot verify it matches training --max-radius="
+                        f"{float(expected_max_radius):.4f}. Re-run mff-preprocess to enable the check.",
+                        RuntimeWarning,
+                    )
+                elif abs(self.h5_max_radius - float(expected_max_radius)) > 1e-6:
+                    raise ValueError(
+                        f"[H5Dataset] rcut MISMATCH for {self.file_path}: preprocessed at "
+                        f"max_radius={self.h5_max_radius:.4f} but training --max-radius="
+                        f"{float(expected_max_radius):.4f}. The baked neighbor graph is valid ONLY at "
+                        f"the preprocess cutoff: train>h5 drops the edges in (h5, train] (interactions "
+                        f"the model assumes exist go missing); train<h5 leaves the model's edge_mask and "
+                        f"avg_num_neighbors inconsistent with the stored graph. Re-preprocess at "
+                        f"--max-radius {float(expected_max_radius):.4f}, or train at --max-radius "
+                        f"{self.h5_max_radius:.4f}."
+                    )
 
             # --- make_fx bucketing: quantile buckets by atom count; pad each sample to its
             # bucket's (N_max, E_max). _sample_bucket=None means "no bucketing" (global pad). ---

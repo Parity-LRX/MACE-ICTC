@@ -1297,6 +1297,12 @@ class LAMMPS_MLIAP_MFF(MLIAPUnified):
         mbd_pme_ewald_alpha_prefactor = float(
             ckpt.get("mbd_pme_ewald_alpha_prefactor", arch_meta.get("mbd_pme_ewald_alpha_prefactor", 5.0))
         )
+        # Anisotropic MBD adds l2_mix/l2_gate params (lmax>=2 3x3 polarizability). Missing this ->
+        # the constructor builds the ISOTROPIC dispersion head and strict load fails on the extra
+        # dispersion.term.l2_* keys. Read it back like the other mbd_* hyperparameters.
+        mbd_anisotropic_polarizability = bool(
+            ckpt.get("mbd_anisotropic_polarizability", arch_meta.get("mbd_anisotropic_polarizability", False))
+        )
         long_range_theta = float(arch_meta.get("long_range_theta", 0.5))
         long_range_leaf_size = int(arch_meta.get("long_range_leaf_size", 32))
         long_range_multipole_order = int(arch_meta.get("long_range_multipole_order", 0))
@@ -1615,6 +1621,7 @@ class LAMMPS_MLIAP_MFF(MLIAPUnified):
                 mbd_pme_k_norm_floor=mbd_pme_k_norm_floor,
                 mbd_pme_assignment_window_floor=mbd_pme_assignment_window_floor,
                 mbd_pme_ewald_alpha_prefactor=mbd_pme_ewald_alpha_prefactor,
+                mbd_anisotropic_polarizability=mbd_anisotropic_polarizability,
                 long_range_theta=long_range_theta,
                 long_range_leaf_size=long_range_leaf_size,
                 long_range_multipole_order=long_range_multipole_order,

@@ -1082,6 +1082,20 @@ class ManyBodyDispersionSLQ(nn.Module):
                 "_l2_basis", ictd_l2_to_rank2(torch.eye(5, dtype=torch.float64)), persistent=False)
         self.coupling_scale = nn.Parameter(torch.tensor(0.03))
         self.beta_raw = nn.Parameter(torch.tensor(1.0))
+        # Gentle-start via a SCHEDULED RAMP, not a learnable init-0 gate. The learnable init-0 gate
+        # (mirroring electrostatics) SELF-LOCKED for MBD: with the contribution gated to ~0 the
+        # polarizability heads got ~0 gradient, so energy_scale never grew -- the carbon run ended
+        # at energy_scale=0.0045 => MBD effectively OFF (a confounded null result). Instead: init
+        # energy_scale=1.0 and force a linear 0->1 warmup over the first `_mbd_ramp_steps` TRAINING
+        # forwards. This keeps the dangerous first ~10 steps small (ramp=0.033 at step 10 vs the
+        # un-gated 1.0 that diverged to NaN in B_isoMBD) BUT guarantees the dispersion turns fully
+        # on so the heads actually train. After the ramp, energy_scale is free to learn (stays ~1
+        # => MBD used; ->0 => genuinely not needed -- an UN-confounded signal). At eval the ramp is
+        # bypassed (full strength). A loaded checkpoint overrides the energy_scale init.
+        # `_mbd_ramp_count` is a plain attribute (NOT a buffer) so pre-ramp checkpoints strict-load.
+        self.energy_scale = nn.Parameter(torch.tensor(1.0))
+        self._mbd_ramp_steps = 300
+        self._mbd_ramp_count = 0
 
     def polarizability_factor(self, node_feats: torch.Tensor, l2_feats: torch.Tensor | None) -> torch.Tensor:
         """Per-atom symmetric positive-definite 3x3 factor B = alpha^{1/2} from the ICTC features.
@@ -1639,14 +1653,25 @@ class ManyBodyDispersionSLQ(nn.Module):
         # variable, m-dependent probe count; "atom-rademacher" a different reduction) keep the proven
         # per-graph loop -- equivalence/utilization there is out of scope for this batching change.
         if self.operator_backend != "edge_sparse" or self.probe_mode != "rademacher":
-            return self._forward_looped(
+            per_atom = self._forward_looped(
                 node_feats, batch, edge_src, edge_dst, edge_vec,
                 num_graphs=num_graphs, pos=pos, cell=cell, l2_feats=l2_feats,
             )
-        return self._forward_batched(
-            node_feats, batch, edge_src, edge_dst, edge_vec,
-            num_graphs=num_graphs, pos=pos, cell=cell, l2_feats=l2_feats,
-        )
+        else:
+            per_atom = self._forward_batched(
+                node_feats, batch, edge_src, edge_dst, edge_vec,
+                num_graphs=num_graphs, pos=pos, cell=cell, l2_feats=l2_feats,
+            )
+        # Scheduled gentle-start (see __init__): force energy_scale 0->1 over the first
+        # `_mbd_ramp_steps` training forwards, then full strength; eval/inference => full strength.
+        # (Plain-attr counter -> eager-path only; a make_fx/JIT export would trace ramp as constant,
+        # which is correct post-warmup since a deployed checkpoint always runs at full strength.)
+        if self.training and self._mbd_ramp_count < self._mbd_ramp_steps:
+            self._mbd_ramp_count += 1
+            ramp = self._mbd_ramp_count / self._mbd_ramp_steps
+        else:
+            ramp = 1.0
+        return ramp * self.energy_scale * per_atom
 
     def _forward_batched(
         self,

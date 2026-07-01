@@ -846,9 +846,11 @@ def main(argv=None):
         makefx_buckets=makefx_buckets,
         pad_nodes_to_max=args.pad_nodes_to_max,
         pad_edges_to_max=args.pad_edges_to_max,
+        expected_max_radius=args.max_radius,
     )
     val_h5 = os.path.join(args.data_dir, f"processed_{args.val_prefix}.h5")
-    val_ds = H5Dataset(prefix=args.val_prefix, data_dir=args.data_dir) if os.path.exists(val_h5) else None
+    val_ds = H5Dataset(prefix=args.val_prefix, data_dir=args.data_dir,
+                       expected_max_radius=args.max_radius) if os.path.exists(val_h5) else None
 
     # avg_num_neighbors (the message normalizer baked into the weights)
     train_h5 = os.path.join(args.data_dir, f"processed_{args.train_prefix}.h5")
@@ -897,6 +899,16 @@ def main(argv=None):
                 raise ValueError("--long-range-max-multipole-l > 0 requires --long-range-mesh-fft-full-ewald")
     if args.long_range_dispersion_mode != "none" and args.dispersion_cutoff < 0:
         raise ValueError("--dispersion-cutoff must be >= 0")
+    # Dispersion self-builds its own neighbor list at runtime (NOT baked in the H5, so it is outside
+    # the rcut/H5 guard). But its cutoff should extend BEYOND the short-range graph -- a dispersion
+    # range shorter than --max-radius is almost always a misconfiguration.
+    if args.long_range_dispersion_mode != "none" and 0 <= args.dispersion_cutoff < args.max_radius:
+        logging.warning(
+            "--dispersion-cutoff (%.2f A) < --max-radius (%.2f A): the dispersion neighbor list is "
+            "SHORTER than the short-range message-passing graph. Dispersion is meant to add the "
+            "long-range tail BEYOND the local cutoff; a shorter range is almost certainly wrong.",
+            args.dispersion_cutoff, args.max_radius,
+        )
     if int(args.dispersion_max_num_neighbors) < 0:
         raise ValueError("--dispersion-max-num-neighbors must be >= 0")
     if int(args.dispersion_bruteforce_threshold) < 0:

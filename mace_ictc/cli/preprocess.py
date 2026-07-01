@@ -100,7 +100,7 @@ def _stream_split_xyz(input_file, n, out_paths):
     return cnt
 
 
-def _merge_shard_h5(shard_h5_paths, out_h5):
+def _merge_shard_h5(shard_h5_paths, out_h5, max_radius=None):
     """Merge per-shard processed_{prefix}.h5 into out_h5 via HDF5 external links, and build the
     <out_h5>.counts.npz sidecar (node/edge counts indexed by merged sample id) in the same pass.
 
@@ -121,6 +121,19 @@ def _merge_shard_h5(shard_h5_paths, out_h5):
                     edge_counts.append(int(g["edge_src"].shape[0]))
                     fo[f"sample_{gi}"] = h5py.ExternalLink(src_abs, f"sample_{j}")
                     gi += 1
+        # Propagate the neighbor-list cutoff onto the MERGED file so H5Dataset can reject an rcut
+        # mismatch (external links do NOT carry the shard files' root attrs). Prefer the explicit
+        # arg; else read it back from the first shard (each shard stamped it via save_to_h5_parallel).
+        rcut = max_radius
+        if rcut is None:
+            try:
+                with h5py.File(os.path.abspath(shard_h5_paths[0]), "r") as f0:
+                    if "max_radius" in f0.attrs:
+                        rcut = float(f0.attrs["max_radius"])
+            except Exception:
+                rcut = None
+        if rcut is not None:
+            fo.attrs["max_radius"] = float(rcut)
     np.savez(
         out_h5 + ".counts.npz",
         node_counts=np.array(node_counts, dtype=np.int64),
@@ -207,7 +220,7 @@ def _run_sharded(args):
             print(f"[shards] no processed_{prefix}.h5 across shards; skipping {prefix}")
             continue
         out_h5 = os.path.join(out, f"processed_{prefix}.h5")
-        total = _merge_shard_h5(srcs, out_h5)
+        total = _merge_shard_h5(srcs, out_h5, max_radius=args.max_radius)
         print(f"[shards] merged {prefix}: {total} samples -> {out_h5} (+ .counts.npz sidecar)")
 
     # 4) merged split-index maps (round-robin: global original frame = shard_k + local*N)
