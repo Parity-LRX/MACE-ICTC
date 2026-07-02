@@ -2155,6 +2155,9 @@ class PureCartesianICTDFix(nn.Module):
         mbd_pme_assignment_window_floor: float = 1.0e-6,
         mbd_pme_ewald_alpha_prefactor: float = 5.0,
         mbd_anisotropic_polarizability: bool = False,
+        mbd_learnable_energy_scale: bool = True,
+        mbd_alpha_floor: float = 1.0e-4,
+        dispersion_min_cutoff: float = 0.0,
         long_range_theta: float = 0.5,
         long_range_leaf_size: int = 32,
         long_range_multipole_order: int = 0,
@@ -2694,6 +2697,9 @@ class PureCartesianICTDFix(nn.Module):
         self.mbd_pme_assignment_window_floor = float(mbd_pme_assignment_window_floor)
         self.mbd_pme_ewald_alpha_prefactor = float(mbd_pme_ewald_alpha_prefactor)
         self.mbd_anisotropic_polarizability = bool(mbd_anisotropic_polarizability)
+        self.mbd_learnable_energy_scale = bool(mbd_learnable_energy_scale)
+        self.mbd_alpha_floor = float(mbd_alpha_floor)
+        self.dispersion_min_cutoff = float(dispersion_min_cutoff)
         self.dispersion_pbc = str(long_range_boundary) == "periodic"
         self.dispersion = build_long_range_dispersion(
             mode=self.long_range_dispersion_mode,
@@ -2713,6 +2719,9 @@ class PureCartesianICTDFix(nn.Module):
             mbd_pme_assignment_window_floor=self.mbd_pme_assignment_window_floor,
             mbd_pme_ewald_alpha_prefactor=self.mbd_pme_ewald_alpha_prefactor,
             mbd_anisotropic_polarizability=self.mbd_anisotropic_polarizability,
+            mbd_learnable_energy_scale=self.mbd_learnable_energy_scale,
+            mbd_alpha_floor=self.mbd_alpha_floor,
+            dispersion_min_cutoff=self.dispersion_min_cutoff,
         )
 
         # MBD-source packing metadata (read by the exporter -> .json -> C++ engine/pair-style). When the

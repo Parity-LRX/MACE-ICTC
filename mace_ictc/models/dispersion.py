@@ -1014,6 +1014,7 @@ class ManyBodyDispersionSLQ(nn.Module):
         pme_assignment_window_floor: float = 1.0e-6,
         pme_ewald_alpha_prefactor: float = 5.0,
         anisotropic_polarizability: bool = False,
+        learnable_energy_scale: bool = True,
     ) -> None:
         super().__init__()
         if probe_mode not in {"rademacher", "atom-rademacher", "basis"}:
@@ -1093,7 +1094,18 @@ class ManyBodyDispersionSLQ(nn.Module):
         # => MBD used; ->0 => genuinely not needed -- an UN-confounded signal). At eval the ramp is
         # bypassed (full strength). A loaded checkpoint overrides the energy_scale init.
         # `_mbd_ramp_count` is a plain attribute (NOT a buffer) so pre-ramp checkpoints strict-load.
-        self.energy_scale = nn.Parameter(torch.tensor(1.0))
+        # learnable_energy_scale=False PINS energy_scale at a fixed 1.0 (registered as a buffer, not
+        # a Parameter -> absent from model.parameters(), the optimizer cannot move it). Diagnostic for
+        # the carbon null result (2026-07-01): with it learnable, gradient descent settled it at 0.056
+        # (heads starved) even after the ramp guaranteed full gradient exposure -- pinning it forces the
+        # alpha/omega/l2 heads to adapt AROUND a mandatory full-strength MBD term instead of being able
+        # to suppress it. Either way the key name "energy_scale" is unchanged in the state_dict (a buffer
+        # is included in state_dict same as a Parameter), so old/new checkpoints load into either mode.
+        self.learnable_energy_scale = bool(learnable_energy_scale)
+        if self.learnable_energy_scale:
+            self.energy_scale = nn.Parameter(torch.tensor(1.0))
+        else:
+            self.register_buffer("energy_scale", torch.tensor(1.0))
         self._mbd_ramp_steps = 300
         self._mbd_ramp_count = 0
 
@@ -1935,6 +1947,9 @@ class LongRangeDispersion(nn.Module):
         mbd_pme_assignment_window_floor: float = 1.0e-6,
         mbd_pme_ewald_alpha_prefactor: float = 5.0,
         mbd_anisotropic_polarizability: bool = False,
+        mbd_learnable_energy_scale: bool = True,
+        mbd_alpha_floor: float = 1.0e-4,
+        min_cutoff: float = 0.0,
     ) -> None:
         super().__init__()
         self.mode = str(mode)
@@ -1965,6 +1980,15 @@ class LongRangeDispersion(nn.Module):
         self.mbd_pme_assignment_window_floor = float(mbd_pme_assignment_window_floor)
         self.mbd_pme_ewald_alpha_prefactor = float(mbd_pme_ewald_alpha_prefactor)
         self.mbd_anisotropic_polarizability = bool(mbd_anisotropic_polarizability)
+        self.mbd_learnable_energy_scale = bool(mbd_learnable_energy_scale)
+        self.mbd_alpha_floor = float(mbd_alpha_floor)
+        self.min_cutoff = float(min_cutoff)
+        if self.min_cutoff < 0.0:
+            raise ValueError("dispersion min_cutoff must be >= 0")
+        if self.min_cutoff > 0.0 and self.min_cutoff >= self.cutoff:
+            raise ValueError(
+                f"dispersion min_cutoff ({self.min_cutoff}) must be < cutoff ({self.cutoff})"
+            )
         if self.mode == "pairwise-c6":
             self.term = PairwiseDispersion(feature_dim=feature_dim, hidden_dim=hidden_dim)
         elif self.mode == "mbd":
@@ -1982,6 +2006,8 @@ class LongRangeDispersion(nn.Module):
                 pme_assignment_window_floor=self.mbd_pme_assignment_window_floor,
                 pme_ewald_alpha_prefactor=self.mbd_pme_ewald_alpha_prefactor,
                 anisotropic_polarizability=self.mbd_anisotropic_polarizability,
+                learnable_energy_scale=self.mbd_learnable_energy_scale,
+                alpha_floor=self.mbd_alpha_floor,
             )
         else:  # pragma: no cover - guarded above; future modes land here explicitly.
             raise ValueError(f"Unsupported long-range dispersion mode {self.mode!r}")
@@ -2054,6 +2080,18 @@ class LongRangeDispersion(nn.Module):
             d_len = d_vec.norm(dim=1)
         else:
             d_src, d_dst, d_len, d_vec = edge_src, edge_dst, edge_lengths, edge_vec
+
+        if self.min_cutoff > 0.0 and d_len.numel():
+            # Exclude edges already covered by short-range message passing (r < min_cutoff, typically
+            # == the model's own max_radius) so bonded/intralayer pairs can't dominate the coupling
+            # operator's PD-safety budget and starve genuinely long-range pairs of their share (found
+            # 2026-07-01: raising alpha_floor alone let intralayer coupling become substantial but the
+            # interlayer-specific signal stayed exactly flat even out to isolation, because the PD clamp
+            # is one global scalar per graph -- the larger intralayer contribution used up the "budget").
+            keep = d_len >= self.min_cutoff
+            d_src, d_dst, d_len = d_src[keep], d_dst[keep], d_len[keep]
+            if d_vec is not None:
+                d_vec = d_vec[keep]
 
         if self.mode == "pairwise-c6":
             return self.term(node_feats, d_src, d_dst, d_len)
@@ -2209,6 +2247,9 @@ def build_long_range_dispersion(
     mbd_pme_assignment_window_floor: float = 1.0e-6,
     mbd_pme_ewald_alpha_prefactor: float = 5.0,
     mbd_anisotropic_polarizability: bool = False,
+    mbd_learnable_energy_scale: bool = True,
+    mbd_alpha_floor: float = 1.0e-4,
+    dispersion_min_cutoff: float = 0.0,
 ) -> LongRangeDispersion | None:
     mode = str(mode)
     if mode == "none":
@@ -2232,4 +2273,7 @@ def build_long_range_dispersion(
         mbd_pme_assignment_window_floor=mbd_pme_assignment_window_floor,
         mbd_pme_ewald_alpha_prefactor=mbd_pme_ewald_alpha_prefactor,
         mbd_anisotropic_polarizability=mbd_anisotropic_polarizability,
+        mbd_learnable_energy_scale=mbd_learnable_energy_scale,
+        mbd_alpha_floor=mbd_alpha_floor,
+        min_cutoff=dispersion_min_cutoff,
     )

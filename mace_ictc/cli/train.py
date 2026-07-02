@@ -376,6 +376,9 @@ def build_baseline_model(
     mbd_operator_backend: str = "edge_sparse",
     mbd_pme_mesh_size: int = 32,
     mbd_anisotropic_polarizability: bool = False,
+    mbd_learnable_energy_scale: bool = True,
+    mbd_alpha_floor: float = 1.0e-4,
+    dispersion_min_cutoff: float = 0.0,
     mbd_pme_assignment: str = "cic",
     mbd_pme_k_norm_floor: float = 1.0e-6,
     mbd_pme_assignment_window_floor: float = 1.0e-6,
@@ -452,6 +455,9 @@ def build_baseline_model(
         mbd_operator_backend=mbd_operator_backend,
         mbd_pme_mesh_size=mbd_pme_mesh_size,
         mbd_anisotropic_polarizability=mbd_anisotropic_polarizability,
+        mbd_learnable_energy_scale=mbd_learnable_energy_scale,
+        mbd_alpha_floor=mbd_alpha_floor,
+        dispersion_min_cutoff=dispersion_min_cutoff,
         mbd_pme_assignment=mbd_pme_assignment,
         mbd_pme_k_norm_floor=mbd_pme_k_norm_floor,
         mbd_pme_assignment_window_floor=mbd_pme_assignment_window_floor,
@@ -588,6 +594,35 @@ def build_arg_parser() -> argparse.ArgumentParser:
                     help="Anisotropic (l=2 tensor) MBD polarizability: the ICTC l=2 node block sets a per-atom 3x3 "
                          "polarizability alpha^{1/2}=B (coupling W=omega*B) instead of a scalar. Emits an [N,8] "
                          "(omega, alpha_iso, 6*B) deploy source the C++ MBD solver consumes. Default off (scalar [N,2]).")
+    ap.add_argument("--mbd-fixed-energy-scale", dest="mbd_learnable_energy_scale", action="store_false",
+                    help="Pin the MBD dispersion.term.energy_scale at a fixed 1.0 (registered as a buffer, not a "
+                         "trainable Parameter) instead of letting gradient descent freely learn it. Diagnostic: the "
+                         "learnable default let energy_scale settle at ~0.056 on carbon (heads starved even after "
+                         "the ramp) -- pinning forces the alpha/omega/l2 heads to adapt around a mandatory "
+                         "full-strength MBD term instead of being able to suppress it. Default learnable (unchanged).")
+    ap.add_argument("--dispersion-min-cutoff", type=float, default=0.0,
+                    help="Exclude dispersion edges shorter than this (default 0.0 = no exclusion, all edges "
+                         "0..dispersion-cutoff included -- opt in explicitly per run). For --long-range-"
+                         "dispersion-mode mbd-slq/mbd, the coupled-oscillator formula's PD-safety spectral "
+                         "clamp is a global per-graph budget that bonded/intralayer edges can dominate, "
+                         "starving genuinely long-range pairs (2026-07-01 carbon diagnosis) -- setting this "
+                         "to --max-radius removes that competition. Tried as an always-on default (2026-07-02) "
+                         "but the payoff was too thin/inconsistent to justify auto-applying (turned an "
+                         "exactly-flat carbon isolation-test signal into a non-flat but still accuracy-"
+                         "irrelevant one; didn't prevent MD22's mbd-slq arm from being net-negative), so it's "
+                         "opt-in. Not motivated at all for pairwise-c6 (a plain per-edge additive term with "
+                         "its own Becke-Johnson short-range damping, no shared-budget mechanism) -- only pass "
+                         "this there to deliberately mimic an mbd-slq isolation design for comparison.")
+    ap.add_argument("--mbd-alpha-floor", type=float, default=1.0e-4,
+                    help="Floor added to softplus(alpha_head(...)) for the MBD polarizability (default 1e-4, "
+                         "matches ManyBodyDispersionSLQ's own default). Root-cause fix (2026-07-01 carbon "
+                         "diagnosis): alpha collapsing near this floor shrinks the Tang-Toennies damping radius "
+                         "below real covalent bond lengths, so damp saturates to ~undamped even at bond length, "
+                         "a few short edges get huge raw coupling blocks, and the PD positive-definite safety "
+                         "clamp (pd_rescale/pd_margin) reacts by suppressing the ENTIRE coupling operator by "
+                         "~1e4x -- killing the genuine long-range/interlayer signal as collateral damage. Raising "
+                         "this (e.g. to 1.0, so the damping radius exceeds a C-C bond length once beta is applied) "
+                         "should let short bonds damp properly and keep the PD clamp from engaging so aggressively.")
     ap.add_argument("--mbd-pme-assignment", default="cic", choices=["ngp", "cic", "pcs"],
                     help="Mesh assignment for experimental --mbd-operator-backend pme_fft.")
     ap.add_argument("--mbd-pme-k-norm-floor", type=float, default=1.0e-6,
@@ -1009,6 +1044,9 @@ def main(argv=None):
         mbd_operator_backend=args.mbd_operator_backend,
         mbd_pme_mesh_size=args.mbd_pme_mesh_size,
         mbd_anisotropic_polarizability=args.mbd_anisotropic_polarizability,
+        mbd_learnable_energy_scale=args.mbd_learnable_energy_scale,
+        mbd_alpha_floor=args.mbd_alpha_floor,
+        dispersion_min_cutoff=args.dispersion_min_cutoff,
         mbd_pme_assignment=args.mbd_pme_assignment,
         mbd_pme_k_norm_floor=args.mbd_pme_k_norm_floor,
         mbd_pme_assignment_window_floor=args.mbd_pme_assignment_window_floor,
@@ -1145,6 +1183,9 @@ def main(argv=None):
         mbd_operator_backend=args.mbd_operator_backend,
         mbd_pme_mesh_size=int(args.mbd_pme_mesh_size),
         mbd_anisotropic_polarizability=bool(args.mbd_anisotropic_polarizability),
+        mbd_learnable_energy_scale=bool(args.mbd_learnable_energy_scale),
+        mbd_alpha_floor=float(args.mbd_alpha_floor),
+        dispersion_min_cutoff=float(args.dispersion_min_cutoff),
         mbd_pme_assignment=args.mbd_pme_assignment,
         mbd_pme_k_norm_floor=float(args.mbd_pme_k_norm_floor),
         mbd_pme_assignment_window_floor=float(args.mbd_pme_assignment_window_floor),
