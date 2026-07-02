@@ -10,7 +10,11 @@ from __future__ import annotations
 
 import torch
 
-from mace_ictc.models.long_range import build_feature_spectral_module, build_long_range_module
+from mace_ictc.models.long_range import (
+    ReciprocalSpectralKernel3D,
+    build_feature_spectral_module,
+    build_long_range_module,
+)
 
 
 def _random_rotation(dtype) -> torch.Tensor:
@@ -40,6 +44,62 @@ def _make_lr(dtype):
         with torch.no_grad():
             lr.energy_scale.fill_(1.0)  # init may be 0 -> make the test non-trivial
     return lr
+
+
+def test_scalar_mesh_fft_bootstraps_from_zero_energy_scale():
+    """Scalar mesh_fft must not zero the source head: E is gated to zero, but the gate can train."""
+    dtype = torch.float64
+    torch.manual_seed(17)
+    lr = build_long_range_module(
+        mode="reciprocal-spectral-v1",
+        feature_dim=6,
+        hidden_dim=12,
+        reciprocal_backend="mesh_fft",
+        boundary="periodic",
+        mesh_size=8,
+        source_channels=2,
+        green_mode="poisson",
+        assignment="pcs",
+        neutralize=True,
+    ).to(dtype)
+    features = torch.randn(5, 6, dtype=dtype)
+    pos = torch.tensor(
+        [[0.2, 0.3, 0.4], [1.0, 0.5, 1.2], [1.7, 1.8, 0.9], [2.4, 1.1, 1.5], [2.8, 2.2, 2.3]],
+        dtype=dtype,
+    )
+    batch = torch.zeros(pos.size(0), dtype=torch.long)
+    cell = (torch.eye(3, dtype=dtype) * 4.0).unsqueeze(0)
+
+    out, source = lr(features, pos, batch, cell, return_source=True)
+    assert torch.allclose(out.sum(), torch.zeros((), dtype=dtype))
+    assert source.abs().max() > 0.0, "mesh_fft source head must start non-zero"
+    loss = (out.sum() - 1.0).square()
+    loss.backward()
+    assert lr.energy_scale.grad is not None and lr.energy_scale.grad.abs() > 0.0
+
+
+def test_direct_kspace_rotation_invariance_triclinic_cell():
+    """Direct k-space must build k = 2*pi*m@inv(cell)^T; otherwise radial weights depend on orientation."""
+    dtype = torch.float64
+    torch.manual_seed(23)
+    kernel = ReciprocalSpectralKernel3D(kmax=3, include_k0=False, energy_partition="uniform").to(dtype)
+    cell = torch.tensor(
+        [[[5.0, 0.7, 0.2], [0.1, 4.4, 0.6], [0.3, 0.2, 6.2]]],
+        dtype=dtype,
+    )
+    frac = torch.tensor(
+        [[0.10, 0.20, 0.30], [0.25, 0.70, 0.40], [0.60, 0.15, 0.80], [0.90, 0.40, 0.10]],
+        dtype=dtype,
+    )
+    pos = frac @ cell[0]
+    source = torch.tensor([[0.4], [-0.7], [0.5], [-0.2]], dtype=dtype)
+    source = source - source.mean(dim=0, keepdim=True)
+    batch = torch.zeros(pos.size(0), dtype=torch.long)
+
+    rotation = _random_rotation(dtype)
+    e0 = kernel(pos, batch, cell, source).sum()
+    e1 = kernel(pos @ rotation.T, batch, cell @ rotation.T, source).sum()
+    assert torch.allclose(e0, e1, atol=1e-10, rtol=1e-10), (e0, e1, (e0 - e1).abs())
 
 
 def test_forward_multipole_rotation_invariance_and_forces():

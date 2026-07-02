@@ -16,9 +16,8 @@ def _kernel_spectral(k, cell_b):
         rc = k._estimate_real_cutoff_batched(cell_b.to(torch.float64))
         alpha = k._estimate_ewald_alpha(rc)
         sw = sw * torch.exp(-(k_norms.square()) / (4.0 * alpha.view(-1, 1, 1, 1).square()))
-    if k.full_ewald or k.assignment != "cic":
-        win = k._build_assignment_window(device=cell_b.device, dtype=torch.float64)
-        sw = sw * torch.reciprocal(win.clamp_min(k.assignment_window_floor).square()).unsqueeze(0)
+    win = k._build_assignment_window(device=cell_b.device, dtype=torch.float64)
+    sw = sw * torch.reciprocal(win.clamp_min(k.assignment_window_floor).square()).unsqueeze(0)
     if k.full_ewald or (not k.include_k0):
         sw = torch.where(k_norms > k.k_norm_floor, sw, torch.zeros_like(sw))
     return sw[0]  # [M,M,M]
@@ -59,7 +58,31 @@ def test_scalar_backend_matches_existing():
     assert be.gather(frac, be.spread(frac, torch.randn(5, 3, dtype=torch.float64))).shape == (5, 3)
 
 
+def test_mesh_potential_and_multipole_monopole_paths_match_for_cic():
+    """CIC non-Ewald potential route must use the same assignment deconvolution as |S(k)|^2."""
+    torch.set_default_dtype(torch.float64)
+    g = torch.Generator().manual_seed(12)
+    n, box = 10, 7.5
+    pos = torch.rand(n, 3, generator=g, dtype=torch.float64) * box
+    batch = torch.zeros(n, dtype=torch.long)
+    cell = (torch.eye(3, dtype=torch.float64) * box).unsqueeze(0)
+    source = torch.randn(n, 1, generator=g, dtype=torch.float64)
+    source = source - source.mean(dim=0, keepdim=True)
+
+    kernel = MeshLongRangeKernel3D(
+        mesh_size=16,
+        assignment="cic",
+        full_ewald=False,
+        include_k0=False,
+        energy_partition="potential",
+    )
+    e_potential = kernel(pos, batch, cell, source).sum()
+    e_multipole = kernel.multipole_energy(pos, batch, cell, source, None, None).sum()
+    assert torch.allclose(e_potential, e_multipole, atol=1e-10, rtol=1e-10), (e_potential, e_multipole)
+
+
 if __name__ == "__main__":
     test_scalar_backend_matches_existing()
+    test_mesh_potential_and_multipole_monopole_paths_match_for_cic()
     print("OK: Task1 ReciprocalBackend scalar route == existing reciprocal (cic+pcs, bare+ewald);"
           " k_grid + 3-channel spread/gather OK")

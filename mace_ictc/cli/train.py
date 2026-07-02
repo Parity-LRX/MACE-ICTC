@@ -360,7 +360,7 @@ def build_baseline_model(
     long_range_include_k0: bool = False,
     long_range_energy_partition: str = "potential",
     long_range_green_mode: str = "poisson",
-    long_range_assignment: str = "cic",
+    long_range_assignment: str = "pcs",
     long_range_slab_padding_factor: int = 2,
     long_range_mesh_fft_full_ewald: bool = False,
     long_range_max_multipole_l: int = 0,
@@ -379,7 +379,7 @@ def build_baseline_model(
     mbd_learnable_energy_scale: bool = True,
     mbd_alpha_floor: float = 1.0e-4,
     dispersion_min_cutoff: float = 0.0,
-    mbd_pme_assignment: str = "cic",
+    mbd_pme_assignment: str = "pcs",
     mbd_pme_k_norm_floor: float = 1.0e-6,
     mbd_pme_assignment_window_floor: float = 1.0e-6,
     mbd_pme_ewald_alpha_prefactor: float = 5.0,
@@ -542,7 +542,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
                     help="Include the k=0 mode. Usually keep off with neutralized sources.")
     ap.add_argument("--long-range-energy-partition", default="potential", choices=["potential", "uniform"])
     ap.add_argument("--long-range-green-mode", default="poisson", choices=["poisson", "learned_poisson"])
-    ap.add_argument("--long-range-assignment", default="cic", choices=["cic", "tsc", "pcs"],
+    ap.add_argument("--long-range-assignment", default="pcs", choices=["cic", "tsc", "pcs"],
                     help="Mesh assignment rule for mesh_fft backend.")
     ap.add_argument("--long-range-slab-padding-factor", type=int, default=2)
     ap.add_argument("--long-range-mesh-fft-full-ewald", action="store_true",
@@ -623,7 +623,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
                          "~1e4x -- killing the genuine long-range/interlayer signal as collateral damage. Raising "
                          "this (e.g. to 1.0, so the damping radius exceeds a C-C bond length once beta is applied) "
                          "should let short bonds damp properly and keep the PD clamp from engaging so aggressively.")
-    ap.add_argument("--mbd-pme-assignment", default="cic", choices=["ngp", "cic", "pcs"],
+    ap.add_argument("--mbd-pme-assignment", default="pcs", choices=["ngp", "cic", "pcs"],
                     help="Mesh assignment for experimental --mbd-operator-backend pme_fft.")
     ap.add_argument("--mbd-pme-k-norm-floor", type=float, default=1.0e-6,
                     help="Small-k floor for experimental MBD PME matvec.")
@@ -968,8 +968,8 @@ def main(argv=None):
                 raise ValueError("--mbd-pme-ewald-alpha-prefactor must be > 0")
             logging.warning(
                 "--mbd-operator-backend pme_fft is an experimental reciprocal-only torch.fft "
-                "training backend; AOTI/LAMMPS export remains disabled until the cuFFT MBD "
-                "matvec and short-range/self corrections are implemented."
+                "backend. AOTI/LAMMPS export runs the matching C++ reciprocal PME operator; "
+                "keep mbd_operator_backend, mesh size, assignment, and alpha prefactor matched."
             )
     energy_output_scale_enabled = args.scaling != "no_scaling" or args.atomic_inter_scale is not None
     energy_output_shift_enabled = (

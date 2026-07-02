@@ -1,7 +1,7 @@
 // Task 5/5: C++ MBD solver -- mirrors the validated Python (mace_ictc/models/mbd.py +
 // reciprocal_backend.py) 1:1 using the libtorch C++ API. Shares the PME/cuFFT grid ops with the
-// scalar electrostatics (here self-contained CIC spread/gather to match a Python assignment="cic"
-// reference for parity). Chebyshev Tr[sqrt C] (no eigensolve) for the deployment hot path.
+// scalar electrostatics (self-contained B-spline spread/gather matching the Python PME assignment
+// for parity). Chebyshev Tr[sqrt C] (no eigensolve) for the deployment hot path.
 //
 // Build the standalone parity test (compares C++ mbd_energy to a Python reference):
 //   g++ -O2 -std=c++17 -DMBD_STANDALONE_TEST mff_mbd_solver.cpp \
@@ -103,8 +103,10 @@ torch::Tensor MFFMBDSolver::dipole_field(
 
   if (config_.use_fft) {
     // ---- pme_fft: mirror the trained apply_periodic_dipole_pme_field EXACTLY -- a reciprocal-ONLY smooth
-    // screened mesh operator (NO erfc near field, NO self, NO edge list). The P probes ride as FFT channels:
-    // spectral = (4pi/V) wdeconv e^{-k^2/4a^2}; field_fft = spectral k (k.mu)/k^2. alpha = prefactor/(0.5 Lmin).
+    // screened mesh operator (NO erfc near field, NO self, NO edge list). The P probes ride as FFT channels.
+    // MBD uses T=grad grad(1/r)=(3rr-I)/r^3, so the reciprocal tensor is
+    // spectral = -(4pi/V) wdeconv e^{-k^2/4a^2}; field_fft = spectral k (k.mu)/k^2.
+    // alpha = prefactor/(0.5 Lmin).
     const int M = config_.mesh_size;
     auto inv = torch::linalg_inv(eff);
     auto frac = torch::matmul(pos, inv);
@@ -124,16 +126,15 @@ torch::Tensor MFFMBDSolver::dipole_field(
     auto sinc1d = torch::sinc(fft_freqs(M, dopt) / (double)M).pow(assignment_stencil(config_.assignment));
     auto win = (sinc1d.view({M, 1, 1}) * sinc1d.view({1, M, 1}) * sinc1d.view({1, 1, M})).reshape({-1});
     auto wdeconv = torch::reciprocal(win.clamp_min(1e-6).square());                // [K]
-    auto scale = (4.0 * M_PI) / volume * screen * wdeconv / k2;               // [K]  +4pi/V e^{-k^2/4a^2}/|W|^2/k^2
+    auto scale = -(4.0 * M_PI) / volume * screen * wdeconv / k2;              // [K]  -4pi/V e^{-k^2/4a^2}/|W|^2/k^2
     scale = torch::where(k2 > 1e-12, scale, torch::zeros_like(scale));        // zero k=0 (tinfoil)
     auto e_k = (scale.to(mu_k.dtype()).unsqueeze(-1).unsqueeze(-1) * kc.unsqueeze(1)) * kdotmu.unsqueeze(-1);  // [K,P,3]
     auto e_mesh = torch::real(torch::fft::ifftn(e_k.reshape({M, M, M, P * 3}), {}, {0, 1, 2})) * std::pow((double)M, 3);
     auto gathered = gather_from_mesh(frac, e_mesh, config_.pbc);              // [N, P*3]
     field = batched ? gathered.reshape({N, P, 3}).permute({1, 0, 2}).contiguous() : gathered;
-    // subtract the Ewald dipole SELF-energy: the mesh spread->gather makes each atom feel its OWN smeared
-    // dipole. The analytic reciprocal self-field is (4 a^3 / 3 sqrt(pi)) mu (verified: matches the N=1 self
-    // to 0.5%). WITHOUT it the operator carries a huge spurious self-interaction that flips the E_MBD sign.
-    field = field - (4.0 * alpha * alpha * alpha / (3.0 * SQRT_PI)) * mu;
+    // Remove the Ewald dipole SELF block: with the T=grad grad(1/r) sign convention the smooth
+    // reciprocal mesh makes each atom feel -(4 a^3 / 3 sqrt(pi)) mu from its own smeared dipole.
+    field = field + (4.0 * alpha * alpha * alpha / (3.0 * SQRT_PI)) * mu;
   } else if (src.numel() > 0) {
     // ---- edge_sparse (default): field += sum_edges damp*T_bare.mu  (matches the trained edge_sparse
     // operator; no FFT/reciprocal/self -> the diagonal omega^2 lives in coupled_matvec). O(E) -> fast. ----

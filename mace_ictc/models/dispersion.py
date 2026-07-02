@@ -1009,7 +1009,7 @@ class ManyBodyDispersionSLQ(nn.Module):
         sqrt_iterations: int = 8,
         operator_backend: str = "edge_sparse",
         pme_mesh_size: int = 32,
-        pme_assignment: str = "cic",
+        pme_assignment: str = "pcs",
         pme_k_norm_floor: float = 1.0e-6,
         pme_assignment_window_floor: float = 1.0e-6,
         pme_ewald_alpha_prefactor: float = 5.0,
@@ -1209,9 +1209,10 @@ class ManyBodyDispersionSLQ(nn.Module):
             )
         else:
             k_cart, k2, spectral = pme_kernel
-        # Ewald dipole SELF-energy coefficient (4 a^3 / 3 sqrt(pi)): the mesh spread->gather makes each atom
-        # feel its OWN smeared dipole; subtract it so the operator carries no spurious self-interaction
-        # (which otherwise flips the E_MBD sign). a = prefactor / (0.5 * min box length).
+        # Ewald dipole SELF coefficient (4 a^3 / 3 sqrt(pi)): with the
+        # T=grad grad(1/r) sign convention, the smooth reciprocal mesh makes
+        # each atom feel -(self_coef * dipole). Add it back to remove that
+        # spurious self block.
         _rc = (0.5 * torch.linalg.vector_norm(cell.to(dtype=pos_local.dtype), dim=-1).min()).clamp_min(self.pme_k_norm_floor)
         self_coef = 4.0 * (float(self.pme_ewald_alpha_prefactor) / _rc).pow(3) / (3.0 * 1.7724538509055159)
 
@@ -1230,7 +1231,7 @@ class ManyBodyDispersionSLQ(nn.Module):
                 spectral=spectral,
                 k_norm_floor=self.pme_k_norm_floor,
             )
-            field = field - self_coef * dipoles    # remove the spurious mesh self-interaction (Ewald self)
+            field = field + self_coef * dipoles    # remove the spurious mesh self-interaction (Ewald self)
             field = field.permute(1, 0, 2)
             return y + coupling_scale * torch.einsum("mab,pmb->pma", w_local, field)
 
@@ -1942,7 +1943,7 @@ class LongRangeDispersion(nn.Module):
         max_num_neighbors: int | None = None,
         mbd_operator_backend: str = "edge_sparse",
         mbd_pme_mesh_size: int = 32,
-        mbd_pme_assignment: str = "cic",
+        mbd_pme_assignment: str = "pcs",
         mbd_pme_k_norm_floor: float = 1.0e-6,
         mbd_pme_assignment_window_floor: float = 1.0e-6,
         mbd_pme_ewald_alpha_prefactor: float = 5.0,
@@ -2221,7 +2222,7 @@ def dispersion_train_deploy_graph_compatibility(
     if mode_s == "pairwise-c6":
         return "shared_main_neighbor_graph"
     if mode_s == "mbd-slq" and backend_s == "pme_fft":
-        return "training_only_pme_fft_prototype_not_deployable"
+        return "matched_pme_fft_matvec"
     if mode_s in {"mbd", "mbd-slq"}:
         return "conditional_on_single_image_cutoff"
     return "unknown"
@@ -2242,7 +2243,7 @@ def build_long_range_dispersion(
     max_num_neighbors: int | None = None,
     mbd_operator_backend: str = "edge_sparse",
     mbd_pme_mesh_size: int = 32,
-    mbd_pme_assignment: str = "cic",
+    mbd_pme_assignment: str = "pcs",
     mbd_pme_k_norm_floor: float = 1.0e-6,
     mbd_pme_assignment_window_floor: float = 1.0e-6,
     mbd_pme_ewald_alpha_prefactor: float = 5.0,

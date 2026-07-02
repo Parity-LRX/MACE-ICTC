@@ -896,7 +896,7 @@ def _export_single_core(
         "long_range_energy_partition": str(getattr(metadata_model, "long_range_energy_partition", "potential")),
         "long_range_neutralize": bool(getattr(metadata_model, "long_range_neutralize", True)),
         "long_range_green_mode": str(getattr(metadata_model, "long_range_green_mode", "poisson")),
-        "long_range_assignment": str(getattr(metadata_model, "long_range_assignment", "cic")),
+        "long_range_assignment": str(getattr(metadata_model, "long_range_assignment", "pcs")),
         "long_range_mesh_fft_full_ewald": bool(getattr(metadata_model, "long_range_mesh_fft_full_ewald", False)),
         "long_range_dispersion_mode": str(getattr(metadata_model, "long_range_dispersion_mode", "none")),
         "long_range_dispersion": bool(getattr(metadata_model, "long_range_dispersion", False)),
@@ -923,7 +923,7 @@ def _export_single_core(
         "dispersion_slq_lanczos_steps": int(getattr(metadata_model, "dispersion_slq_lanczos_steps", 16)),
         "mbd_operator_backend": str(getattr(metadata_model, "mbd_operator_backend", "edge_sparse")),
         "mbd_pme_mesh_size": int(getattr(metadata_model, "mbd_pme_mesh_size", 16)),
-        "mbd_pme_assignment": str(getattr(metadata_model, "mbd_pme_assignment", "cic")),
+        "mbd_pme_assignment": str(getattr(metadata_model, "mbd_pme_assignment", "pcs")),
         "mbd_pme_k_norm_floor": float(getattr(metadata_model, "mbd_pme_k_norm_floor", 1.0e-6)),
         "mbd_pme_assignment_window_floor": float(getattr(metadata_model, "mbd_pme_assignment_window_floor", 1.0e-6)),
         "mbd_pme_ewald_alpha_prefactor": float(getattr(metadata_model, "mbd_pme_ewald_alpha_prefactor", 5.0)),
@@ -947,7 +947,7 @@ def _export_single_core(
         "feature_spectral_slab_padding_factor": int(
             getattr(metadata_model, "feature_spectral_slab_padding_factor", 2)
         ),
-        "feature_spectral_assignment": str(getattr(metadata_model, "feature_spectral_assignment", "cic")),
+        "feature_spectral_assignment": str(getattr(metadata_model, "feature_spectral_assignment", "pcs")),
         "notes": [
             "Core model: outputs per-atom energy.",
             "If export_reciprocal_source=true: core tuple includes reciprocal_source as the last tensor.",

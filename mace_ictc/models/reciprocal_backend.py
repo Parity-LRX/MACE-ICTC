@@ -44,7 +44,7 @@ class ReciprocalBackend(nn.Module):
         mesh_size: int = 16,
         boundary: str = "periodic",
         slab_padding_factor: int = 2,
-        assignment: str = "cic",
+        assignment: str = "pcs",
         include_k0: bool = False,
         k_norm_floor: float = 1.0e-6,
     ) -> None:

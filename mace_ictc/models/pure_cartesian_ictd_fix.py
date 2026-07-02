@@ -2134,7 +2134,7 @@ class PureCartesianICTDFix(nn.Module):
         long_range_reciprocal_backend: str = "direct_kspace",
         long_range_energy_partition: str = "potential",
         long_range_green_mode: str = "poisson",
-        long_range_assignment: str = "cic",
+        long_range_assignment: str = "pcs",
         long_range_mesh_fft_full_ewald: bool = False,
         long_range_mesh_fft_reciprocal_only: bool = False,
         long_range_max_multipole_l: int = 0,
@@ -2150,7 +2150,7 @@ class PureCartesianICTDFix(nn.Module):
         dispersion_slq_lanczos_steps: int = 16,
         mbd_operator_backend: str = "edge_sparse",
         mbd_pme_mesh_size: int = 32,
-        mbd_pme_assignment: str = "cic",
+        mbd_pme_assignment: str = "pcs",
         mbd_pme_k_norm_floor: float = 1.0e-6,
         mbd_pme_assignment_window_floor: float = 1.0e-6,
         mbd_pme_ewald_alpha_prefactor: float = 5.0,
@@ -2178,7 +2178,7 @@ class PureCartesianICTDFix(nn.Module):
         feature_spectral_slab_padding_factor: int = 2,
         feature_spectral_neutralize: bool = True,
         feature_spectral_include_k0: bool = False,
-        feature_spectral_assignment: str = "cic",
+        feature_spectral_assignment: str = "pcs",
         feature_spectral_gate_init: float = 0.0,
         equivariant_post_linear: bool = False,
         ictd_save_tp_mode: str = "fully-connected",
@@ -2644,6 +2644,9 @@ class PureCartesianICTDFix(nn.Module):
                 source_channels=int(long_range_source_channels),
                 source_scale_init=self.long_range_multipole_gate_init,
             )
+            if getattr(self.long_range_module, "energy_scale", None) is not None:
+                with torch.no_grad():
+                    self.long_range_module.energy_scale.fill_(1.0)
             # at export the multipole route emits a packed [q|mu|Q] reciprocal_source for the
             # C++ solver (instead of computing the reciprocal energy in-model).
             self.long_range_exports_reciprocal_source = True

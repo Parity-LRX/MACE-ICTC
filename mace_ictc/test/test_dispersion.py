@@ -336,6 +336,31 @@ def test_periodic_dipole_pme_field_kernel_matches_one_shot():
     assert torch.allclose(planned, direct, atol=0.0, rtol=0.0)
 
 
+def test_periodic_dipole_pme_field_matches_edge_sparse_sign():
+    dtype = torch.float64
+    box = 24.0
+    r = 6.0
+    cell = torch.eye(3, dtype=dtype) * box
+    pos = torch.tensor([[0.0, 0.0, 0.0], [r, 0.0, 0.0]], dtype=dtype)
+    frac = _prepare_frac_for_boundary(pos, cell, boundary="periodic", slab_padding_factor=1)
+    dipoles = torch.tensor([[[1.0, 0.0, 0.0]], [[0.0, 0.0, 0.0]]], dtype=dtype)
+    assignment = "pcs"
+    field = periodic_dipole_pme_field(
+        frac,
+        dipoles,
+        cell=cell,
+        mesh_size=48,
+        assignment=assignment,
+        assignment_offsets=_build_assignment_offsets(assignment),
+    )[:, 0, :]
+
+    rvec = pos[1] - pos[0]
+    rhat = rvec / rvec.norm()
+    bare = ((3.0 * torch.outer(rhat, rhat) - torch.eye(3, dtype=dtype)) / rvec.norm().pow(3)) @ dipoles[0, 0]
+    ratio = field[1, 0] / bare[0]
+    assert ratio > 0.9, f"PME dipole tensor sign flipped relative to edge_sparse: ratio={ratio.item():.3e}"
+
+
 def test_periodic_dipole_pme_field_batched_matches_per_graph():
     dtype = torch.float64
     torch.manual_seed(22)
@@ -428,6 +453,7 @@ def test_many_body_dispersion_slq_pme_fft_smoke_and_lattice_shift():
     ).to(dtype)
     model.term.probe_mode = "basis"
     model.term.pme_mesh_size = 8
+    model.eval()
 
     cell = (torch.eye(3, dtype=dtype) * 8.0).reshape(1, 3, 3)
     pos = torch.tensor(
@@ -485,6 +511,7 @@ def test_many_body_dispersion_slq_pme_fft_skips_dispersion_neighbor_list(monkeyp
         mbd_operator_backend="pme_fft",
     ).to(dtype)
     model.term.probe_mode = "basis"
+    model.eval()
     model.term.pme_mesh_size = 8
 
     cell = torch.stack(
@@ -539,6 +566,7 @@ def test_many_body_dispersion_slq_pme_fft_batch_matches_separate_graphs():
         mbd_pme_mesh_size=8,
     ).to(dtype)
     model.term.probe_mode = "basis"
+    model.eval()
 
     cell = torch.stack(
         [
@@ -836,7 +864,7 @@ def test_mbd_operator_backend_metadata_contract():
                 "long_range_dispersion_mode": "mbd-slq",
                 "mbd_operator_backend": "pme_fft",
                 "mbd_pme_mesh_size": 12,
-                "mbd_pme_assignment": "cic",
+                "mbd_pme_assignment": "pcs",
                 "mbd_pme_k_norm_floor": 4.0e-6,
                 "mbd_pme_assignment_window_floor": 5.0e-6,
                 "mbd_pme_ewald_alpha_prefactor": 7.0,
@@ -849,10 +877,10 @@ def test_mbd_operator_backend_metadata_contract():
     assert resolved["dispersion_deployment_graph_rule"] == "pme_fft_matvec_prototype"
     assert (
         resolved["dispersion_train_deploy_graph_compatibility"]
-        == "training_only_pme_fft_prototype_not_deployable"
+        == "matched_pme_fft_matvec"
     )
     assert resolved["mbd_pme_mesh_size"] == 12
-    assert resolved["mbd_pme_assignment"] == "cic"
+    assert resolved["mbd_pme_assignment"] == "pcs"
     assert resolved["mbd_pme_k_norm_floor"] == 4.0e-6
     assert resolved["mbd_pme_assignment_window_floor"] == 5.0e-6
     assert resolved["mbd_pme_ewald_alpha_prefactor"] == 7.0
@@ -995,7 +1023,7 @@ def test_dispersion_mode_edge_policy_contract():
     )
     assert (
         dispersion_train_deploy_graph_compatibility("mbd-slq", mbd_operator_backend="pme_fft")
-        == "training_only_pme_fft_prototype_not_deployable"
+        == "matched_pme_fft_matvec"
     )
 
 
@@ -2619,11 +2647,11 @@ def test_mfftorch_mbd_dispersion_rejects_multi_image_runtime_cutoff():
         assert "2.0 * dispersion_cutoff > height" in text
         assert "exact multi-image/self-image" in text
         assert "MBD graph used by the Python brute-force small-cell path" in text
-        assert "future PME/cuFFT MBD backend" in text
+        assert "train/deploy with mbd_operator_backend=pme_fft" in text
         assert "engine_->requires_mbd_dispersion_edges()" in text
 
 
-def test_mfftorch_aoti_mbd_reciprocal_requires_fallback_guard():
+def test_mfftorch_aoti_mbd_reciprocal_direct_path_contract():
     repo = Path(__file__).resolve().parents[2]
     engine = (repo / "lammps_user_mfftorch" / "src" / "USER-MFFTORCH" / "mff_torch_engine.cpp").read_text()
     engine_h = (repo / "lammps_user_mfftorch" / "src" / "USER-MFFTORCH" / "mff_torch_engine.h").read_text()
@@ -2631,7 +2659,8 @@ def test_mfftorch_aoti_mbd_reciprocal_requires_fallback_guard():
     export_libtorch = (repo / "mace_ictc" / "cli" / "export_libtorch_core.py").read_text()
     lammps_mliap = (repo / "mace_ictc" / "interfaces" / "lammps_mliap.py").read_text()
     train_loop = (repo / "mace_ictc" / "training" / "train_loop.py").read_text()
-    assert "AOTI .pt2 combines explicit MBD dispersion edges with runtime reciprocal" in engine
+    assert "combined AOTI (MBD dispersion edges + runtime reciprocal source)" in engine
+    assert "detached reciprocal_source (no fallback needed)" in engine
     assert "run_forward_backward(pos0, A, edge_src, edge_dst, edge_shifts, cell" in engine
     assert export.count('mf.write(f"fallback {args.fallback}\\n")') >= 2
     assert "if emit_rs or use_explicit_dispersion_edges:" in export
@@ -2650,7 +2679,7 @@ def test_mfftorch_aoti_mbd_reciprocal_requires_fallback_guard():
     assert 'mbd_operator_backend = str(getattr(model, "mbd_operator_backend", "edge_sparse"))' in export
     assert '"mbd_operator_backend": mbd_operator_backend' in export
     assert '"mbd_pme_mesh_size": int(getattr(model, "mbd_pme_mesh_size", 16))' in export
-    assert '"mbd_pme_assignment": str(getattr(model, "mbd_pme_assignment", "cic"))' in export
+    assert '"mbd_pme_assignment": str(getattr(model, "mbd_pme_assignment", "pcs"))' in export
     assert '"mbd_operator_backend": str(getattr(metadata_model, "mbd_operator_backend", "edge_sparse"))' in export_libtorch
     assert '"dispersion_neighbor_method": str(getattr(metadata_model, "dispersion_neighbor_method", "auto"))' in export_libtorch
     assert '"dispersion_bruteforce_threshold": int(getattr(metadata_model, "dispersion_bruteforce_threshold", 1024))' in export_libtorch
@@ -2661,7 +2690,7 @@ def test_mfftorch_aoti_mbd_reciprocal_requires_fallback_guard():
         in export_libtorch
     )
     assert '"mbd_pme_mesh_size": int(getattr(metadata_model, "mbd_pme_mesh_size", 16))' in export_libtorch
-    assert '"mbd_pme_assignment": str(getattr(metadata_model, "mbd_pme_assignment", "cic"))' in export_libtorch
+    assert '"mbd_pme_assignment": str(getattr(metadata_model, "mbd_pme_assignment", "pcs"))' in export_libtorch
     assert "validate_dispersion_training_graph_rule(" in lammps_mliap
     assert "checkpoint dispersion_training_graph_rule" in lammps_mliap
     assert "validate_dispersion_deployment_graph_rule(" in lammps_mliap
@@ -2687,9 +2716,9 @@ def test_mfftorch_aoti_mbd_reciprocal_requires_fallback_guard():
     assert '\\"dispersion_training_graph_rule\\"' in engine
     assert '\\"dispersion_deployment_graph_rule\\"' in engine
     assert 'parse_string_from_metadata(content, "\\"mbd_operator_backend\\""' in engine
-    assert "does not yet support mbd_operator_backend=pme_fft at deployment" in engine
-    assert "cuFFT MBD dipole-tensor matvec backend is not implemented" in export
-    assert "cuFFT MBD dipole-tensor matvec backend is not implemented" in export_libtorch
+    assert "mbd_operator_backend=pme_fft IS supported at deployment now" in engine
+    assert "C++ MBD solver runs the matching reciprocal PME operator" in export
+    assert "pme_fft (reciprocal-only, no cutoff dispersion edges) IS supported" in export_libtorch
     assert "const std::string& dispersion_training_graph_rule() const" in engine_h
     assert "const std::string& dispersion_deployment_graph_rule() const" in engine_h
     assert 'std::string dispersion_training_graph_rule_ = "none"' in engine_h

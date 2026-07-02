@@ -43,9 +43,9 @@ struct MBDConfig {
   double coupling_scale = 1.0;         //   overall coupling prefactor (learned in the real model)
   bool use_fft = false;                // dipole field backend. false = DIRECT edge_sparse (sum damp*T_bare
                                        // over the cutoff edge list) -- matches the trained
-                                       // ManyBodyDispersionSLQ + O(E) fast. true = periodic PME/cuFFT far
-                                       // field (the "future scalable backend"; ONLY correct if trained
-                                       // with PME -- it adds a long-range tail edge_sparse training lacks).
+                                       // ManyBodyDispersionSLQ + O(E) fast. true = periodic PME/cuFFT
+                                       // reciprocal field; use only with checkpoints trained with
+                                       // mbd_operator_backend=pme_fft.
   double real_cutoff = 0.0;            // real-space T_SR cutoff (0 -> derive from alpha)
   std::array<int, 3> pbc{{1, 1, 1}};
 };

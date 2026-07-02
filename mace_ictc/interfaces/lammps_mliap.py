@@ -1232,7 +1232,7 @@ class LAMMPS_MLIAP_MFF(MLIAPUnified):
         long_range_reciprocal_backend = str(arch_meta.get("long_range_reciprocal_backend", "direct_kspace"))
         long_range_energy_partition = str(arch_meta.get("long_range_energy_partition", "potential"))
         long_range_green_mode = str(arch_meta.get("long_range_green_mode", "poisson"))
-        long_range_assignment = str(arch_meta.get("long_range_assignment", "cic"))
+        long_range_assignment = str(arch_meta.get("long_range_assignment", "pcs"))
         long_range_mesh_fft_full_ewald = bool(arch_meta.get("long_range_mesh_fft_full_ewald", False))
         long_range_max_multipole_l = int(arch_meta.get("long_range_max_multipole_l", 0))
         long_range_dispersion_mode = str(
@@ -1289,7 +1289,7 @@ class LAMMPS_MLIAP_MFF(MLIAPUnified):
             source_label="checkpoint dispersion_train_deploy_graph_compatibility",
         )
         mbd_pme_mesh_size = int(ckpt.get("mbd_pme_mesh_size", arch_meta.get("mbd_pme_mesh_size", 16)))
-        mbd_pme_assignment = str(ckpt.get("mbd_pme_assignment", arch_meta.get("mbd_pme_assignment", "cic")))
+        mbd_pme_assignment = str(ckpt.get("mbd_pme_assignment", arch_meta.get("mbd_pme_assignment", "pcs")))
         mbd_pme_k_norm_floor = float(ckpt.get("mbd_pme_k_norm_floor", arch_meta.get("mbd_pme_k_norm_floor", 1.0e-6)))
         mbd_pme_assignment_window_floor = float(
             ckpt.get("mbd_pme_assignment_window_floor", arch_meta.get("mbd_pme_assignment_window_floor", 1.0e-6))
@@ -1329,7 +1329,7 @@ class LAMMPS_MLIAP_MFF(MLIAPUnified):
         feature_spectral_slab_padding_factor = int(arch_meta.get("feature_spectral_slab_padding_factor", 2))
         feature_spectral_neutralize = bool(arch_meta.get("feature_spectral_neutralize", True))
         feature_spectral_include_k0 = bool(arch_meta.get("feature_spectral_include_k0", False))
-        feature_spectral_assignment = str(arch_meta.get("feature_spectral_assignment", "cic"))
+        feature_spectral_assignment = str(arch_meta.get("feature_spectral_assignment", "pcs"))
         feature_spectral_gate_init = float(arch_meta.get("feature_spectral_gate_init", 0.0))
         save_contraction_order = int(
             ckpt.get("ictd_save_contraction_order")

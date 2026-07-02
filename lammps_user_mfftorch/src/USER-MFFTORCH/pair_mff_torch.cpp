@@ -119,7 +119,7 @@ void validate_mbd_dispersion_single_image_cutoff(
            " exceeds periodic face height " + std::to_string(height) +
            ". LAMMPS mff/torch deployment cannot represent the exact multi-image/self-image "
            "MBD graph used by the Python brute-force small-cell path; use a larger cell, a smaller "
-           "dispersion cutoff, or a future PME/cuFFT MBD backend.")
+           "dispersion cutoff, or train/deploy with mbd_operator_backend=pme_fft.")
               .c_str());
     }
   }

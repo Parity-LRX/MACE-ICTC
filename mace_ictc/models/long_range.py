@@ -375,7 +375,10 @@ def build_periodic_dipole_pme_kernel(
     wdeconv = torch.reciprocal(window.clamp_min(assignment_window_floor).square())
     real_cutoff = (0.5 * torch.linalg.vector_norm(cell.to(dtype=dtype), dim=-1).min()).clamp_min(k_norm_floor)
     ewald_alpha = real_cutoff.new_tensor(float(ewald_alpha_prefactor)) / real_cutoff
-    spectral = (4.0 * math.pi / volume) * wdeconv * torch.exp(-k2 / (4.0 * ewald_alpha.square()))
+    # MBD uses the Hessian convention T = grad grad (1/r) = (3 rr - I)/r^3.
+    # With the FFT exp(-ik.r) structure-factor convention, the smooth reciprocal
+    # dipole tensor carries a negative k_a k_b/k^2 sign.
+    spectral = -(4.0 * math.pi / volume) * wdeconv * torch.exp(-k2 / (4.0 * ewald_alpha.square()))
     spectral = torch.where(k_norm > k_norm_floor, spectral, torch.zeros_like(spectral))
     return k_cart, k2, spectral
 
@@ -417,7 +420,9 @@ def build_periodic_dipole_pme_kernel_batched(
     wdeconv = torch.reciprocal(window.clamp_min(assignment_window_floor).square())
     real_cutoff = (0.5 * torch.linalg.vector_norm(cell_b, dim=-1).min(dim=-1).values).clamp_min(k_norm_floor)
     ewald_alpha = real_cutoff.new_tensor(float(ewald_alpha_prefactor)) / real_cutoff
-    spectral = (4.0 * math.pi / volume).unsqueeze(-1) * wdeconv
+    # See build_periodic_dipole_pme_kernel: negative sign matches
+    # T = grad grad (1/r), consistent with edge_sparse and mbd.dipole_field.
+    spectral = -(4.0 * math.pi / volume).unsqueeze(-1) * wdeconv
     spectral = spectral * torch.exp(-k2 / (4.0 * ewald_alpha.unsqueeze(-1).square()))
     spectral = torch.where(k_norm > k_norm_floor, spectral, torch.zeros_like(spectral))
     return k_cart, k2, spectral
@@ -691,7 +696,7 @@ class FeatureSpectralResidualBlock(nn.Module):
         slab_padding_factor: int = 2,
         neutralize: bool = True,
         include_k0: bool = False,
-        assignment: str = "cic",
+        assignment: str = "pcs",
         gate_init: float = 0.0,
     ):
         super().__init__()
@@ -863,7 +868,7 @@ class ReciprocalSpectralKernel3D(nn.Module):
     def build_k_lattice(self, cell: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         inv_cells = _inverse_3x3(cell)
         k_lattice = self.integer_k_lattice.to(device=cell.device, dtype=cell.dtype)
-        k_cart = 2.0 * math.pi * torch.einsum("kd,bdh->bkh", k_lattice, inv_cells)
+        k_cart = 2.0 * math.pi * torch.einsum("kd,bdh->bkh", k_lattice, inv_cells.transpose(-1, -2))
         k_norms = _safe_vector_norm(k_cart, dim=-1, floor=self.k_norm_floor)
         volumes = torch.abs(_det_3x3(cell)).clamp_min(self.k_norm_floor)
         return k_cart, k_norms, volumes
@@ -941,7 +946,7 @@ class MeshLongRangeKernel3D(nn.Module):
         include_k0: bool = False,
         energy_partition: str = "potential",
         green_mode: str = "poisson",
-        assignment: str = "cic",
+        assignment: str = "pcs",
         full_ewald: bool = False,
         reciprocal_only: bool = False,
         k_norm_floor: float = 1.0e-6,
@@ -1161,10 +1166,9 @@ class MeshLongRangeKernel3D(nn.Module):
             spectral_weights = spectral_weights * torch.exp(
                 -(k_norms.square()) / (4.0 * alpha.view(-1, 1, 1, 1).square())
             )
-        if self.full_ewald or self.assignment != "cic":
-            assignment_window = self._build_assignment_window(device=cell.device, dtype=mesh_dtype)
-            assignment_scale = torch.reciprocal(assignment_window.clamp_min(self.assignment_window_floor).square())
-            spectral_weights = spectral_weights * assignment_scale.unsqueeze(0)
+        assignment_window = self._build_assignment_window(device=cell.device, dtype=mesh_dtype)
+        assignment_scale = torch.reciprocal(assignment_window.clamp_min(self.assignment_window_floor).square())
+        spectral_weights = spectral_weights * assignment_scale.unsqueeze(0)
         if self.full_ewald or (not self.include_k0):
             spectral_weights = torch.where(
                 k_norms > self.k_norm_floor,
@@ -1288,7 +1292,7 @@ class LatentReciprocalLongRange(nn.Module):
         reciprocal_backend: str = "direct_kspace",
         energy_partition: str = "potential",
         green_mode: str = "poisson",
-        assignment: str = "cic",
+        assignment: str = "pcs",
         mesh_fft_full_ewald: bool = False,
         mesh_fft_reciprocal_only: bool = False,
     ):
@@ -1330,11 +1334,7 @@ class LatentReciprocalLongRange(nn.Module):
                 reciprocal_only=self.mesh_fft_reciprocal_only,
             )
             self.exports_reciprocal_source = True
-            final_linear = self.source_head.net[-1]
-            if isinstance(final_linear, nn.Linear):
-                nn.init.zeros_(final_linear.weight)
-                nn.init.zeros_(final_linear.bias)
-            self.energy_scale = None
+            self.energy_scale = nn.Parameter(torch.tensor(0.0))
         else:
             self.kernel = ReciprocalSpectralKernel3D(
                 kmax=self.kmax,
@@ -1427,7 +1427,7 @@ def build_feature_spectral_module(
     slab_padding_factor: int = 2,
     neutralize: bool = True,
     include_k0: bool = False,
-    assignment: str = "cic",
+    assignment: str = "pcs",
     gate_init: float = 0.0,
 ) -> nn.Module | None:
     if mode == "none":
@@ -1465,7 +1465,7 @@ def build_long_range_module(
     reciprocal_backend: str = "direct_kspace",
     energy_partition: str = "potential",
     green_mode: str = "poisson",
-    assignment: str = "cic",
+    assignment: str = "pcs",
     mesh_fft_full_ewald: bool = False,
     mesh_fft_reciprocal_only: bool = False,
     theta: float = 0.5,
@@ -1527,7 +1527,7 @@ def configure_long_range_modules(
     long_range_reciprocal_backend: str = "direct_kspace",
     long_range_energy_partition: str = "potential",
     long_range_green_mode: str = "poisson",
-    long_range_assignment: str = "cic",
+    long_range_assignment: str = "pcs",
     long_range_mesh_fft_full_ewald: bool = False,
     long_range_mesh_fft_reciprocal_only: bool = False,
     long_range_theta: float = 0.5,
@@ -1550,7 +1550,7 @@ def configure_long_range_modules(
     feature_spectral_slab_padding_factor: int = 2,
     feature_spectral_neutralize: bool = True,
     feature_spectral_include_k0: bool = False,
-    feature_spectral_assignment: str = "cic",
+    feature_spectral_assignment: str = "pcs",
     feature_spectral_gate_init: float = 0.0,
 ) -> None:
     owner.long_range_mode = str(long_range_mode)
