@@ -689,7 +689,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--stress-weight", type=float, default=0.0,
                     help="Weight of the stress/virial loss (0 = energy+force only; >0 enables it).")
     ap.add_argument("--force-shift-value", type=float, default=1.0)
-    ap.add_argument("--max-grad-norm", type=float, default=None)
+    ap.add_argument("--max-grad-norm", type=float, default=10.0,
+                    help="Gradient norm clip applied before each optimizer step (<=0 disables). "
+                         "Default 10.0: without it, unbounded terms (e.g. pairwise-c6's s6/c6_head, "
+                         "which have no PD-safety clamp) can take one freak-batch gradient spike and "
+                         "permanently poison Adam's running moments into NaN.")
     ap.add_argument("--ema-decay", type=float, default=0.0,
                     help="Enable EMA when >0. Example: 0.999. Saved as e3trans_ema_state_dict.")
     ap.add_argument("--ema-start-step", type=int, default=0)
