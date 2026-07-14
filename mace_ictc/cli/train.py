@@ -872,6 +872,16 @@ def main(argv=None):
     if args.makefx_buckets:
         mb = str(args.makefx_buckets).strip()
         makefx_buckets = [int(x) for x in mb.split(",") if x.strip()] if "," in mb else int(mb)
+    node_padding_enabled = bool(args.pad_nodes_to_max or makefx_buckets is not None)
+    nonlocal_physics_enabled = (
+        args.long_range_mode != "none" or args.long_range_dispersion_mode != "none"
+    )
+    if node_padding_enabled and nonlocal_physics_enabled:
+        raise ValueError(
+            "node padding/makefx bucketing is not currently safe with long-range or dispersion "
+            "physics: dummy atoms can enter nonlocal interactions. Disable node padding/bucketing "
+            "or disable the nonlocal term."
+        )
 
     # atomic-energy E0 (None -> trainer's H/C/N/O default)
     aek = aev = None
@@ -890,6 +900,14 @@ def main(argv=None):
     val_h5 = os.path.join(args.data_dir, f"processed_{args.val_prefix}.h5")
     val_ds = H5Dataset(prefix=args.val_prefix, data_dir=args.data_dir,
                        expected_max_radius=args.max_radius) if os.path.exists(val_h5) else None
+    requests_stress = args.stress_weight > 0.0 or (
+        args.stage_two and args.swa_stress_weight is not None and args.swa_stress_weight > 0.0
+    )
+    if requests_stress and getattr(train_ds, "num_stress_labels", None) == 0:
+        raise ValueError(
+            "stress loss was requested, but the training data contains no stress/virial labels; "
+            "missing stress metadata is no longer treated as a physical zero-stress target"
+        )
 
     # avg_num_neighbors (the message normalizer baked into the weights)
     train_h5 = os.path.join(args.data_dir, f"processed_{args.train_prefix}.h5")
@@ -1240,10 +1258,16 @@ def main(argv=None):
         )
     if args.eval_only:
         va = trainer._val_pass()
+        stress_text = (
+            f"\n  Stress: RMSE={va['stress_rmse']:.6g} eV/A^3   "
+            f"MAE={va['stress_mae']:.6g} eV/A^3"
+            if args.stress_weight > 0.0 else ""
+        )
         print(f"[EVAL-ONLY] ckpt={args.resume_checkpoint}\n"
-              f"  val total_loss={va['total_loss']:.4f}\n"
-              f"  RMSE: Frmse={va['force_rmse']:.4f} eV/A   Ermse={va['energy_rmse_avg']:.4f} eV/atom\n"
-              f"  MAE:  Fmae={va['force_mae']:.4f} eV/A   Emae={va['energy_mae_avg']:.4f} eV/atom",
+              f"  val total_loss={va['total_loss']:.6g}\n"
+              f"  RMSE: Frmse={va['force_rmse']:.6g} eV/A   Ermse={va['energy_rmse_avg']:.6g} eV/atom\n"
+              f"  MAE:  Fmae={va['force_mae']:.6g} eV/A   Emae={va['energy_mae_avg']:.6g} eV/atom"
+              f"{stress_text}",
               flush=True)
         return
     try:

@@ -324,7 +324,8 @@ def main():
     print(f"Reading {args.input_file}...")
 
     # Extract data blocks
-    all_blocks, all_energy, all_raw_energy, all_cells, all_pbcs, all_stresses = extract_data_blocks(
+    (all_blocks, all_energy, all_raw_energy, all_cells, all_pbcs,
+     all_stresses, all_stress_mask) = extract_data_blocks(
         args.input_file,
         elements=args.elements,
         energy_key=args.energy_key,
@@ -332,6 +333,7 @@ def main():
         species_key=args.species_key,
         coord_key=args.coord_key,
         atomic_number_key=args.atomic_number_key,
+        return_stress_mask=True,
     )
     print(f"Total frames: {len(all_blocks)}")
 
@@ -383,9 +385,11 @@ def main():
     # Save sets
     print("Saving files...")
     save_set('train', train_indices, train_blocks, train_raw_E, train_correction, all_cells, pbc_list=all_pbcs,
-             stress_list=all_stresses, max_atom=args.max_atom, output_dir=args.output_dir)
+             stress_list=all_stresses, stress_mask=all_stress_mask,
+             max_atom=args.max_atom, output_dir=args.output_dir)
     save_set('val', val_indices, val_blocks, val_raw_E, val_correction, all_cells, pbc_list=all_pbcs,
-             stress_list=all_stresses, max_atom=args.max_atom, output_dir=args.output_dir)
+             stress_list=all_stresses, stress_mask=all_stress_mask,
+             max_atom=args.max_atom, output_dir=args.output_dir)
 
     print(f"Raw data saved to {args.output_dir}/")
 

@@ -44,7 +44,6 @@ from torch.optim.swa_utils import SWALR
 from mace_ictc.utils.scatter import scatter
 from mace_ictc.utils.tensor_utils import map_tensor_values
 from mace_ictc.utils.fidelity import smooth_l1_loss_stats
-from mace_ictc.models.losses import RMSELoss
 
 log = logging.getLogger(__name__)
 
@@ -161,7 +160,6 @@ class ForceTrainer:
         values = atomic_energy_values if atomic_energy_values is not None else _DEFAULT_E0_VALUES
         self.keys = torch.as_tensor(list(keys), dtype=torch.long, device=self.device)
         self.values = torch.as_tensor(list(values), dtype=self.dtype, device=self.device)
-        self.criterion_2 = RMSELoss()
 
         self.learning_rate = float(learning_rate)
         self.min_learning_rate = float(min_learning_rate)
@@ -345,16 +343,65 @@ class ForceTrainer:
             and dist.is_initialized()
         )
 
-    def _reduce_epoch_metrics(self, run: dict, seen: int) -> dict:
-        keys = ["total_loss", "energy_loss", "force_loss", "stress_loss", "force_rmse", "energy_rmse_avg", "force_mae", "energy_mae_avg"]
-        if not self._dist_ready():
-            denom = max(int(seen), 1)
-            return {k: run[k] / denom for k in keys}
-        vals = [float(run[k]) for k in keys] + [float(seen)]
-        t = torch.tensor(vals, dtype=torch.float64, device=self.device)
-        dist.all_reduce(t, op=dist.ReduceOp.SUM)
-        denom = max(float(t[-1].item()), 1.0)
-        return {k: float(t[i].item() / denom) for i, k in enumerate(keys)}
+    @staticmethod
+    def _new_metric_sums() -> dict[str, float]:
+        return {
+            "num_batches": 0.0,
+            "energy_loss_sum": 0.0, "energy_count": 0.0,
+            "force_loss_sum": 0.0, "force_count": 0.0,
+            "stress_loss_sum": 0.0, "stress_count": 0.0,
+            "energy_sq_sum": 0.0, "energy_abs_sum": 0.0,
+            "force_sq_sum": 0.0, "force_abs_sum": 0.0,
+            "stress_sq_sum": 0.0, "stress_abs_sum": 0.0,
+        }
+
+    @staticmethod
+    def _accumulate_metric_sums(sums: dict[str, float], out: dict) -> None:
+        sums["num_batches"] += 1.0
+        for key, value in out["_metric_sums"].items():
+            sums[key] += float(value)
+
+    def _finalize_metric_sums(self, sums: dict[str, float], *, require_data: bool) -> dict[str, float]:
+        if sums["num_batches"] <= 0:
+            if require_data:
+                raise ValueError("validation loader produced no batches")
+            return {
+                "total_loss": 0.0, "energy_loss": 0.0, "force_loss": 0.0,
+                "stress_loss": 0.0, "force_rmse": 0.0, "energy_rmse_avg": 0.0,
+                "force_mae": 0.0, "energy_mae_avg": 0.0,
+                "stress_rmse": 0.0, "stress_mae": 0.0,
+            }
+
+        def mean(sum_key: str, count_key: str) -> float:
+            count = sums[count_key]
+            return sums[sum_key] / count if count > 0 else 0.0
+
+        energy_loss = mean("energy_loss_sum", "energy_count")
+        force_loss = mean("force_loss_sum", "force_count")
+        stress_loss = mean("stress_loss_sum", "stress_count")
+        energy_mse = mean("energy_sq_sum", "energy_count")
+        force_mse = mean("force_sq_sum", "force_count")
+        stress_mse = mean("stress_sq_sum", "stress_count")
+        return {
+            "total_loss": self.a * energy_loss + self.b * force_loss + self.c * stress_loss,
+            "energy_loss": energy_loss,
+            "force_loss": force_loss,
+            "stress_loss": stress_loss,
+            "force_rmse": math.sqrt(max(force_mse, 0.0)),
+            "energy_rmse_avg": math.sqrt(max(energy_mse, 0.0)),
+            "force_mae": mean("force_abs_sum", "force_count"),
+            "energy_mae_avg": mean("energy_abs_sum", "energy_count"),
+            "stress_rmse": math.sqrt(max(stress_mse, 0.0)),
+            "stress_mae": mean("stress_abs_sum", "stress_count"),
+        }
+
+    def _reduce_epoch_metrics(self, sums: dict[str, float]) -> dict[str, float]:
+        if self._dist_ready():
+            keys = list(sums)
+            tensor = torch.tensor([sums[k] for k in keys], dtype=torch.float64, device=self.device)
+            dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+            sums = {key: float(tensor[i].item()) for i, key in enumerate(keys)}
+        return self._finalize_metric_sums(sums, require_data=False)
 
     def _broadcast_float(self, value: float | None) -> float:
         if not self._dist_ready():
@@ -1014,6 +1061,9 @@ class ForceTrainer:
         atom_mask = None
         if isinstance(extras, dict) and torch.is_tensor(extras.get("atom_mask", None)):
             atom_mask = extras["atom_mask"].to(device=self.device, dtype=pos.dtype).view(-1)
+        stress_mask = None
+        if isinstance(extras, dict) and torch.is_tensor(extras.get("stress_mask", None)):
+            stress_mask = extras["stress_mask"].to(device=self.device, dtype=torch.bool).view(-1)
 
         def _mol_sum(x):
             if atom_mask is not None:
@@ -1145,11 +1195,11 @@ class ForceTrainer:
             f_pred_l, force_ref_l = f_pred, force_ref_scaled
             num_atoms_per_mol = scatter(torch.ones_like(batch_idx), batch_idx, dim=0, reduce="sum")
 
-        force_loss = self._loss_term(f_pred_l, force_ref_l)
+        force_loss, force_loss_sum, force_count = self._loss_term_stats(f_pred_l, force_ref_l)
 
         E_avg_pred = E_mean / num_atoms_per_mol
         target_energy_avg = target_energies / num_atoms_per_mol
-        energy_loss = self._loss_term(E_avg_pred, target_energy_avg)
+        energy_loss, energy_loss_sum, energy_count = self._loss_term_stats(E_avg_pred, target_energy_avg)
 
         total_loss = self.a * energy_loss + self.b * force_loss
 
@@ -1159,19 +1209,61 @@ class ForceTrainer:
         if compute_stress:
             volume = torch.abs(torch.det(cell)).clamp(min=1e-10)
             stress_pred = grad_strain / volume.view(-1, 1, 1)  # [B,3,3]
-            stress_loss = self._loss_term(stress_pred, stress_ref)
+            if stress_mask is not None:
+                stress_pred_l, stress_ref_l = stress_pred[stress_mask], stress_ref[stress_mask]
+            else:
+                stress_pred_l, stress_ref_l = stress_pred, stress_ref
+            if stress_pred_l.numel():
+                stress_loss, stress_loss_sum, stress_count = self._loss_term_stats(
+                    stress_pred_l, stress_ref_l
+                )
+            else:
+                stress_loss = stress_pred.sum() * 0.0
+                stress_loss_sum = stress_loss.detach()
+                stress_count = stress_loss.new_zeros(())
             total_loss = total_loss + self.c * stress_loss
-            with torch.no_grad():
-                stress_rmse = self.criterion_2(stress_pred.reshape(-1), stress_ref.reshape(-1))
         else:
             stress_loss = torch.zeros((), device=self.device)
-            stress_rmse = torch.zeros((), device=self.device)
+            stress_loss_sum = torch.zeros((), device=self.device)
+            stress_count = torch.zeros((), device=self.device)
 
         with torch.no_grad():
-            force_rmse = self.criterion_2(f_pred_l.reshape(-1), force_ref_l.reshape(-1))
-            energy_rmse_avg = self.criterion_2(E_avg_pred, target_energy_avg)
-            force_mae = (f_pred_l.reshape(-1) - force_ref_l.reshape(-1)).abs().mean()
-            energy_mae_avg = (E_avg_pred - target_energy_avg).abs().mean()
+            # Loss may intentionally use the legacy scaled force target, but reported
+            # metrics must remain errors against the physical dataset labels.
+            force_ref_metric = force_ref[mb] if atom_mask is not None else force_ref
+            force_diff = (f_pred_l - force_ref_metric).reshape(-1)
+            energy_diff = (E_avg_pred - target_energy_avg).reshape(-1)
+            if compute_stress:
+                stress_diff = (stress_pred_l - stress_ref_l).reshape(-1)
+            else:
+                stress_diff = torch.empty(0, dtype=pos.dtype, device=self.device)
+
+            force_rmse = force_diff.square().mean().sqrt()
+            energy_rmse_avg = energy_diff.square().mean().sqrt()
+            force_mae = force_diff.abs().mean()
+            energy_mae_avg = energy_diff.abs().mean()
+            stress_rmse = (
+                stress_diff.square().mean().sqrt()
+                if stress_diff.numel() else torch.zeros((), device=self.device)
+            )
+            stress_mae = (
+                stress_diff.abs().mean()
+                if stress_diff.numel() else torch.zeros((), device=self.device)
+            )
+            metric_sums = {
+                "energy_loss_sum": energy_loss_sum.detach(),
+                "energy_count": energy_count.detach(),
+                "force_loss_sum": force_loss_sum.detach(),
+                "force_count": force_count.detach(),
+                "stress_loss_sum": stress_loss_sum.detach(),
+                "stress_count": stress_count.detach(),
+                "energy_sq_sum": energy_diff.square().sum(),
+                "energy_abs_sum": energy_diff.abs().sum(),
+                "force_sq_sum": force_diff.square().sum(),
+                "force_abs_sum": force_diff.abs().sum(),
+                "stress_sq_sum": stress_diff.square().sum(),
+                "stress_abs_sum": stress_diff.abs().sum(),
+            }
         return {
             "total_loss": total_loss,
             "energy_loss": energy_loss.detach(),
@@ -1182,12 +1274,20 @@ class ForceTrainer:
             "force_mae": force_mae,
             "energy_mae_avg": energy_mae_avg,
             "stress_rmse": stress_rmse,
+            "stress_mae": stress_mae,
+            "_metric_sums": metric_sums,
         }
 
     def _loss_term(self, pred, target):
+        return self._loss_term_stats(pred, target)[0]
+
+    def _loss_term_stats(self, pred, target):
         if self.loss_type == "mse":
-            return F.mse_loss(pred, target)
-        return smooth_l1_loss_stats(pred, target, beta=self.loss_beta)[0]
+            loss = F.mse_loss(pred, target, reduction="none")
+            loss_sum = loss.sum()
+            count = loss.new_tensor(float(loss.numel()))
+            return loss_sum / count.clamp_min(1.0), loss_sum, count
+        return smooth_l1_loss_stats(pred, target, beta=self.loss_beta)
 
     @torch.no_grad()
     def _update_ema_state(self):
@@ -1246,9 +1346,7 @@ class ForceTrainer:
         self.model.train()
         self._maybe_activate_stage_two(epoch)
         n_batches = len(self.train_loader)
-        run = {"total_loss": 0.0, "energy_loss": 0.0, "force_loss": 0.0,
-               "stress_loss": 0.0, "force_rmse": 0.0, "energy_rmse_avg": 0.0,
-               "force_mae": 0.0, "energy_mae_avg": 0.0}
+        metric_sums = self._new_metric_sums()
         t0 = time.time()
         seen = 0
         _val_pts = set()
@@ -1269,8 +1367,7 @@ class ForceTrainer:
             self.global_step += 1
             self._step_scheduler_after_batch()
             self._update_averaged_states(epoch)
-            for k in run:
-                run[k] += float(out[k])
+            self._accumulate_metric_sums(metric_sums, out)
             seen += 1
             if self.main_process and self.log_interval and (i % self.log_interval == 0):
                 lr = self.optimizer.param_groups[0]["lr"]
@@ -1283,18 +1380,23 @@ class ForceTrainer:
             if i in _val_pts:
                 _va = self._val_pass()
                 if self.main_process:
-                    log.info("epoch %d step %d MID-VAL loss=%.4f Frmse=%.4f Ermse=%.4f Fmae=%.4f Emae=%.4f",
+                    log.info("epoch %d step %d MID-VAL loss=%.6g Frmse=%.6g Ermse=%.6g Fmae=%.6g Emae=%.6g",
                              epoch, self.global_step, _va["total_loss"], _va["force_rmse"], _va["energy_rmse_avg"],
                              _va["force_mae"], _va["energy_mae_avg"])
-                    print(f"[epoch {epoch} step {self.global_step}] MID val loss={_va['total_loss']:.4f} "
-                          f"Frmse={_va['force_rmse']:.4f} Ermse={_va['energy_rmse_avg']:.4f} "
-                          f"Fmae={_va['force_mae']:.4f} Emae={_va['energy_mae_avg']:.4f}", flush=True)
+                    _stress_metrics = (
+                        f" Srmse={_va['stress_rmse']:.6g} Smae={_va['stress_mae']:.6g}"
+                        if self.c > 0 else ""
+                    )
+                    print(f"[epoch {epoch} step {self.global_step}] MID val loss={_va['total_loss']:.6g} "
+                          f"Frmse={_va['force_rmse']:.6g} Ermse={_va['energy_rmse_avg']:.6g} "
+                          f"Fmae={_va['force_mae']:.6g} Emae={_va['energy_mae_avg']:.6g}"
+                          f"{_stress_metrics}", flush=True)
                     self._append_loss_csv(epoch, self.global_step, "mid", _va)
                     self._save_rolling_checkpoint(epoch)
                 if self._dist_ready():
                     dist.barrier()
                 self.model.train()
-        avg = self._reduce_epoch_metrics(run, seen)
+        avg = self._reduce_epoch_metrics(metric_sums)
         avg["time"] = time.time() - t0
         avg["steps"] = int(seen)
         return avg
@@ -1303,18 +1405,12 @@ class ForceTrainer:
     def _val_pass(self):
         # force needs grad of energy wrt pos even at eval -> enable grad locally.
         self.model.eval()
-        run = {"total_loss": 0.0, "energy_loss": 0.0, "force_loss": 0.0,
-               "stress_loss": 0.0, "force_rmse": 0.0, "energy_rmse_avg": 0.0,
-               "force_mae": 0.0, "energy_mae_avg": 0.0}
-        seen = 0
+        metric_sums = self._new_metric_sums()
         for batch in self.val_loader:
             with torch.enable_grad():
                 out = self._compute(batch, training=False)
-            for k in run:
-                run[k] += float(out[k])
-            seen += 1
-        seen = max(seen, 1)
-        return {k: v / seen for k, v in run.items()}
+            self._accumulate_metric_sums(metric_sums, out)
+        return self._finalize_metric_sums(metric_sums, require_data=True)
 
     def _append_loss_csv(self, epoch, step, kind, val, tr=None):
         """Append one validation's losses/errors to loss.csv (next to the checkpoint)."""
@@ -1322,15 +1418,29 @@ class ForceTrainer:
             return
         cols = ["epoch", "step", "kind", "train_loss", "train_force_rmse",
                 "val_loss", "val_energy_loss", "val_force_loss",
-                "val_force_rmse", "val_energy_rmse", "val_force_mae", "val_energy_mae"]
+                "val_stress_loss", "val_force_rmse", "val_energy_rmse",
+                "val_force_mae", "val_energy_mae", "val_stress_rmse", "val_stress_mae"]
         def g(d, k):
             return f"{float(d[k]):.6f}" if (d is not None and k in d) else ""
-        row = [str(epoch), str(step), str(kind),
-               g(tr, "total_loss"), g(tr, "force_rmse"),
-               g(val, "total_loss"), g(val, "energy_loss"), g(val, "force_loss"),
-               g(val, "force_rmse"), g(val, "energy_rmse_avg"),
-               g(val, "force_mae"), g(val, "energy_mae_avg")]
         new_file = not os.path.exists(self.metrics_csv_path)
+        values = {
+            "epoch": str(epoch), "step": str(step), "kind": str(kind),
+            "train_loss": g(tr, "total_loss"), "train_force_rmse": g(tr, "force_rmse"),
+            "val_loss": g(val, "total_loss"), "val_energy_loss": g(val, "energy_loss"),
+            "val_force_loss": g(val, "force_loss"), "val_stress_loss": g(val, "stress_loss"),
+            "val_force_rmse": g(val, "force_rmse"),
+            "val_energy_rmse": g(val, "energy_rmse_avg"),
+            "val_force_mae": g(val, "force_mae"), "val_energy_mae": g(val, "energy_mae_avg"),
+            "val_stress_rmse": g(val, "stress_rmse"), "val_stress_mae": g(val, "stress_mae"),
+        }
+        if not new_file:
+            with open(self.metrics_csv_path, "r") as f:
+                existing_header = f.readline().strip()
+            if existing_header:
+                # Keep resumed legacy CSV files rectangular. New files receive the
+                # extended stress columns; old files retain their original schema.
+                cols = existing_header.split(",")
+        row = [values.get(col, "") for col in cols]
         with open(self.metrics_csv_path, "a") as f:
             if new_file:
                 f.write(",".join(cols) + "\n")
@@ -1404,14 +1514,19 @@ class ForceTrainer:
             tr = self.train_epoch(epoch)
             sterm = f" S={tr['stress_loss']:.4f}" if self.c > 0 else ""
             phase = "stage2" if self._stage_two_active else "stage1"
-            msg = (f"[epoch {epoch} step {self.global_step} {phase}] train loss={tr['total_loss']:.4f} "
-                   f"E={tr['energy_loss']:.4f} F={tr['force_loss']:.4f}{sterm} "
-                   f"Frmse={tr['force_rmse']:.4f} ({tr['time']:.1f}s)")
+            msg = (f"[epoch {epoch} step {self.global_step} {phase}] train loss={tr['total_loss']:.6g} "
+                   f"E={tr['energy_loss']:.6g} F={tr['force_loss']:.6g}{sterm} "
+                   f"Frmse={tr['force_rmse']:.6g} ({tr['time']:.1f}s)")
             if self.val_loader is not None and self.main_process:
                 va = self._val_pass()
-                msg += (f" | val loss={va['total_loss']:.4f} "
-                        f"Frmse={va['force_rmse']:.4f} Ermse={va['energy_rmse_avg']:.4f} "
-                        f"Fmae={va['force_mae']:.4f} Emae={va['energy_mae_avg']:.4f}")
+                stress_metrics = (
+                    f" Srmse={va['stress_rmse']:.6g} Smae={va['stress_mae']:.6g}"
+                    if self.c > 0 else ""
+                )
+                msg += (f" | val loss={va['total_loss']:.6g} "
+                        f"Frmse={va['force_rmse']:.6g} Ermse={va['energy_rmse_avg']:.6g} "
+                        f"Fmae={va['force_mae']:.6g} Emae={va['energy_mae_avg']:.6g}"
+                        f"{stress_metrics}")
                 self._append_loss_csv(epoch, self.global_step, "epoch", va, tr)
                 cur = va["total_loss"]
             else:

@@ -366,6 +366,10 @@ class H5Dataset(Dataset):
         self.pad_nodes_to_max = bool(pad_nodes_to_max)
         with h5py.File(self.file_path, 'r') as f:
             self.num_samples = len(f.keys())
+            self.stress_mask_available = bool(f.attrs.get('stress_mask_available', False))
+            self.num_stress_labels = (
+                int(f.attrs['num_stress_labels']) if self.stress_mask_available else None
+            )
             # E_max for fixed-shape edge padding: prefer the preprocess-summarized attr, else
             # (datasets made before this feature) scan the per-frame edge lengths once at load.
             self.max_edges = int(f.attrs.get('max_edges', 0))
@@ -537,6 +541,8 @@ class H5Dataset(Dataset):
             'cell': torch.from_numpy(g['cell'][:]).double(),
             'stress': stress,
         }
+        if 'stress_mask' in g:
+            out['stress_mask'] = torch.as_tensor(bool(g['stress_mask'][()]), dtype=torch.bool)
         for canonical, aliases, dtype in (
             ("dispersion_edge_src", ("dispersion_edge_src", "disp_edge_src"), torch.long),
             ("dispersion_edge_dst", ("dispersion_edge_dst", "disp_edge_dst"), torch.long),

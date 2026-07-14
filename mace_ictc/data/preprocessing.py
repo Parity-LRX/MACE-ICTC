@@ -257,6 +257,7 @@ def extract_data_blocks(
     species_key: str | None = None,
     coord_key: str | None = None,
     atomic_number_key: str | None = None,
+    return_stress_mask: bool = False,
 ):
     """
     Extract data blocks from XYZ file format.
@@ -298,12 +299,14 @@ def extract_data_blocks(
     cell_list = []         # 9 numbers (row-major) or zeros if non-periodic/unknown
     pbc_list = []          # list of (px,py,pz) booleans
     stress_list = []       # list of (3,3) stress tensors (eV/Å³), zeros if not present
+    stress_mask = []       # whether each frame actually supplied stress/virial metadata
     data_blocks = []
     
     current_block = []
     current_cell = [np.float64(0.0)] * 9
     current_pbc = (False, False, False)
     current_stress = np.zeros((3, 3), dtype=np.float64)
+    current_has_stress = False
 
     current_natoms = None
     current_properties = None
@@ -324,10 +327,12 @@ def extract_data_blocks(
                 cell_list.append(current_cell)
                 pbc_list.append(current_pbc)
                 stress_list.append(current_stress)
+                stress_mask.append(current_has_stress)
                 current_block = []
                 current_cell = [np.float64(0.0)] * 9
                 current_pbc = (False, False, False)
                 current_stress = np.zeros((3, 3), dtype=np.float64)
+                current_has_stress = False
                 current_natoms = None
                 current_properties = None
                 expect_comment = False
@@ -341,10 +346,12 @@ def extract_data_blocks(
                 cell_list.append(current_cell)
                 pbc_list.append(current_pbc)
                 stress_list.append(current_stress)
+                stress_mask.append(current_has_stress)
                 current_block = []
                 current_cell = [np.float64(0.0)] * 9
                 current_pbc = (False, False, False)
                 current_stress = np.zeros((3, 3), dtype=np.float64)
+                current_has_stress = False
                 current_properties = None
             current_natoms = int(line)
             expect_comment = True
@@ -386,6 +393,7 @@ def extract_data_blocks(
             parsed_stress = _parse_stress_from_comment(line, cell_9=current_cell)
             if parsed_stress is not None:
                 current_stress = parsed_stress
+                current_has_stress = True
 
             expect_comment = False
             continue
@@ -513,8 +521,10 @@ def extract_data_blocks(
         cell_list.append(current_cell)
         pbc_list.append(current_pbc)
         stress_list.append(current_stress)
+        stress_mask.append(current_has_stress)
 
-    return data_blocks, energy_list, raw_energy_list, cell_list, pbc_list, stress_list
+    result = (data_blocks, energy_list, raw_energy_list, cell_list, pbc_list, stress_list)
+    return result + (stress_mask,) if return_stress_mask else result
 
 
 def objective_function(new_values, keys, atom_indices_list, energy_list):
@@ -665,7 +675,8 @@ def load_read_blocks(read_file):
     return blocks
 
 
-def save_set(prefix, indices, blocks, raw_E, correction_E, cell_list, pbc_list=None, stress_list=None, max_atom=None, output_dir='.'):
+def save_set(prefix, indices, blocks, raw_E, correction_E, cell_list, pbc_list=None,
+             stress_list=None, stress_mask=None, max_atom=None, output_dir='.'):
     """
     Save dataset to HDF5 and CSV files.
     
@@ -725,6 +736,11 @@ def save_set(prefix, indices, blocks, raw_E, correction_E, cell_list, pbc_list=N
     ).astype(np.float64)
     df_stress.to_hdf(os.path.join(output_dir, f'stress_{prefix}.h5'), key='df', mode='w')
     df_stress.to_csv(os.path.join(output_dir, f'stress_{prefix}.csv'), index=False)
+    selected_stress_mask = (
+        np.asarray([stress_mask[i] for i in indices], dtype=np.bool_)
+        if stress_mask is not None else np.ones(len(indices), dtype=np.bool_)
+    )
+    np.save(os.path.join(output_dir, f'stress_mask_{prefix}.npy'), selected_stress_mask)
 
     # 5. Save atomic detailed data (Atom Data / read_*.h5)
     read_h5_path = os.path.join(output_dir, f'read_{prefix}.h5')
@@ -907,6 +923,7 @@ def save_to_h5_parallel(prefix, max_radius, num_workers, data_dir='.'):
     energy_file = os.path.join(data_dir, f'raw_energy_{prefix}.h5')
     cell_file = os.path.join(data_dir, f'cell_{prefix}.h5')
     stress_file = os.path.join(data_dir, f'stress_{prefix}.h5')
+    stress_mask_file = os.path.join(data_dir, f'stress_mask_{prefix}.npy')
     
     if not os.path.exists(read_file):
         raise FileNotFoundError(
@@ -923,6 +940,10 @@ def save_to_h5_parallel(prefix, max_radius, num_workers, data_dir='.'):
         stress_all = df_stress.values.astype(np.float64).reshape(-1, 3, 3)
     else:
         stress_all = None
+    stress_mask_all = (
+        np.asarray(np.load(stress_mask_file), dtype=np.bool_).reshape(-1)
+        if os.path.exists(stress_mask_file) else None
+    )
     
     targets = df_energy.values.flatten().astype(np.float64)
 
@@ -1020,8 +1041,20 @@ def save_to_h5_parallel(prefix, max_radius, num_workers, data_dir='.'):
                     g.create_dataset('stress', data=stress_all[idx])
                 else:
                     g.create_dataset('stress', data=np.zeros((3, 3), dtype=np.float64))
+                # Legacy processed datasets have no mask and are treated as labelled for
+                # backward compatibility. Newly preprocessed data distinguishes a real
+                # zero-stress label from missing stress metadata.
+                has_stress = (
+                    bool(stress_mask_all[idx])
+                    if stress_mask_all is not None and idx < len(stress_mask_all)
+                    else True
+                )
+                g.create_dataset('stress_mask', data=np.bool_(has_stress))
             f.attrs['max_edges'] = int(max_edges)
             f.attrs['max_atoms'] = int(max_atoms)
+            if stress_mask_all is not None:
+                f.attrs['stress_mask_available'] = True
+                f.attrs['num_stress_labels'] = int(stress_mask_all[:total_frames].sum())
             # The neighbor-list cutoff the precomputed edges were built at. Training reads this back
             # (H5Dataset.expected_max_radius) and refuses to run if it != --max-radius, because the
             # baked edge list is only valid at THIS cutoff (train>h5 -> missing edges; train<h5 ->

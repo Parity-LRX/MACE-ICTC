@@ -180,7 +180,7 @@ def collate_fn_h5(batch_list):
         _append_dispersion_edges(extras_lists, data, node_offset - num_nodes)
 
         # Optional extras (graph-level Cartesian labels / global tensors)
-        for k in ("charge", "fidelity_id", "dipole", "magnetic_moment", "polarizability", "quadrupole", "external_field", "magnetic_field"):
+        for k in ("charge", "fidelity_id", "stress_mask", "dipole", "magnetic_moment", "polarizability", "quadrupole", "external_field", "magnetic_field"):
             if k in data:
                 extras_lists.setdefault(k, []).append(data[k])
                 extras_masks.setdefault(k, []).append(torch.tensor(True))
