@@ -1471,6 +1471,25 @@ class ForceTrainer:
                     if torch.is_tensor(value):
                         group[key] = value.to(self.device)
             self.global_step = int(ckpt.get("global_step", 0))
+            scheduler_progress = ckpt.get("scheduler_progress_state")
+            if isinstance(scheduler_progress, dict):
+                saved_kind = str(scheduler_progress.get("kind", self._scheduler_kind))
+                if saved_kind != self._scheduler_kind:
+                    raise ValueError(
+                        "checkpoint scheduler kind does not match the configured scheduler: "
+                        f"{saved_kind!r} != {self._scheduler_kind!r}"
+                    )
+                self._post_warmup_step = int(
+                    scheduler_progress.get("post_warmup_step", self._post_warmup_step)
+                )
+                if self._scheduler_kind == "cosine":
+                    self._cosine_total_steps = int(
+                        scheduler_progress.get("cosine_total_steps", self._cosine_total_steps)
+                    )
+            elif self._scheduler_kind == "cosine":
+                # Older checkpoints have the completed batch count but no cosine position.
+                self._post_warmup_step = max(0, self.global_step - self.warmup_batches)
+            self._post_warmup_step = max(0, self._post_warmup_step)
             start_epoch = int(ckpt.get("epoch", -1)) + 1
             if isinstance(ckpt.get("e3trans_ema_state_dict"), dict):
                 self._ema_state = {
@@ -1495,11 +1514,18 @@ class ForceTrainer:
             self._restore_dispersion_graph_observation(
                 ckpt.get("training_hyperparameters", {}).get("dispersion_training_graph_observation", None)
             )
-            log.warning(
-                "resumed optimizer/global_step from %s at epoch=%d step=%d; "
-                "scheduler history is not serialized, so stateful schedulers resume approximately",
-                path, start_epoch, self.global_step,
-            )
+            if self._scheduler_kind == "cosine":
+                log.info(
+                    "resumed optimizer/global_step and cosine scheduler progress from %s "
+                    "at epoch=%d step=%d",
+                    path, start_epoch, self.global_step,
+                )
+            else:
+                log.warning(
+                    "resumed optimizer/global_step from %s at epoch=%d step=%d; "
+                    "scheduler history is not serialized, so stateful schedulers resume approximately",
+                    path, start_epoch, self.global_step,
+                )
         else:
             log.info("loaded model weights from %s", path)
         return start_epoch
@@ -1740,6 +1766,11 @@ class ForceTrainer:
             "global_step": int(self.global_step),
             "e3trans_state_dict": self._raw_model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
+            "scheduler_progress_state": {
+                "kind": self._scheduler_kind,
+                "post_warmup_step": int(self._post_warmup_step),
+                "cosine_total_steps": int(self._cosine_total_steps),
+            },
             "dtype": str(self.dtype).replace("torch.", ""),
             "max_radius": float(self.max_radius),
             "tensor_product_mode": self.tensor_product_mode,
